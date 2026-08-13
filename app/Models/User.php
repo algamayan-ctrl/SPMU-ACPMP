@@ -1,0 +1,137 @@
+<?php
+
+namespace App\Models;
+
+use App\Enums\AccessClassification;
+use App\Enums\AccountStatus;
+use App\Enums\EmploymentType;
+use App\Enums\UserRole;
+use Database\Factories\UserFactory;
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\BelongsToMany;
+use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Relations\HasOne;
+use Illuminate\Foundation\Auth\User as Authenticatable;
+use Illuminate\Notifications\Notifiable;
+
+class User extends Authenticatable
+{
+    /** @use HasFactory<UserFactory> */
+    use HasFactory, Notifiable;
+
+    protected $fillable = [
+        'organizational_unit_id',
+        'employee_no',
+        'full_name', 'designation',
+        'employment_type',
+        'email',
+        'mobile_no',
+        'notification_preferences',
+        'account_status',
+        'access_classification',
+        'password', 'last_login_at',
+    ];
+
+    protected $hidden = ['password', 'remember_token'];
+
+    /**
+     * Get the attributes that should be cast.
+     *
+     * @return array<string, string>
+     */
+    protected function casts(): array
+    {
+        return [
+            'employment_type' => EmploymentType::class,
+            'account_status' => AccountStatus::class,
+            'access_classification' => AccessClassification::class,
+            'notification_preferences' => 'array',
+            'email_verified_at' => 'datetime',
+            'last_login_at' => 'datetime',
+            'password' => 'hashed',
+        ];
+    }
+
+    public function organizationalUnit(): BelongsTo
+    {
+        return $this->belongsTo(OrganizationalUnit::class);
+    }
+
+    public function roles(): BelongsToMany
+    {
+        return $this->belongsToMany(Role::class, 'user_roles')
+            ->withPivot(['assigned_by_user_id', 'assigned_at', 'revoked_at']);
+    }
+
+    public function hasRole(UserRole|string $role): bool
+    {
+        $code = $role instanceof UserRole ? $role->value : strtoupper($role);
+
+        return $this->roles()
+            ->where('role_code', $code)
+            ->wherePivotNull('revoked_at')
+            ->exists();
+    }
+
+    /** @return list<string> */
+    public function allowedWorkspaces(): array
+    {
+        if ($this->access_classification instanceof AccessClassification) {
+            $workspaces = $this->access_classification->workspaces();
+            $delegated = TemporaryDelegation::query()
+                ->where('delegate_user_id', $this->id)->where('status', 'ACTIVE')->whereNull('revoked_at')
+                ->where('effective_from', '<=', now())->where('effective_to', '>=', now())->pluck('office_role')->all();
+
+            return array_values(array_unique(array_merge($workspaces, $delegated)));
+        }
+
+        return $this->roles()
+            ->wherePivotNull('revoked_at')
+            ->pluck('role_code')
+            ->map(fn ($role) => $role instanceof UserRole ? $role->value : (string) $role)
+            ->values()->all();
+    }
+
+    public function mayBorrow(): bool
+    {
+        return $this->access_classification?->mayBorrow() ?? $this->hasRole(UserRole::Borrower);
+    }
+
+    public function hasWorkspace(string $workspace): bool
+    {
+        return in_array(strtoupper($workspace), $this->allowedWorkspaces(), true);
+    }
+
+    public function activeDelegationFor(string $officeRole): ?TemporaryDelegation
+    {
+        return TemporaryDelegation::query()
+            ->where('delegate_user_id', $this->id)
+            ->where('office_role', strtoupper($officeRole))
+            ->where('status', 'ACTIVE')
+            ->whereNull('revoked_at')
+            ->where('effective_from', '<=', now())
+            ->where('effective_to', '>=', now())
+            ->latest('effective_from')
+            ->first();
+    }
+
+    public function currentSignature(): HasOne
+    {
+        return $this->hasOne(UserSignature::class)->where('status', 'ACTIVE')->latestOfMany();
+    }
+
+    public function borrowingRequests(): HasMany
+    {
+        return $this->hasMany(BorrowingRequest::class, 'borrower_user_id');
+    }
+
+    public function activeRestrictions(): HasMany
+    {
+        return $this->hasMany(BorrowerRestriction::class, 'borrower_user_id')
+            ->where('status', 'ACTIVE')
+            ->where(function ($query): void {
+                $query->whereNull('effective_to')->orWhere('effective_to', '>', now());
+            });
+    }
+}

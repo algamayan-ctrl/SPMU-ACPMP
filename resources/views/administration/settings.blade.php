@@ -1,0 +1,5 @@
+@extends('layouts.app', ['title' => 'Configuration'])
+@section('content')
+<section class="page-heading"><div><p class="eyebrow">Effective operational configuration</p><h1>Open decisions and system settings</h1><p>Unfinalized values remain visibly open. Changes apply prospectively and preserve before/after values, reason, actor, and time.</p></div></section>
+<section class="content-area"><div class="settings-grid">@foreach($settings as $setting)<form method="post" action="{{ route('administration.settings.update',$setting) }}" class="card form-grid">@csrf @method('PUT')<div class="card-header"><div><span class="badge">{{ $setting->group_code }}</span><h3>{{ str_replace('_',' ',$setting->setting_key) }}</h3></div><span class="status">{{ $setting->status }}</span></div><p>{{ $setting->description }}</p><label>Value<input name="value" value="{{ is_scalar($setting->value_json) ? $setting->value_json : json_encode($setting->value_json) }}" placeholder="Not finalized"></label><label>Mandatory change reason<textarea name="reason" required></textarea></label><button class="button primary">Update setting</button></form>@endforeach</div></section>
+@endsection

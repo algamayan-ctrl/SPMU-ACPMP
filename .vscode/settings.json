@@ -1,0 +1,10 @@
+{
+    "terminal.integrated.cwd": "${workspaceFolder}",
+    "files.exclude": {
+        "vendor": true
+    },
+    "search.exclude": {
+        "vendor": true,
+        "storage": true
+    }
+}

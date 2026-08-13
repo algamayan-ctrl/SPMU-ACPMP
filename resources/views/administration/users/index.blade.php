@@ -1,0 +1,5 @@
+@extends('layouts.app', ['title' => 'User Administration'])
+@section('content')
+<section class="page-heading"><div><p class="eyebrow">ICTU identity administration</p><h1>Institutional user accounts</h1><p>Register CSPC identities, classify access, and retain an attributable assignment history.</p></div><a class="button primary" href="{{ route('administration.users.create') }}">Register account</a></section>
+<section class="content-area"><div class="table-wrap"><table><thead><tr><th>Employee</th><th>Office</th><th>Eligibility</th><th>Access classification</th><th>Workspaces</th><th>Status</th><th></th></tr></thead><tbody>@foreach($users as $user)<tr><td><strong>{{ $user->full_name }}</strong><small>{{ $user->employee_no }} · {{ $user->email }}</small></td><td>{{ $user->organizationalUnit?->unit_name }}</td><td>{{ $user->employment_type->value }}</td><td>{{ $user->access_classification?->label() }}</td><td>{{ implode(', ', $user->allowedWorkspaces()) }}</td><td>{{ $user->account_status->value }}</td><td><a href="{{ route('administration.users.edit',$user) }}">Edit</a></td></tr>@endforeach</tbody></table></div></section>
+@endsection

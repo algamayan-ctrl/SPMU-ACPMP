@@ -1,0 +1,4 @@
+@extends('layouts.app', ['title' => 'Audit Trail'])
+@section('content')
+<section class="page-heading"><div><p class="eyebrow">Append-only operational evidence</p><h1>Audit trail</h1><p>Actor, action, record, time, origin, reason, and before/after values where applicable.</p></div></section><section class="content-area"><div class="table-wrap"><table><thead><tr><th>Time</th><th>Actor</th><th>Action</th><th>Record</th><th>Reason</th><th>Correlation</th></tr></thead><tbody>@foreach($events as $event)<tr><td>{{ $event->occurred_at->format('M j, Y g:i:s A') }}</td><td>{{ $event->actor?->full_name ?: 'System' }}</td><td>{{ $event->action_code }}</td><td>{{ class_basename($event->record_type) }} #{{ $event->record_id }}</td><td>{{ $event->reason }}</td><td><code>{{ $event->correlation_id }}</code></td></tr>@endforeach</tbody></table></div></section>
+@endsection

@@ -1,0 +1,4 @@
+@extends('layouts.app', ['title' => 'Notification Delivery'])
+@section('content')
+<section class="page-heading"><div><p class="eyebrow">System, email, and SMS attempts</p><h1>Notification delivery report</h1><p>Provider failure never rolls back a valid business transaction; every attempt remains visible.</p></div></section><section class="content-area"><div class="table-wrap"><table><thead><tr><th>Time</th><th>Event</th><th>Channel</th><th>Address</th><th>Status</th><th>Provider response</th></tr></thead><tbody>@foreach($deliveries as $delivery)<tr><td>{{ optional($delivery->attempted_at)->format('M j, Y g:i A') }}</td><td>{{ $delivery->event->event_code }}</td><td>{{ $delivery->channel }}</td><td>{{ $delivery->address_snapshot }}</td><td><span class="status">{{ $delivery->delivery_status }}</span></td><td>{{ $delivery->provider_response }}</td></tr>@endforeach</tbody></table></div></section>
+@endsection

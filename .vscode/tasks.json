@@ -1,0 +1,70 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "SPMU: Prepare local database",
+            "type": "shell",
+            "command": ".\\tools\\artisan.cmd",
+            "args": ["migrate", "--seed"],
+            "options": {"cwd": "${workspaceFolder}"},
+            "problemMatcher": []
+        },
+        {
+            "label": "SPMU: Start local Laravel server",
+            "type": "shell",
+            "command": ".\\tools\\artisan.cmd",
+            "args": ["serve", "--host=127.0.0.1", "--port=8001"],
+            "options": {"cwd": "${workspaceFolder}"},
+            "isBackground": true,
+            "problemMatcher": {
+                "owner": "spmu",
+                "pattern": {"regexp": "^(.*)$", "message": 1},
+                "background": {
+                    "activeOnStart": true,
+                    "beginsPattern": "Starting Laravel development server",
+                    "endsPattern": "Server running on"
+                }
+            },
+            "presentation": {"reveal": "always", "panel": "dedicated", "clear": true}
+        },
+        {
+            "label": "SPMU: Open local site",
+            "type": "shell",
+            "command": "Start-Process 'http://127.0.0.1:8001'",
+            "options": {"cwd": "${workspaceFolder}"},
+            "problemMatcher": []
+        },
+        {
+            "label": "SPMU: Run automated tests",
+            "type": "shell",
+            "command": ".\\tools\\artisan.cmd",
+            "args": ["test"],
+            "options": {"cwd": "${workspaceFolder}"},
+            "problemMatcher": []
+        },
+        {
+            "label": "SPMU: Prepare Docker environment",
+            "type": "shell",
+            "command": "powershell",
+            "args": ["-ExecutionPolicy", "Bypass", "-File", ".\\tools\\prepare-docker-local.ps1"],
+            "options": {"cwd": "${workspaceFolder}"},
+            "problemMatcher": []
+        },
+        {
+            "label": "SPMU: Start Docker + MariaDB",
+            "type": "shell",
+            "command": "docker",
+            "args": ["compose", "--env-file", ".env.docker", "up", "--build", "-d"],
+            "options": {"cwd": "${workspaceFolder}"},
+            "problemMatcher": []
+        },
+        {
+            "label": "SPMU: Stop Docker",
+            "type": "shell",
+            "command": "docker",
+            "args": ["compose", "--env-file", ".env.docker", "down"],
+            "options": {"cwd": "${workspaceFolder}"},
+            "problemMatcher": []
+        }
+    ]
+}

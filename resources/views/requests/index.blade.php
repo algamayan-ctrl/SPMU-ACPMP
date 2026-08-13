@@ -1,0 +1,7 @@
+@extends('layouts.app', ['title' => 'Borrowing Requests'])
+@section('content')
+<section class="page-heading"><div><p class="eyebrow">Requests</p><h1>{{ session('active_workspace') === 'BORROWER' ? 'My borrowing requests' : 'Borrowing request records' }}</h1><p>View each request and its current approval status. Items are allocated only after final VPAF approval.</p></div>@if(session('active_workspace') === 'BORROWER')<a class="button primary" href="{{ route('requests.create') }}">Create new request</a>@endif</section>
+<section class="content-area"><div class="table-wrap"><table><thead><tr><th>Request</th><th>Borrower</th><th>Event and period</th><th>Items</th><th>Status</th><th></th></tr></thead><tbody>
+@forelse($requests as $request)<tr><td><strong>{{ $request->request_no }}</strong><small>Version {{ $request->current_version_no }}</small></td><td>{{ $request->borrower->full_name }}</td><td>{{ $request->currentVersion?->purpose_event }}<small>{{ optional($request->currentVersion?->needed_from)->format('M j, Y g:i A') }} to {{ optional($request->currentVersion?->return_due_at)->format('M j, Y g:i A') }}</small></td><td>{{ $request->currentVersion?->items->count() ?? 0 }} item type(s)</td><td><span class="status {{ strtolower($request->status->value) }}">{{ $request->status->label() }}</span></td><td><a class="table-action" href="{{ route('requests.show', $request) }}">View details</a></td></tr>@empty<tr><td colspan="6" class="empty-state">No borrowing requests found.</td></tr>@endforelse
+</tbody></table></div></section>
+@endsection

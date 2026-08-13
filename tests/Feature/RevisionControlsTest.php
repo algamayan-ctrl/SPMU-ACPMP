@@ -1,0 +1,158 @@
+<?php
+
+namespace Tests\Feature;
+
+use App\Enums\AccessClassification;
+use App\Enums\ApprovalStage;
+use App\Enums\RequestStatus;
+use App\Models\Allocation;
+use App\Models\ApprovalStep;
+use App\Models\BorrowingRequest;
+use App\Models\GeneratedDocument;
+use App\Models\InventoryItem;
+use App\Models\RequestItem;
+use App\Models\TemporaryDelegation;
+use App\Models\User;
+use App\Services\DocumentService;
+use App\Services\RequestWorkflowService;
+use Database\Seeders\DatabaseSeeder;
+use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\DB;
+use Tests\TestCase;
+
+class RevisionControlsTest extends TestCase
+{
+    use RefreshDatabase;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+        $this->seed(DatabaseSeeder::class);
+    }
+
+    public function test_final_access_classifications_enforce_borrowing_and_workspace_rules(): void
+    {
+        $this->assertClassification(AccessClassification::SpmuHead, false, ['SPMU']);
+        $this->assertClassification(AccessClassification::SpmuOfficer, true, ['BORROWER', 'SPMU']);
+        $this->assertClassification(AccessClassification::GsuHead, false, ['GSU']);
+        $this->assertClassification(AccessClassification::VpafHead, false, ['VPAF']);
+        $this->assertClassification(AccessClassification::IctuMaintainer, true, ['BORROWER', 'ICTU']);
+    }
+
+    public function test_formal_temporary_delegate_uses_own_account_and_is_attributed_to_the_decision(): void
+    {
+        $delegate = User::where('email', 'borrower@spmu.test')->firstOrFail();
+        $gsuHead = User::where('access_classification', AccessClassification::GsuHead->value)->firstOrFail();
+        $borrower = User::where('access_classification', AccessClassification::SpmuOfficer->value)->firstOrFail();
+        $ictu = User::where('access_classification', AccessClassification::IctuMaintainer->value)->firstOrFail();
+        $delegate->update(['organizational_unit_id' => $gsuHead->organizational_unit_id]);
+        $delegation = TemporaryDelegation::create([
+            'office_role' => 'GSU', 'absent_head_user_id' => $gsuHead->id, 'delegate_user_id' => $delegate->id,
+            'recorded_by_user_id' => $ictu->id, 'authority_reference' => 'MEMO-TEST-001', 'reason' => 'Head is unavailable.',
+            'effective_from' => now()->subHour(), 'effective_to' => now()->addDay(), 'status' => 'ACTIVE',
+        ]);
+        $request = BorrowingRequest::create([
+            'request_no' => 'BR-DELEGATE-001', 'borrower_user_id' => $borrower->id,
+            'accountable_unit_id' => $borrower->organizational_unit_id, 'current_version_no' => 1, 'status' => RequestStatus::UnderGsu,
+        ]);
+        $version = $request->versions()->create([
+            'version_no' => 1, 'purpose_event' => 'Delegation test', 'location' => 'Campus',
+            'needed_from' => now()->addDay(), 'return_due_at' => now()->addDays(2), 'created_by_user_id' => $borrower->id,
+        ]);
+        ApprovalStep::create(['request_version_id' => $version->id, 'stage_code' => ApprovalStage::Gsu, 'sequence_no' => 2, 'received_at' => now(), 'decision' => 'RECEIVED']);
+
+        $this->withSession(['active_workspace' => 'GSU'])->actingAs($delegate)
+            ->post(route('approvals.decide', $request), ['decision' => 'APPROVED'])
+            ->assertSessionHasNoErrors();
+
+        $this->assertSame(RequestStatus::UnderVpaf, $request->fresh()->status);
+        $this->assertDatabaseHas('approval_steps', [
+            'request_version_id' => $version->id, 'approver_user_id' => $delegate->id,
+            'temporary_delegation_id' => $delegation->id, 'decision' => 'APPROVED',
+        ]);
+    }
+
+    public function test_mixed_request_generates_only_the_applicable_conditional_forms(): void
+    {
+        [$request, $letter] = $this->approvedRequestWithItems(true, true);
+        $borrower = $request->borrower;
+        app(RequestWorkflowService::class)->recordApprovedLetterDownload($request, $letter, $borrower, '127.0.0.1', 'test');
+        $custody = $request->fresh()->custody;
+
+        $this->assertDatabaseHas('generated_documents', ['subject_id' => $custody->id, 'document_type' => 'BORROWER_SLIP', 'status' => 'FINAL']);
+        $this->assertDatabaseHas('generated_documents', ['subject_id' => $custody->id, 'document_type' => 'GATE_PASS', 'status' => 'FINAL']);
+        $this->assertDatabaseHas('generated_documents', ['subject_id' => $custody->id, 'document_type' => 'LAUNDRY_FORM', 'status' => 'FINAL']);
+        $this->withSession(['active_workspace' => 'BORROWER'])->actingAs($borrower)->get(route('custody.show', $custody))->assertOk()->assertSee('Item-level monitoring');
+        $spmuOfficer = User::where('access_classification', AccessClassification::SpmuOfficer->value)->firstOrFail();
+        $this->withSession(['active_workspace' => 'SPMU'])->actingAs($spmuOfficer)->get(route('custody.show', $custody))->assertOk()->assertSee('Record final issued quantities');
+
+        [$ordinaryRequest, $ordinaryLetter] = $this->approvedRequestWithItems(false, false, 'BR-ORDINARY-001');
+        app(RequestWorkflowService::class)->recordApprovedLetterDownload($ordinaryRequest, $ordinaryLetter, $ordinaryRequest->borrower, '127.0.0.1', 'test');
+        $ordinaryCustody = $ordinaryRequest->fresh()->custody;
+        $this->assertDatabaseMissing('generated_documents', ['subject_id' => $ordinaryCustody->id, 'document_type' => 'GATE_PASS']);
+        $this->assertDatabaseMissing('generated_documents', ['subject_id' => $ordinaryCustody->id, 'document_type' => 'LAUNDRY_FORM']);
+    }
+
+    public function test_early_return_notice_does_not_change_inventory_before_spmu_inspection(): void
+    {
+        [$request, $letter] = $this->approvedRequestWithItems(false, false, 'BR-EARLY-001');
+        $borrower = $request->borrower;
+        $custody = app(RequestWorkflowService::class)->recordApprovedLetterDownload($request, $letter, $borrower, '127.0.0.1', 'test');
+        $line = $custody->lines()->firstOrFail();
+        $line->update(['actual_released_quantity' => $line->quantity_to_receive, 'item_status' => 'RELEASED_PENDING_RETURN']);
+        $custody->update(['status' => 'ACTIVE', 'released_at' => now()]);
+        $transactionLinesBefore = DB::table('inventory_transaction_lines')->count();
+
+        $this->withSession(['active_workspace' => 'BORROWER'])->actingAs($borrower)->post(route('custody.early-return', $custody), [
+            'proposed_return_at' => now()->addHours(2)->format('Y-m-d H:i:s'),
+            'quantities' => [$line->id => 1], 'reason' => 'Activity ended early.',
+        ])->assertSessionHasNoErrors();
+
+        $this->assertDatabaseHas('early_return_requests', ['custody_transaction_id' => $custody->id, 'status' => 'REQUESTED']);
+        $this->assertSame($transactionLinesBefore, DB::table('inventory_transaction_lines')->count());
+        $this->assertSame('ACTIVE', $custody->fresh()->status);
+    }
+
+    private function assertClassification(AccessClassification $classification, bool $mayBorrow, array $workspaces): void
+    {
+        $user = User::where('access_classification', $classification->value)->firstOrFail();
+        $this->assertSame($mayBorrow, $user->mayBorrow());
+        $this->assertSame($workspaces, $user->allowedWorkspaces());
+    }
+
+    private function approvedRequestWithItems(bool $linen, bool $offCampusBarricade, string $requestNo = 'BR-MIXED-001'): array
+    {
+        $borrower = User::where('access_classification', AccessClassification::BorrowerOnly->value)->firstOrFail();
+        $request = BorrowingRequest::create([
+            'request_no' => $requestNo, 'borrower_user_id' => $borrower->id, 'accountable_unit_id' => $borrower->organizational_unit_id,
+            'current_version_no' => 1, 'status' => RequestStatus::FinalApprovedAwaitingDownload, 'final_approved_at' => now(), 'download_deadline_at' => now()->addHours(4),
+        ]);
+        $version = $request->versions()->create([
+            'version_no' => 1, 'purpose_event' => 'Official form routing test', 'location' => 'CSPC Campus',
+            'needed_from' => now()->addDay(), 'return_due_at' => now()->addDays(2), 'created_by_user_id' => $borrower->id,
+            'off_campus' => $offCampusBarricade,
+        ]);
+        $items = [InventoryItem::where('laundry_required', false)->where('off_campus_allowed', false)->firstOrFail()];
+        if ($linen) {
+            $items[] = InventoryItem::where('laundry_required', true)->firstOrFail();
+        }
+        if ($offCampusBarricade) {
+            $items[] = InventoryItem::where('off_campus_allowed', true)->firstOrFail();
+        }
+        foreach ($items as $item) {
+            $requestItem = RequestItem::create([
+                'request_version_id' => $version->id, 'inventory_item_id' => $item->id,
+                'description_snapshot' => $item->unique_description, 'unit_snapshot' => $item->unit->unit_name,
+                'requested_quantity' => 2, 'approved_quantity' => 2,
+                'use_location' => $item->off_campus_allowed && $offCampusBarricade ? 'OFF_CAMPUS' : 'ON_CAMPUS',
+            ]);
+            Allocation::create([
+                'request_item_id' => $requestItem->id, 'period_start' => $version->needed_from, 'period_end' => $version->return_due_at,
+                'allocated_quantity' => 2, 'status' => 'ACTIVE', 'allocated_at' => now(),
+            ]);
+        }
+        $letter = app(DocumentService::class)->requestLetter($request->fresh(), true);
+
+        return [$request->fresh(), GeneratedDocument::findOrFail($letter->id)];
+    }
+}
