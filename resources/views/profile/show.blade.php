@@ -5,7 +5,6 @@
     <div>
         <p class="eyebrow">Personal account</p>
         <h1>Account Settings</h1>
-        <p>Review your account details, contact preferences, and e-signature.</p>
     </div>
 </section>
 
@@ -17,10 +16,12 @@
         <section class="account-settings-section" aria-labelledby="account-details-heading">
             <div class="section-heading">
                 <div><p class="eyebrow">Identity</p><h2 id="account-details-heading">Account Details</h2></div>
-                <x-status-badge :status="$user->access_classification->value" :label="$user->access_classification->label()" />
             </div>
 
             @if($isBorrower)
+                @if($missingBorrowerDepartments !== [])
+                    <p class="field-help">Borrower department configuration is incomplete. Missing: {{ implode(', ', $missingBorrowerDepartments) }}.</p>
+                @endif
                 <div class="form-columns">
                     <label>Borrower Number
                         <input name="employee_no" value="{{ old('employee_no', $user->employee_no) }}" required maxlength="80" autocomplete="off">
@@ -86,10 +87,10 @@
                 <select id="appearance-select" data-appearance-select>
                     <option value="light">Light</option>
                     <option value="dark">Dark</option>
-                    <option value="system">System</option>
+                    <option value="system">Default</option>
                 </select>
             </label>
-            <p class="meta" data-appearance-status aria-live="polite">System follows this device’s light or dark preference.</p>
+            <p class="meta" data-appearance-status aria-live="polite">Default follows this device’s light or dark preference.</p>
         </article>
 
         <article class="card signature-card" aria-labelledby="signature-heading">

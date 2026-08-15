@@ -59,6 +59,54 @@ class AccountSettingsRoleTest extends TestCase
         }
     }
 
+    public function test_borrower_account_settings_only_list_allowed_colleges_and_use_default_theme_label(): void
+    {
+        $borrower = $this->classificationUser(AccessClassification::BorrowerOnly);
+        $allowed = [
+            'College of Health and Sciences',
+            'College of Engineering and Architecture',
+            'College of Tourism, Hospitality and Business Management',
+            'College of Computer Studies',
+            'College of Arts and Sciences',
+            'College of Technological Developmental Education',
+        ];
+
+        foreach ($allowed as $index => $name) {
+            OrganizationalUnit::query()->firstOrCreate(
+                ['unit_name' => $name],
+                [
+                    'unit_code' => 'COLLEGE-'.($index + 1),
+                    'unit_type' => 'ACADEMIC_UNIT',
+                    'active' => true,
+                ],
+            );
+        }
+
+        OrganizationalUnit::query()->firstOrCreate(
+            ['unit_name' => 'Administrative Office'],
+            ['unit_code' => 'ADMIN-1', 'unit_type' => 'ADMINISTRATIVE_UNIT', 'active' => true],
+        );
+
+        $this->actingAs($borrower)->get(route('profile.show'))
+            ->assertOk()
+            ->assertSee('Default')
+            ->assertDontSee('System')
+            ->assertSee('Account Settings')
+            ->assertDontSee('Review your account details, contact preferences, and e-signature.')
+            ->assertDontSee('Borrower')
+            ->assertDontSee('Administrative Office')
+            ->assertSee('College of Health and Sciences')
+            ->assertSee('College of Engineering and Architecture')
+            ->assertSee('College of Tourism, Hospitality and Business Management')
+            ->assertSee('College of Computer Studies')
+            ->assertSee('College of Arts and Sciences')
+            ->assertSee('College of Technological Developmental Education')
+            ->assertDontSee('SPMU')
+            ->assertDontSee('GSU')
+            ->assertDontSee('VPAF')
+            ->assertDontSee('ICTU');
+    }
+
     public function test_borrower_can_update_only_the_explicit_borrower_identity_fields(): void
     {
         $borrower = $this->classificationUser(AccessClassification::BorrowerOnly);

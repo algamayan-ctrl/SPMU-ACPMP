@@ -11,23 +11,42 @@ use App\Services\ProtectedFileService;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Validation\Rule;
+use Illuminate\Validation\ValidationException;
 use Illuminate\View\View;
 
 class ProfileController extends Controller
 {
+    /** @var list<string> */
+    private const BORROWER_DEPARTMENT_NAMES = [
+        'College of Health and Sciences',
+        'College of Engineering and Architecture',
+        'College of Tourism, Hospitality and Business Management',
+        'College of Computer Studies',
+        'College of Arts and Sciences',
+        'College of Technological Developmental Education',
+    ];
+
     public function show(Request $request): View
     {
         $user = $request->user()->load('organizationalUnit', 'currentSignature.file');
+        $borrowerUnits = collect();
+        $missingBorrowerDepartments = [];
+
+        if ($user->access_classification === AccessClassification::BorrowerOnly) {
+            $borrowerUnits = OrganizationalUnit::query()
+                ->where('active', true)
+                ->whereIn('unit_name', self::BORROWER_DEPARTMENT_NAMES)
+                ->get();
+
+            $borrowerUnitNames = $borrowerUnits->pluck('unit_name')->all();
+            $missingBorrowerDepartments = array_values(array_diff(self::BORROWER_DEPARTMENT_NAMES, $borrowerUnitNames));
+            $borrowerUnits = $borrowerUnits->sortBy(fn (OrganizationalUnit $unit) => array_search($unit->unit_name, self::BORROWER_DEPARTMENT_NAMES, true))->values();
+        }
 
         return view('profile.show', [
             'user' => $user,
-            'borrowerUnits' => $user->access_classification === AccessClassification::BorrowerOnly
-                ? OrganizationalUnit::query()
-                    ->where('active', true)
-                    ->whereNotIn('unit_code', ['SPMU', 'GSU', 'VPAF', 'ICTU'])
-                    ->orderBy('unit_name')
-                    ->get()
-                : collect(),
+            'borrowerUnits' => $borrowerUnits,
+            'missingBorrowerDepartments' => $missingBorrowerDepartments,
         ]);
     }
 
@@ -44,14 +63,22 @@ class ProfileController extends Controller
             'sms_notifications' => ['nullable', 'boolean'],
         ];
         if ($isBorrower) {
+            $allowedBorrowerUnitIds = OrganizationalUnit::query()
+                ->where('active', true)
+                ->whereIn('unit_name', self::BORROWER_DEPARTMENT_NAMES)
+                ->pluck('id')
+                ->all();
+
+            if ($allowedBorrowerUnitIds === []) {
+                throw ValidationException::withMessages([
+                    'organizational_unit_id' => 'Borrower departments are not configured in the organization catalog: '.implode(', ', self::BORROWER_DEPARTMENT_NAMES).'.',
+                ]);
+            }
+
             $rules['employee_no'] = ['required', 'string', 'max:80', Rule::unique('users')->ignore($user->id)];
             $rules['organizational_unit_id'] = [
                 'required',
-                Rule::exists('organizational_units', 'id')->where(
-                    fn ($query) => $query
-                        ->where('active', true)
-                        ->whereNotIn('unit_code', ['SPMU', 'GSU', 'VPAF', 'ICTU']),
-                ),
+                Rule::in($allowedBorrowerUnitIds),
             ];
         }
 

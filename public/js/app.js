@@ -18,14 +18,16 @@
         ? (systemTheme.matches ? 'dark' : 'light')
         : preference;
 
+    const readablePreference = (preference) => preference === 'system' ? 'Default' : `${preference[0].toUpperCase()}${preference.slice(1)}`;
+
     const updateControls = (preference) => {
         selectors.forEach((select) => {
             select.value = preference;
             const status = select.closest('.appearance-settings-card')?.querySelector('[data-appearance-status]');
             if (status) {
                 status.textContent = preference === 'system'
-                    ? `System is currently using ${resolvedTheme(preference)} mode on this device.`
-                    : `${preference[0].toUpperCase()}${preference.slice(1)} mode is selected for this account on this browser.`;
+                    ? `Default theme is currently using ${resolvedTheme(preference)} mode on this device.`
+                    : `${readablePreference(preference)} mode is selected for this account on this browser.`;
             }
         });
     };
