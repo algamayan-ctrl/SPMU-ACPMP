@@ -7,6 +7,7 @@ use App\Services\CustodyService;
 use App\Services\ProtectedFileService;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Validation\Rule;
 use Illuminate\View\View;
 
@@ -25,14 +26,54 @@ class CustodyController extends Controller
     public function show(Request $request, CustodyTransaction $custody): View
     {
         $this->authorizeCustody($request, $custody);
-        $custody->load(['borrower', 'request.currentVersion', 'lines.allocation', 'lines.requestItem.inventoryItem.unit', 'returns.lines.laundryRecord', 'gatePass', 'earlyReturnRequests.lines']);
+
+        $relations = [
+            'borrower',
+            'request.currentVersion',
+            'lines.allocation',
+            'lines.requestItem.inventoryItem.unit',
+            'returns.lines.laundryRecord',
+            'gatePass',
+        ];
+
+        /*
+        * Prevent /custody/{id} from crashing when the Early Return
+        * database tables have not yet been created.
+        */
+        if (Schema::hasTable('early_return_requests')) {
+            if (Schema::hasTable('early_return_request_lines')) {
+                $relations[] = 'earlyReturnRequests.lines';
+            } else {
+                $relations[] = 'earlyReturnRequests';
+            }
+        } else {
+            /*
+            * custody.show.blade.php accesses:
+            * $custody->earlyReturnRequests
+            *
+            * Setting an empty relation prevents Laravel from trying
+            * to query a table that does not exist.
+            */
+            $custody->setRelation('earlyReturnRequests', collect());
+        }
+
+        $custody->load($relations);
 
         return view('custody.show', [
             'custody' => $custody,
-            'documents' => $custody->request->currentVersion->documents()->where(function ($query) use ($custody) {
-                $query->where('document_type', 'APPROVED_REQUEST_LETTER')
-                    ->orWhere(fn ($query) => $query->where('subject_type', CustodyTransaction::class)->where('subject_id', $custody->id));
-            })->with('evidence')->latest()->get(),
+
+            'documents' => $custody->request->currentVersion
+                ->documents()
+                ->where(function ($query) use ($custody) {
+                    $query->where('document_type', 'APPROVED_REQUEST_LETTER')
+                        ->orWhere(function ($query) use ($custody) {
+                            $query->where('subject_type', CustodyTransaction::class)
+                                ->where('subject_id', $custody->id);
+                        });
+                })
+                ->with('evidence')
+                ->latest()
+                ->get(),
         ]);
     }
 
