@@ -15,13 +15,13 @@ class ApprovalController extends Controller
 {
     public function index(Request $request): View
     {
-        $status = match (strtoupper((string) $request->session()->get('active_workspace'))) {
+        $workspace = strtoupper((string) ($request->attributes->get('delegated_workspace') ?: $request->user()->primaryWorkspace()));
+        $status = match ($workspace) {
             'SPMU' => RequestStatus::UnderSpmu,
             'GSU' => RequestStatus::UnderGsu,
             default => RequestStatus::UnderVpaf,
         };
 
-        $workspace = strtoupper((string) $request->session()->get('active_workspace'));
         $headClassification = match ($workspace) {
             'SPMU' => AccessClassification::SpmuHead,
             'GSU' => AccessClassification::GsuHead,

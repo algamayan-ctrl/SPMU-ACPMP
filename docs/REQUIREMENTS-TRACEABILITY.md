@@ -2,8 +2,8 @@
 
 | Approved requirement area | Primary implementation | Verification |
 |---|---|---|
-| Identity, eligibility, role/workspace matrix | AccessClassification, ICTU user administration, active-workspace middleware | AccessControlTest, RoleWorkspaceSmokeTest, RevisionControlsTest |
-| Heads cannot borrow; dual-workspace officers | Access classification policies and workspace selector | RevisionControlsTest |
+| Identity, eligibility, single-portal matrix | AccessClassification, ICTU user administration, active-portal middleware | AccessControlTest, RoleWorkspaceSmokeTest, RevisionControlsTest, SinglePortalRoleIsolationTest |
+| Only BORROWER_ONLY can borrow; operational accounts remain isolated | Access classification policies and automatic portal context | RevisionControlsTest, SinglePortalRoleIsolationTest |
 | Temporary delegated approver | TemporaryDelegation, own-account signatures, decision linkage and audit | RevisionControlsTest |
 | Profile and e-signature | ProfileController, protected storage, SignatureService snapshots | page smoke tests, workflow tests |
 | Real-time inventory/calendar | InventoryService, InventoryController, CalendarController | FoundationTest, workflow allocation assertions |

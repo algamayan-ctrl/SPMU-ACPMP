@@ -4,8 +4,8 @@ SPMU Asset Custody and Performance Monitoring Program is a Laravel 13 system imp
 
 ## Implemented system
 
-- Employee/faculty/staff accounts only, with ICTU-controlled access classifications and separate active workspaces.
-- Heads of SPMU, GSU, and VPAF are approvers and cannot borrow; SPMU Action Officers and ICTU maintainers can switch to Borrower when authorized.
+- Employee/faculty/staff accounts only, with ICTU-controlled access classifications and one assigned portal per normal account.
+- Only `BORROWER_ONLY` accounts may borrow; SPMU and ICTU personnel retain only their operational or administration portal.
 - Formal temporary delegated approver records are time-bound, office-specific, attributable, and never require sharing a Head's password.
 - Editable user profiles and protected e-signature upload/snapshots.
 - Date-aware inventory availability and an approved/active borrowing calendar.
@@ -45,7 +45,7 @@ Local demonstration accounts all use `SPMU-Demo-2026!`:
 | Role | Email |
 |---|---|
 | Borrower | `borrower@spmu.test` |
-| SPMU Action Officer / Borrower | `spmu@spmu.test` |
+| SPMU Action Officer | `spmu@spmu.test` |
 | SPMU Head | `spmu-head@spmu.test` |
 | GSU | `gsu@spmu.test` |
 | VPAF | `vpaf@spmu.test` |
@@ -63,7 +63,7 @@ See [RUN-IN-VSCODE.md](RUN-IN-VSCODE.md) for the manuscript-aligned Visual Studi
 .\tools\composer.cmd validate --strict --no-check-publish
 ```
 
-The tests cover access classifications, workspace isolation, formal delegation, request/approval/allocation/download/release, mixed conditional forms, final issued quantities, Early Return, overdue billing and settlement, theft evidence/RSLDDP, inventory data, and security boundaries.
+The tests cover access classifications, portal isolation, formal delegation, request/approval/allocation/download/release, mixed conditional forms, final issued quantities, Early Return, overdue billing and settlement, theft evidence/RSLDDP, inventory data, and security boundaries.
 
 ## Deadline processor
 
@@ -85,7 +85,7 @@ The operational design expressly leaves these configurable until client approval
 
 ## Source map
 
-- `app/Http/Controllers` — role workspaces and form actions.
+- `app/Http/Controllers` — role portals and form actions.
 - `app/Services` — workflow, inventory, documents, signatures, custody, notifications, files, and audit logic.
 - `app/Models` — business records and relationships.
 - `database/migrations` — full relational schema.

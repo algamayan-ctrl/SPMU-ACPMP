@@ -7,7 +7,7 @@ use Dompdf\Options;
 
 class SimplePdfService
 {
-    public function html(string $html): string
+    public function html(string $html, bool $pageNumbers = false): string
     {
         $options = new Options;
         $options->set('isRemoteEnabled', false);
@@ -16,6 +16,18 @@ class SimplePdfService
         $pdf->setPaper('A4');
         $pdf->loadHtml($html, 'UTF-8');
         $pdf->render();
+        if ($pageNumbers) {
+            $canvas = $pdf->getCanvas();
+            $font = $pdf->getFontMetrics()->getFont('Helvetica');
+            $canvas->page_text(
+                $canvas->get_width() - 103,
+                $canvas->get_height() - 28,
+                'Page {PAGE_NUM} of {PAGE_COUNT}',
+                $font,
+                7.5,
+                [0.32, 0.36, 0.4],
+            );
+        }
 
         return $pdf->output();
     }

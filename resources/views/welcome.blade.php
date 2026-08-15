@@ -2,8 +2,41 @@
 
 @section('content')
 <section class="hero">
-    <div><p class="eyebrow">Supply and Property Management Unit</p><h1>Borrow CSPC property with a clear, guided process.</h1><p class="lead">Check available items, submit a request, follow approvals, and complete release and return requirements in one secure system.</p><div class="actions"><a class="button primary" href="{{ route('login') }}">Sign in</a><a class="button secondary" href="#workflow">How it works</a></div></div>
-    <aside class="hero-panel"><span class="panel-label">Approval sequence</span><ol><li><strong>SPMU</strong><span>Inventory and process review</span></li><li><strong>GSU</strong><span>Operational review</span></li><li><strong>VPAF</strong><span>Final approval and allocation</span></li></ol></aside>
+    <div>
+        <p class="eyebrow">Supply and Property Management Unit</p>
+        <h1>Borrow CSPC property with a clear, guided process.</h1>
+        <p class="lead">Check available items, submit a request, track approval, receive your items, and return them through one secure system.</p>
+        <div class="actions">
+            <a class="button primary" href="{{ route('login') }}">Sign in</a>
+            <a class="button secondary" href="#how-it-works">View borrowing process</a>
+        </div>
+    </div>
 </section>
-<section id="workflow" class="section-block"><p class="eyebrow">Approved operational workflow</p><h2>Request → approval → download → release → return → closeout</h2><div class="feature-grid"><article><span>01</span><h3>Plan</h3><p>Check date-aware inventory and approved/active calendar commitments.</p></article><article><span>02</span><h3>Approve</h3><p>Capture exact version, action officer, signature, decision, and timestamps.</p></article><article><span>03</span><h3>Release</h3><p>Download the approved letter, view the protected slip, acknowledge, and physically release.</p></article><article><span>04</span><h3>Account</h3><p>Inspect returns and resolve laundry, evidence, incidents, penalties, or billing.</p></article></div></section>
+<section id="how-it-works" class="section-block">
+    <p class="eyebrow">How it works</p>
+    <h2>How borrowing works</h2>
+    <p class="section-intro">Four simple stages from request to return.</p>
+    <div class="feature-grid landing-workflow">
+        <article class="workflow-step" data-step="01">
+            <span class="step-number">01</span>
+            <h3>Request</h3>
+            <p>Check item availability and submit your borrowing request.</p>
+        </article>
+        <article class="workflow-step" data-step="02">
+            <span class="step-number">02</span>
+            <h3>Approval</h3>
+            <p>Track your request through SPMU, GSU, and VPAF review.</p>
+        </article>
+        <article class="workflow-step" data-step="03">
+            <span class="step-number">03</span>
+            <h3>Release</h3>
+            <p>Complete the required documents and receive the approved items.</p>
+        </article>
+        <article class="workflow-step" data-step="04">
+            <span class="step-number">04</span>
+            <h3>Return</h3>
+            <p>Return the items for inspection and complete any remaining requirements.</p>
+        </article>
+    </div>
+</section>
 @endsection

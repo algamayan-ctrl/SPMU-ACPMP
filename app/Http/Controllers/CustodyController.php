@@ -7,6 +7,7 @@ use App\Services\CustodyService;
 use App\Services\ProtectedFileService;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
+use Illuminate\Validation\Rule;
 use Illuminate\View\View;
 
 class CustodyController extends Controller
@@ -24,7 +25,7 @@ class CustodyController extends Controller
     public function show(Request $request, CustodyTransaction $custody): View
     {
         $this->authorizeCustody($request, $custody);
-        $custody->load(['borrower', 'request.currentVersion', 'lines.requestItem.inventoryItem.unit', 'returns.lines', 'gatePass', 'earlyReturnRequests.lines']);
+        $custody->load(['borrower', 'request.currentVersion', 'lines.allocation', 'lines.requestItem.inventoryItem.unit', 'returns.lines.laundryRecord', 'gatePass', 'earlyReturnRequests.lines']);
 
         return view('custody.show', [
             'custody' => $custody,
@@ -68,7 +69,9 @@ class CustodyController extends Controller
     {
         $data = $request->validate([
             'quantities' => ['required', 'array'],
+            'quantities.*' => ['nullable', 'numeric', 'min:0'],
             'conditions' => ['required', 'array'],
+            'conditions.*' => ['required', Rule::in(['FINE', 'DAMAGED', 'DESTROYED', 'MISSING', 'LOST', 'STOLEN'])],
             'police_blotter_references' => ['nullable', 'array'],
             'police_blotter_references.*' => ['nullable', 'string', 'max:255'],
             'evidence_files' => ['nullable', 'array'],

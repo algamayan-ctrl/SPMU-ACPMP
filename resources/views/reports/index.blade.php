@@ -1,7 +1,7 @@
 @extends('layouts.app', ['title' => 'Reports and Analytics'])
 @section('content')
 <section class="page-heading">
-    <div><p class="eyebrow">Descriptive analytics and KPI evidence</p><h1>Reports and performance monitoring</h1><p>Recorded operational facts only—no predictive analytics or AI approval decisions.</p></div>
+    <div><p class="eyebrow">Descriptive analytics and KPI evidence</p><h1>Reports and performance monitoring</h1></div>
     <div class="actions">@if(auth()->user()->hasRole('SPMU') || auth()->user()->hasRole('ICTU'))<a class="button secondary" href="{{ route('reports.audit') }}">Audit trail</a><a class="button secondary" href="{{ route('reports.notifications') }}">Notification delivery</a>@endif<button class="button primary" onclick="window.print()">Print report</button></div>
 </section>
 <section class="content-area">

@@ -5,11 +5,10 @@ namespace App\Http\Controllers;
 use App\Enums\AccessClassification;
 use App\Enums\AccountStatus;
 use App\Enums\EmploymentType;
-use App\Enums\UserRole;
 use App\Models\OrganizationalUnit;
-use App\Models\Role;
 use App\Models\User;
 use App\Services\AuditService;
+use App\Services\UserRoleAssignmentService;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -35,10 +34,10 @@ class UserAdministrationController extends Controller
         return $this->form($user->load('roles'));
     }
 
-    public function store(Request $request, AuditService $audit): RedirectResponse
+    public function store(Request $request, AuditService $audit, UserRoleAssignmentService $roleAssignments): RedirectResponse
     {
         $data = $this->validated($request);
-        $user = DB::transaction(function () use ($data, $audit): User {
+        $user = DB::transaction(function () use ($data, $audit, $roleAssignments, $request): User {
             $classification = AccessClassification::from($data['access_classification']);
             $user = User::query()->create([
                 'organizational_unit_id' => $data['organizational_unit_id'],
@@ -54,8 +53,8 @@ class UserAdministrationController extends Controller
                 'email_verified_at' => now(),
                 'password' => $data['password'],
             ]);
-            $this->syncClassificationRoles($user, $classification);
-            $audit->record('USER_ACCOUNT_CREATED', $user, after: ['access_classification' => $classification->value, 'workspaces' => $classification->workspaces(), 'employee_no' => $user->employee_no]);
+            $roleAssignments->synchronize($user, $classification, $request->user()->id);
+            $audit->record('USER_ACCOUNT_CREATED', $user, after: ['access_classification' => $classification->value, 'portal' => $classification->primaryWorkspace()->value, 'employee_no' => $user->employee_no]);
 
             return $user;
         });
@@ -63,10 +62,10 @@ class UserAdministrationController extends Controller
         return redirect()->route('administration.users.index')->with('status', "Account created for {$user->full_name}.");
     }
 
-    public function update(Request $request, User $user, AuditService $audit): RedirectResponse
+    public function update(Request $request, User $user, AuditService $audit, UserRoleAssignmentService $roleAssignments): RedirectResponse
     {
         $data = $this->validated($request, $user);
-        DB::transaction(function () use ($data, $user, $audit): void {
+        DB::transaction(function () use ($data, $user, $audit, $roleAssignments, $request): void {
             $before = $user->load('roles')->toArray();
             $classification = AccessClassification::from($data['access_classification']);
             $updates = collect($data)->except(['password'])->all();
@@ -74,11 +73,11 @@ class UserAdministrationController extends Controller
                 $updates['password'] = $data['password'];
             }
             $user->update($updates);
-            $this->syncClassificationRoles($user, $classification);
+            $roleAssignments->synchronize($user, $classification, $request->user()->id);
             $audit->record('USER_ACCOUNT_UPDATED', $user, before: $before, after: $user->fresh('roles')->toArray());
         });
 
-        return redirect()->route('administration.users.index')->with('status', 'Account and workspace classification updated with an audit record.');
+        return redirect()->route('administration.users.index')->with('status', 'Account and portal classification updated with an audit record.');
     }
 
     private function form(User $user): View
@@ -121,16 +120,5 @@ class UserAdministrationController extends Controller
         }
 
         return $data;
-    }
-
-    private function syncClassificationRoles(User $user, AccessClassification $classification): void
-    {
-        $requiredRoleIds = Role::query()->whereIn('role_code', array_map(fn (UserRole $role) => $role->value, $classification->roles()))->pluck('id');
-        DB::table('user_roles')->where('user_id', $user->id)->whereNull('revoked_at')->whereNotIn('role_id', $requiredRoleIds)->update(['revoked_at' => now()]);
-        foreach ($requiredRoleIds as $roleId) {
-            if (! DB::table('user_roles')->where('user_id', $user->id)->where('role_id', $roleId)->whereNull('revoked_at')->exists()) {
-                DB::table('user_roles')->insert(['user_id' => $user->id, 'role_id' => $roleId, 'assigned_by_user_id' => auth()->id(), 'assigned_at' => now(), 'revoked_at' => null]);
-            }
-        }
     }
 }

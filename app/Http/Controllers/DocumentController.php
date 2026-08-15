@@ -34,7 +34,7 @@ class DocumentController extends Controller
             || $user->hasRole(UserRole::Ictu),
             403,
         );
-        abort_if(in_array($document->status, ['INVALIDATED', 'EXPIRED'], true), 410, 'This controlled document is no longer valid.');
+        abort_if(in_array($document->status, ['SUPERSEDED', 'INVALIDATED', 'EXPIRED'], true), 410, 'This controlled document is historical and is no longer valid for operational use.');
 
         if ($document->document_type === 'APPROVED_REQUEST_LETTER' && $borrowingRequest && $borrowingRequest->borrower_user_id === $user->id) {
             $workflow->recordApprovedLetterDownload($borrowingRequest, $document, $user, $request->ip(), $request->userAgent());

@@ -9,22 +9,18 @@ use App\Models\InventoryItem;
 use App\Models\NotificationDelivery;
 use App\Models\TemporaryDelegation;
 use App\Models\User;
-use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\View\View;
 
 class DashboardController extends Controller
 {
-    public function __invoke(Request $request): View|RedirectResponse
+    public function __invoke(Request $request): View
     {
         $user = $request->user()->load('roles');
-        $workspace = strtoupper((string) $request->session()->get('active_workspace'));
-        $allowed = $user->allowedWorkspaces();
-        if (! in_array($workspace, $allowed, true)) {
-            if (count($allowed) !== 1) {
-                return redirect()->route('workspace.choose');
-            }
-            $workspace = $allowed[0];
+        $workspace = $user->primaryWorkspace();
+        abort_unless($workspace, 403, 'This account has no valid portal assignment.');
+
+        if ($request->session()->get('active_workspace') !== $workspace) {
             $request->session()->put('active_workspace', $workspace);
         }
 

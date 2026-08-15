@@ -133,10 +133,21 @@ class CustodyService
 
     public function receiveReturn(CustodyTransaction $custody, User $spmu, array $quantities, array $conditions, ?string $remarks, bool $early = false, array $policeBlotterReferences = [], array $evidenceFileIds = []): ReturnTransaction
     {
-        abort_unless($spmu->access_classification === AccessClassification::SpmuOfficer && $custody->borrower_user_id !== $spmu->id && in_array($custody->status, ['ACTIVE', 'PARTIALLY_RETURNED', 'OVERDUE', 'EARLY_RETURN', 'INCIDENT_OPEN'], true), 403);
+        abort_unless($spmu->access_classification === AccessClassification::SpmuOfficer && $custody->borrower_user_id !== $spmu->id, 403);
 
         return DB::transaction(function () use ($custody, $spmu, $quantities, $conditions, $remarks, $early, $policeBlotterReferences, $evidenceFileIds): ReturnTransaction {
-            $custody->loadMissing('lines.requestItem.inventoryItem', 'borrower');
+            $custody = CustodyTransaction::query()->lockForUpdate()->findOrFail($custody->id);
+            if (! in_array($custody->status, ['ACTIVE', 'PARTIALLY_RETURNED', 'OVERDUE', 'EARLY_RETURN', 'INCIDENT_OPEN'], true)) {
+                throw ValidationException::withMessages(['return' => 'This custody record is no longer open for a physical return.']);
+            }
+
+            $custody->setRelation('lines', $custody->lines()->with('requestItem.inventoryItem')->lockForUpdate()->get());
+            $custody->loadMissing('borrower');
+            $selectedLines = $custody->lines->filter(fn ($line) => (float) ($quantities[$line->id] ?? 0) > 0);
+            if ($selectedLines->isEmpty()) {
+                throw ValidationException::withMessages(['return' => 'Enter a returned quantity greater than zero for at least one item.']);
+            }
+
             $return = ReturnTransaction::query()->create([
                 'return_no' => 'RET-'.now()->format('YmdHis').'-'.$custody->id,
                 'custody_transaction_id' => $custody->id,
@@ -147,7 +158,6 @@ class CustodyService
                 'remarks' => $remarks,
             ]);
             $transactionId = $this->transactionHeader('PHYSICAL_RETURN', $return, $spmu, $remarks ?: 'Physical return and manual condition inspection.');
-            $hasIncident = false;
 
             foreach ($custody->lines as $line) {
                 $outstanding = max(0, (float) $line->actual_released_quantity - (float) $line->returned_quantity);
@@ -190,7 +200,6 @@ class CustodyService
                     $line->update(['item_status' => 'IN_LAUNDRY', 'compliance_status' => 'LAUNDRY_FORM_PENDING']);
                 } elseif ($condition !== 'FINE') {
                     $line->update(['item_status' => 'INCIDENT_PENDING']);
-                    $hasIncident = true;
                     $incident = Incident::query()->create([
                         'incident_no' => 'INC-'.now()->format('YmdHis').'-'.$returnLine->id,
                         'custody_transaction_id' => $custody->id,
@@ -232,9 +241,8 @@ class CustodyService
 
             $custody->refresh()->load('lines');
             $allReturned = $custody->lines->every(fn ($line) => (float) $line->returned_quantity >= (float) $line->actual_released_quantity);
-            $hasLaundry = LaundryRecord::query()->whereHas('returnLine.custodyLine', fn ($query) => $query->where('custody_transaction_id', $custody->id))->whereNot('status', 'VERIFIED')->exists();
             $overdue = OverdueCase::query()->where('custody_transaction_id', $custody->id)->first();
-            if ($overdue && $allReturned) {
+            if ($overdue && $allReturned && $overdue->status !== 'RESOLVED') {
                 $rate = SystemSetting::value('daily_overdue_tariff');
                 $days = max(1, (int) ceil($overdue->grace_expires_at->diffInMinutes(now()) / 1440));
                 $overdue->update([
@@ -243,8 +251,24 @@ class CustodyService
                     'status' => 'RETURNED_PENDING_SETTLEMENT',
                 ]);
             }
+            $hasOpenIncident = Incident::query()
+                ->where('custody_transaction_id', $custody->id)
+                ->whereNotIn('status', ['RESOLVED', 'CLOSED'])
+                ->exists();
+            $hasOpenLaundry = LaundryRecord::query()
+                ->whereHas('returnLine.custodyLine', fn ($query) => $query->where('custody_transaction_id', $custody->id))
+                ->whereNot('status', 'VERIFIED')
+                ->exists();
+            $hasOpenOverdue = OverdueCase::query()
+                ->where('custody_transaction_id', $custody->id)
+                ->whereNot('status', 'RESOLVED')
+                ->exists();
+            $hasOpenGatePass = $custody->gatePass()
+                ->whereNot('status', 'VERIFIED')
+                ->exists();
+            $hasOpenObligation = $hasOpenIncident || $hasOpenLaundry || $hasOpenOverdue || $hasOpenGatePass;
             $status = match (true) {
-                $allReturned && ($hasIncident || $hasLaundry || $overdue) => 'OBLIGATION_OPEN',
+                $allReturned && $hasOpenObligation => 'OBLIGATION_OPEN',
                 $allReturned => 'CLOSED',
                 $custody->status === 'OVERDUE' => 'OVERDUE',
                 default => 'PARTIALLY_RETURNED',

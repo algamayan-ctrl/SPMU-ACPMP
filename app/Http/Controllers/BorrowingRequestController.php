@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Enums\AccessClassification;
 use App\Enums\RequestStatus;
 use App\Models\BorrowingRequest;
 use App\Models\InventoryItem;
@@ -74,10 +75,11 @@ class BorrowingRequestController extends Controller
 
     public function show(Request $request, BorrowingRequest $borrowingRequest): View
     {
-        $this->authorizeRequest($request, $borrowingRequest);
+        $canDecide = $this->authorizeRequest($request, $borrowingRequest);
+        $approvalStage = $this->approvalStage($borrowingRequest->status);
         $borrowingRequest->load(['borrower.organizationalUnit', 'accountableUnit', 'currentVersion.items.inventoryItem.unit', 'currentVersion.approvalSteps.approver', 'currentVersion.documents.downloads', 'statusHistory.actor', 'custody.lines.requestItem.inventoryItem']);
 
-        return view('requests.show', compact('borrowingRequest'));
+        return view('requests.show', compact('borrowingRequest', 'canDecide', 'approvalStage'));
     }
 
     public function edit(Request $request, BorrowingRequest $borrowingRequest): View
@@ -120,6 +122,17 @@ class BorrowingRequestController extends Controller
         $workflow->submit($borrowingRequest, $request->user());
 
         return back()->with('status', 'Request signed and submitted to SPMU. Pending requests do not reserve inventory.');
+    }
+
+    public function recoverDraftDocument(Request $request, BorrowingRequest $borrowingRequest, DocumentService $documents): RedirectResponse
+    {
+        abort_unless($borrowingRequest->borrower_user_id === $request->user()->id, 403);
+
+        $result = $documents->recoverMissingDraftRequestLetter($borrowingRequest);
+
+        return back()->with('status', $result['generated']
+            ? 'The missing draft request-letter preview was regenerated successfully.'
+            : 'The draft request-letter preview is already available. No duplicate was created.');
     }
 
     public function cancel(Request $request, BorrowingRequest $borrowingRequest, RequestWorkflowService $workflow): RedirectResponse
@@ -207,13 +220,43 @@ class BorrowingRequestController extends Controller
         }
     }
 
-    private function authorizeRequest(Request $request, BorrowingRequest $borrowingRequest): void
+    private function authorizeRequest(Request $request, BorrowingRequest $borrowingRequest): bool
     {
         $user = $request->user();
         $workspace = strtoupper((string) $request->session()->get('active_workspace'));
         $assignedOfficer = in_array($workspace, ['GSU', 'VPAF'], true)
             && ($borrowingRequest->status->value === 'UNDER_'.$workspace
                 || $borrowingRequest->currentVersion?->approvalSteps()->where('stage_code', $workspace)->where('approver_user_id', $user->id)->exists());
-        abort_unless(($workspace === 'BORROWER' && $borrowingRequest->borrower_user_id === $user->id) || $workspace === 'SPMU' || $assignedOfficer, 403);
+        $canDecide = $this->canDecideApproval($request, $borrowingRequest);
+        abort_unless(($workspace === 'BORROWER' && $borrowingRequest->borrower_user_id === $user->id) || $workspace === 'SPMU' || $assignedOfficer || $canDecide, 403);
+
+        return $canDecide;
+    }
+
+    private function canDecideApproval(Request $request, BorrowingRequest $borrowingRequest): bool
+    {
+        $stage = $this->approvalStage($borrowingRequest->status);
+        $user = $request->user();
+        if (! $stage || $borrowingRequest->borrower_user_id === $user->id) {
+            return false;
+        }
+
+        $headClassification = match ($stage) {
+            'SPMU' => AccessClassification::SpmuHead,
+            'GSU' => AccessClassification::GsuHead,
+            default => AccessClassification::VpafHead,
+        };
+
+        return $user->access_classification === $headClassification || (bool) $user->activeDelegationFor($stage);
+    }
+
+    private function approvalStage(RequestStatus $status): ?string
+    {
+        return match ($status) {
+            RequestStatus::UnderSpmu => 'SPMU',
+            RequestStatus::UnderGsu => 'GSU',
+            RequestStatus::UnderVpaf => 'VPAF',
+            default => null,
+        };
     }
 }

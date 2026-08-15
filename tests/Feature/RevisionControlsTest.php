@@ -32,18 +32,22 @@ class RevisionControlsTest extends TestCase
 
     public function test_final_access_classifications_enforce_borrowing_and_workspace_rules(): void
     {
+        $this->assertClassification(AccessClassification::BorrowerOnly, true, ['BORROWER']);
         $this->assertClassification(AccessClassification::SpmuHead, false, ['SPMU']);
-        $this->assertClassification(AccessClassification::SpmuOfficer, true, ['BORROWER', 'SPMU']);
+        $this->assertClassification(AccessClassification::SpmuOfficer, false, ['SPMU']);
         $this->assertClassification(AccessClassification::GsuHead, false, ['GSU']);
         $this->assertClassification(AccessClassification::VpafHead, false, ['VPAF']);
-        $this->assertClassification(AccessClassification::IctuMaintainer, true, ['BORROWER', 'ICTU']);
+        $this->assertClassification(AccessClassification::IctuMaintainer, false, ['ICTU']);
     }
 
     public function test_formal_temporary_delegate_uses_own_account_and_is_attributed_to_the_decision(): void
     {
         $delegate = User::where('email', 'borrower@spmu.test')->firstOrFail();
         $gsuHead = User::where('access_classification', AccessClassification::GsuHead->value)->firstOrFail();
-        $borrower = User::where('access_classification', AccessClassification::SpmuOfficer->value)->firstOrFail();
+        $borrower = User::factory()->create([
+            'access_classification' => AccessClassification::BorrowerOnly,
+            'organizational_unit_id' => $gsuHead->organizational_unit_id,
+        ]);
         $ictu = User::where('access_classification', AccessClassification::IctuMaintainer->value)->firstOrFail();
         $delegate->update(['organizational_unit_id' => $gsuHead->organizational_unit_id]);
         $delegation = TemporaryDelegation::create([
@@ -63,7 +67,8 @@ class RevisionControlsTest extends TestCase
 
         $this->withSession(['active_workspace' => 'GSU'])->actingAs($delegate)
             ->post(route('approvals.decide', $request), ['decision' => 'APPROVED'])
-            ->assertSessionHasNoErrors();
+            ->assertSessionHasNoErrors()
+            ->assertSessionHas('active_workspace', 'BORROWER');
 
         $this->assertSame(RequestStatus::UnderVpaf, $request->fresh()->status);
         $this->assertDatabaseHas('approval_steps', [

@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Enums\AccessClassification;
 use App\Enums\AccountStatus;
 use App\Enums\UserRole;
 use App\Models\Role;
@@ -109,7 +110,14 @@ class AccessControlTest extends TestCase
 
     private function userWithRole(UserRole $roleCode): User
     {
-        $user = User::factory()->create();
+        $classification = match ($roleCode) {
+            UserRole::Borrower => AccessClassification::BorrowerOnly,
+            UserRole::Spmu => AccessClassification::SpmuOfficer,
+            UserRole::Gsu => AccessClassification::GsuHead,
+            UserRole::Vpaf => AccessClassification::VpafHead,
+            UserRole::Ictu => AccessClassification::IctuMaintainer,
+        };
+        $user = User::factory()->create(['access_classification' => $classification]);
         $role = Role::query()->where('role_code', $roleCode->value)->firstOrFail();
 
         $user->roles()->attach($role->id, ['assigned_at' => now()]);

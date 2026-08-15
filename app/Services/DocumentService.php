@@ -2,6 +2,8 @@
 
 namespace App\Services;
 
+use App\Enums\RequestStatus;
+use App\Enums\UserRole;
 use App\Models\BillingStatement;
 use App\Models\BorrowingRequest;
 use App\Models\CustodyTransaction;
@@ -10,6 +12,10 @@ use App\Models\Incident;
 use App\Models\RequestVersion;
 use App\Models\SignatureSnapshot;
 use App\Models\User;
+use Carbon\CarbonImmutable;
+use Carbon\CarbonInterface;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Validation\ValidationException;
 
 class DocumentService
 {
@@ -17,76 +23,117 @@ class DocumentService
 
     public function requestLetter(BorrowingRequest $request, bool $final = false): GeneratedDocument
     {
-        $request->loadMissing(['borrower.organizationalUnit', 'accountableUnit', 'currentVersion.items.inventoryItem.unit', 'currentVersion.borrowerSignature.file', 'currentVersion.approvalSteps.approver', 'currentVersion.approvalSteps.signatureSnapshot.file']);
+        $request->loadMissing('currentVersion');
         $version = $request->currentVersion;
         $type = $final ? 'APPROVED_REQUEST_LETTER' : 'REQUEST_LETTER';
         $status = $final ? 'FINAL' : 'DRAFT';
-        $lines = [
-            'CAMARINES SUR POLYTECHNIC COLLEGES',
-            'SUPPLY AND PROPERTY MANAGEMENT UNIT',
-            '',
-            $final ? 'FULLY APPROVED BORROWING REQUEST LETTER' : 'BORROWING REQUEST LETTER',
-            'Request No.: '.$request->request_no,
-            'Document status: '.$status,
-            'Version: '.$version->version_no,
-            'Generated: '.now()->format('F j, Y g:i A').' Asia/Manila',
-            '',
-            'Borrower: '.$request->borrower->full_name,
-            'Employee No.: '.$request->borrower->employee_no,
-            'Office/Department: '.$request->accountableUnit->unit_name,
-            'Purpose/Event: '.$version->purpose_event,
-            'Event details: '.($version->event_details ?: 'Not applicable'),
-            'Location: '.$version->location,
-            'Needed from: '.$version->needed_from->format('F j, Y g:i A'),
-            'Return deadline: '.$version->return_due_at->format('F j, Y g:i A'),
-            'Represented organization: '.($version->student_organization ?: 'Not applicable'),
-            'Program/Department and year: '.trim(($version->represented_program_department ?: 'Not applicable').' '.($version->represented_year_level ?: '')),
-            'Off-campus barricades: '.($version->items->contains('use_location', 'OFF_CAMPUS') ? 'Yes' : 'No'),
-            '',
-            'REQUESTED ITEMS',
-        ];
 
-        foreach ($version->items as $item) {
-            $lines[] = sprintf('%s | %s %s | %s', $item->description_snapshot, $item->requested_quantity + 0, $item->unit_snapshot, str_replace('_', '-', $item->use_location));
+        return $this->saveHtml(
+            $type,
+            $this->requestLetterHtml($request, $final),
+            $version,
+            $request::class,
+            $request->id,
+            $status,
+            $request->request_no.'-'.$type.'.pdf',
+            true,
+        );
+    }
+
+    public function requestLetterHtml(BorrowingRequest $request, bool $final = false, ?CarbonInterface $generatedAt = null): string
+    {
+        $request->loadMissing([
+            'borrower.organizationalUnit',
+            'accountableUnit',
+            'currentVersion.items.inventoryItem.unit',
+            'currentVersion.borrowerSignature.file',
+            'currentVersion.approvalSteps.approver',
+            'currentVersion.approvalSteps.signatureSnapshot.file',
+        ]);
+        $version = $request->currentVersion;
+        if (! $version) {
+            throw ValidationException::withMessages(['document' => 'A current request version is required to render the Borrowing Request Letter.']);
         }
 
-        $lines[] = '';
-        $lines[] = 'BORROWER CERTIFICATION AND E-SIGNATURE';
-        $lines[] = 'I certify that the information above is accurate and accept accountability for the requested properties.';
-        $lines[] = '/s/ '.$request->borrower->full_name.' | Signed: '.optional($version->signed_at)->format('F j, Y g:i A');
-        $lines[] = 'Signature snapshot: '.optional($version->borrowerSignature)->sha256;
+        $logoPath = resource_path('images/cspc-logo-print.jpg');
+        if (! is_file($logoPath)) {
+            throw ValidationException::withMessages(['document' => 'The institutional logo asset is unavailable.']);
+        }
 
-        if ($final) {
-            $lines[] = '';
-            $lines[] = 'DIGITAL APPROVALS';
-            foreach ($version->approvalSteps->sortBy('sequence_no') as $step) {
-                $lines[] = sprintf(
-                    '%s | /s/ %s | Received: %s | Approved: %s | Signature: %s',
-                    $step->stage_code->value,
-                    $step->approver?->full_name,
-                    optional($step->received_at)->format('M j, Y g:i A'),
-                    optional($step->decided_at)->format('M j, Y g:i A'),
-                    $step->signatureSnapshot?->sha256,
-                );
+        $approvals = $final
+            ? $version->approvalSteps->sortBy('sequence_no')->map(fn ($step): array => [
+                'stage' => $step->stage_code->value,
+                'role' => match ($step->stage_code->value) {
+                    'SPMU' => UserRole::Spmu->label(),
+                    'GSU' => UserRole::Gsu->label(),
+                    'VPAF' => UserRole::Vpaf->label(),
+                },
+                'delegated' => (bool) $step->temporary_delegation_id,
+                'name' => $step->approver?->full_name,
+                'received_at_formal' => $this->formalDateTime($step->received_at),
+                'decided_at_formal' => $this->formalDateTime($step->decided_at),
+                'signature' => $step->signatureSnapshot,
+                'signature_data_uri' => $step->signatureSnapshot
+                    ? $this->requestLetterSignatureDataUri($step->signatureSnapshot)
+                    : null,
+            ])->values()
+            : collect();
+
+        $generatedAt = ($generatedAt ?? now())->setTimezone('Asia/Manila');
+        $borrowerDesignation = trim((string) $request->borrower->designation);
+        if ($borrowerDesignation === '' || $borrowerDesignation === $request->borrower->access_classification?->label()) {
+            $borrowerDesignation = UserRole::Borrower->label();
+        }
+
+        return view('documents.borrowing-request-letter', [
+            'borrowingRequest' => $request,
+            'version' => $version,
+            'isFinal' => $final,
+            'documentStatus' => $final ? 'Fully Approved' : 'Draft',
+            'visibleGeneratedAt' => $this->formalDateTime($generatedAt),
+            'visibleNeededFrom' => $this->formalDateTime($version->needed_from),
+            'visibleReturnDueAt' => $this->formalDateTime($version->return_due_at),
+            'visibleSignedAt' => $this->formalDateTime($version->signed_at),
+            'visibleDownloadDeadline' => $this->formalDateTime($request->download_deadline_at),
+            'logoDataUri' => 'data:image/jpeg;base64,'.base64_encode((string) file_get_contents($logoPath)),
+            'borrowerDesignation' => $borrowerDesignation,
+            'borrowerSignatureDataUri' => $version->borrowerSignature
+                ? $this->requestLetterSignatureDataUri($version->borrowerSignature)
+                : null,
+            'approvals' => $approvals,
+        ])->render();
+    }
+
+    /** @return array{document: GeneratedDocument, generated: bool} */
+    public function recoverMissingDraftRequestLetter(BorrowingRequest $request): array
+    {
+        return DB::transaction(function () use ($request): array {
+            $lockedRequest = BorrowingRequest::query()->lockForUpdate()->findOrFail($request->id);
+            $lockedRequest->loadMissing('currentVersion');
+
+            if ($lockedRequest->status !== RequestStatus::Draft || ! $lockedRequest->currentVersion) {
+                throw ValidationException::withMessages([
+                    'document' => 'Only a draft request with a current version can recover a missing preview.',
+                ]);
             }
-            $lines[] = '';
-            $lines[] = 'This fully approved letter must be downloaded by '.$request->download_deadline_at?->format('F j, Y g:i A').' Asia/Manila to unlock the Borrower Slip.';
-        }
 
-        $signatures = [[
-            'label' => 'Accountable Borrower', 'snapshot' => $version->borrowerSignature,
-            'name' => $request->borrower->full_name, 'time' => $version->signed_at,
-        ]];
-        if ($final) {
-            foreach ($version->approvalSteps->sortBy('sequence_no') as $step) {
-                $signatures[] = [
-                    'label' => $step->stage_code->value.' Approval'.($step->temporary_delegation_id ? ' - Temporary Delegate' : ''),
-                    'snapshot' => $step->signatureSnapshot, 'name' => $step->approver?->full_name, 'time' => $step->decided_at,
-                ];
+            $existing = GeneratedDocument::query()
+                ->where('request_version_id', $lockedRequest->currentVersion->id)
+                ->where('document_type', 'REQUEST_LETTER')
+                ->where('status', 'DRAFT')
+                ->lockForUpdate()
+                ->latest('id')
+                ->first();
+
+            if ($existing) {
+                return ['document' => $existing, 'generated' => false];
             }
-        }
 
-        return $this->saveHtml($type, $this->officialHtml($final ? 'Fully Approved Borrowing Request Letter' : 'Borrowing Request Letter', $lines, $signatures), $version, $request::class, $request->id, $status, $request->request_no.'-'.$type.'.pdf');
+            return [
+                'document' => $this->requestLetter($lockedRequest, false),
+                'generated' => true,
+            ];
+        }, 3);
     }
 
     public function borrowerSlip(CustodyTransaction $custody): GeneratedDocument
@@ -377,9 +424,9 @@ class DocumentService
         ]);
     }
 
-    private function saveHtml(string $type, string $html, ?RequestVersion $version, string $subjectType, int $subjectId, string $status, string $filename): GeneratedDocument
+    private function saveHtml(string $type, string $html, ?RequestVersion $version, string $subjectType, int $subjectId, string $status, string $filename, bool $pageNumbers = false): GeneratedDocument
     {
-        $bytes = $this->pdf->html($html);
+        $bytes = $this->pdf->html($html, $pageNumbers);
         $file = $this->files->storeBytes($bytes, 'generated-documents', $filename, 'application/pdf', 'pdf', 'CONTROLLED_DOCUMENT');
 
         return GeneratedDocument::query()->create([
@@ -417,14 +464,47 @@ class DocumentService
 
     private function signatureImage(SignatureSnapshot $snapshot): string
     {
-        $snapshot->loadMissing('file');
-        if (! $snapshot->file) {
+        $data = $this->signatureDataUri($snapshot);
+        if (! $data) {
             return '<div class="signature-missing">Signature file unavailable</div>';
         }
-        $bytes = $this->files->bytes($snapshot->file);
-        $data = 'data:'.$snapshot->file->mime_type.';base64,'.base64_encode($bytes);
 
         return '<img class="signature-image" src="'.e($data).'" alt="E-signature of '.e($snapshot->signer_name).'">';
+    }
+
+    private function signatureDataUri(SignatureSnapshot $snapshot): ?string
+    {
+        $snapshot->loadMissing('file');
+        if (! $snapshot->file) {
+            return null;
+        }
+
+        return 'data:'.$snapshot->file->mime_type.';base64,'.base64_encode($this->files->bytes($snapshot->file));
+    }
+
+    private function requestLetterSignatureDataUri(SignatureSnapshot $snapshot): ?string
+    {
+        $snapshot->loadMissing('file');
+        $mimeType = strtolower((string) $snapshot->file?->mime_type);
+        $nativelyRenderable = in_array($mimeType, ['image/jpeg', 'image/jpg'], true);
+        $renderableWithGd = extension_loaded('gd') && in_array($mimeType, ['image/png', 'image/webp'], true);
+
+        if (! $snapshot->file || (! $nativelyRenderable && ! $renderableWithGd)) {
+            return null;
+        }
+
+        return $this->signatureDataUri($snapshot);
+    }
+
+    private function formalDateTime(?CarbonInterface $date): ?string
+    {
+        if (! $date) {
+            return null;
+        }
+
+        $localized = CarbonImmutable::instance($date)->setTimezone('Asia/Manila');
+
+        return str_replace([' am', ' pm'], [' a.m.', ' p.m.'], $localized->format('j F Y, g:i a'));
     }
 
     private function officialCss(): string

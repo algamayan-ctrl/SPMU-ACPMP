@@ -32,17 +32,23 @@ class LoginController extends Controller
         }
 
         $request->session()->regenerate();
-        $request->user()->forceFill(['last_login_at' => now()])->save();
+        $user = $request->user();
+        $workspace = $user->primaryWorkspace();
 
-        $workspaces = $request->user()->allowedWorkspaces();
-        $request->session()->forget('active_workspace');
-        if (count($workspaces) === 1) {
-            $request->session()->put('active_workspace', $workspaces[0]);
+        if (! $workspace) {
+            Auth::logout();
+            $request->session()->invalidate();
+            $request->session()->regenerateToken();
 
-            return redirect()->intended(route('dashboard'));
+            return back()->withErrors([
+                'email' => 'This account has no valid portal assignment. Contact ICTU.',
+            ])->onlyInput('email');
         }
 
-        return redirect()->route('workspace.choose');
+        $user->forceFill(['last_login_at' => now()])->save();
+        $request->session()->put('active_workspace', $workspace);
+
+        return redirect()->intended(route('dashboard'));
     }
 
     public function destroy(Request $request): RedirectResponse

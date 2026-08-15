@@ -99,13 +99,16 @@ class RequestWorkflowService
     public function decide(BorrowingRequest $request, User $approver, string $decision, ?string $remarks): void
     {
         $stage = $this->currentStage($request->status);
-        if (! $stage || strtoupper((string) session('active_workspace')) !== $stage->value) {
+        if (! $stage) {
+            abort(403);
+        }
+        $delegation = $this->delegationForApproval($approver, $stage);
+        if ($approver->primaryWorkspace() !== $stage->value && ! $delegation) {
             abort(403);
         }
         if ($request->borrower_user_id === $approver->id) {
             throw ValidationException::withMessages(['decision' => 'Self-approval is prohibited. Another authorized officer must act.']);
         }
-        $delegation = $this->delegationForApproval($approver, $stage);
         if (! $this->isHeadForStage($approver, $stage) && ! $delegation) {
             throw ValidationException::withMessages(['decision' => 'Only the office Head or a currently authorized delegated approver may complete this approval.']);
         }

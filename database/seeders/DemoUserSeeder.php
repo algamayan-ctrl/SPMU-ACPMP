@@ -6,10 +6,10 @@ use App\Enums\AccessClassification;
 use App\Enums\AccountStatus;
 use App\Enums\EmploymentType;
 use App\Models\OrganizationalUnit;
-use App\Models\Role;
 use App\Models\StoredFile;
 use App\Models\User;
 use App\Models\UserSignature;
+use App\Services\UserRoleAssignmentService;
 use Illuminate\Database\Seeder;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Storage;
@@ -18,14 +18,16 @@ class DemoUserSeeder extends Seeder
 {
     public const PASSWORD = 'SPMU-Demo-2026!';
 
-    public function run(): void
+    public function run(UserRoleAssignmentService $roleAssignments): void
     {
         if (! config('app.seed_demo_users')) {
             return;
         }
         foreach ($this->accounts() as [$classification, $email, $employeeNo, $name, $unitCode, $employment]) {
             $unit = OrganizationalUnit::query()->where('unit_code', $unitCode)->firstOrFail();
-            $user = User::query()->updateOrCreate(['email' => $email], [
+            $user = User::query()->firstOrNew(['email' => $email]);
+            $newAccount = ! $user->exists;
+            $user->fill([
                 'organizational_unit_id' => $unit->id,
                 'employee_no' => $employeeNo,
                 'full_name' => $name,
@@ -35,13 +37,13 @@ class DemoUserSeeder extends Seeder
                 'notification_preferences' => ['system' => true, 'email' => true, 'sms' => true],
                 'account_status' => AccountStatus::Active,
                 'access_classification' => $classification,
-                'email_verified_at' => now(),
-                'password' => Hash::make(self::PASSWORD),
             ]);
-            foreach ($classification->roles() as $roleCode) {
-                $role = Role::query()->where('role_code', $roleCode->value)->firstOrFail();
-                $user->roles()->syncWithoutDetaching([$role->id => ['assigned_at' => now()]]);
+            if ($newAccount) {
+                $user->email_verified_at = now();
+                $user->password = Hash::make(self::PASSWORD);
             }
+            $user->save();
+            $roleAssignments->synchronize($user, $classification);
             $this->signature($user, $classification->value);
         }
     }

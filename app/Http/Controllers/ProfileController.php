@@ -2,34 +2,62 @@
 
 namespace App\Http\Controllers;
 
+use App\Enums\AccessClassification;
+use App\Models\OrganizationalUnit;
 use App\Models\SystemSetting;
 use App\Models\UserSignature;
 use App\Services\AuditService;
 use App\Services\ProtectedFileService;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
+use Illuminate\Validation\Rule;
 use Illuminate\View\View;
 
 class ProfileController extends Controller
 {
     public function show(Request $request): View
     {
-        return view('profile.show', ['user' => $request->user()->load('organizationalUnit', 'currentSignature.file')]);
+        $user = $request->user()->load('organizationalUnit', 'currentSignature.file');
+
+        return view('profile.show', [
+            'user' => $user,
+            'borrowerUnits' => $user->access_classification === AccessClassification::BorrowerOnly
+                ? OrganizationalUnit::query()
+                    ->where('active', true)
+                    ->whereNotIn('unit_code', ['SPMU', 'GSU', 'VPAF', 'ICTU'])
+                    ->orderBy('unit_name')
+                    ->get()
+                : collect(),
+        ]);
     }
 
     public function update(Request $request, AuditService $audit): RedirectResponse
     {
         $user = $request->user();
-        $data = $request->validate([
+        $isBorrower = $user->access_classification === AccessClassification::BorrowerOnly;
+        $rules = [
             'full_name' => ['required', 'string', 'max:255'],
             'designation' => ['nullable', 'string', 'max:255'],
             'mobile_no' => ['nullable', 'string', 'max:30'],
             'system_notifications' => ['nullable', 'boolean'],
             'email_notifications' => ['nullable', 'boolean'],
             'sms_notifications' => ['nullable', 'boolean'],
-        ]);
-        $before = $user->only(['full_name', 'designation', 'mobile_no', 'notification_preferences']);
-        $user->update([
+        ];
+        if ($isBorrower) {
+            $rules['employee_no'] = ['required', 'string', 'max:80', Rule::unique('users')->ignore($user->id)];
+            $rules['organizational_unit_id'] = [
+                'required',
+                Rule::exists('organizational_units', 'id')->where(
+                    fn ($query) => $query
+                        ->where('active', true)
+                        ->whereNotIn('unit_code', ['SPMU', 'GSU', 'VPAF', 'ICTU']),
+                ),
+            ];
+        }
+
+        $data = $request->validate($rules);
+        $updatedFields = ['full_name', 'designation', 'mobile_no', 'notification_preferences'];
+        $updates = [
             'full_name' => $data['full_name'],
             'designation' => $data['designation'] ?? null,
             'mobile_no' => $data['mobile_no'] ?? null,
@@ -38,10 +66,18 @@ class ProfileController extends Controller
                 'email' => $request->boolean('email_notifications'),
                 'sms' => $request->boolean('sms_notifications'),
             ],
-        ]);
-        $audit->record('PROFILE_UPDATED', $user, before: $before, after: $user->only(array_keys($before)));
+        ];
+        if ($isBorrower) {
+            $updates['employee_no'] = $data['employee_no'];
+            $updates['organizational_unit_id'] = $data['organizational_unit_id'];
+            array_push($updatedFields, 'employee_no', 'organizational_unit_id');
+        }
 
-        return back()->with('status', 'Profile updated.');
+        $before = $user->only($updatedFields);
+        $user->update($updates);
+        $audit->record('PROFILE_UPDATED', $user, before: $before, after: $user->only($updatedFields));
+
+        return back()->with('status', 'Account settings updated.');
     }
 
     public function signature(Request $request, ProtectedFileService $files, AuditService $audit): RedirectResponse

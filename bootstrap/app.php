@@ -1,5 +1,6 @@
 <?php
 
+use App\Http\Middleware\EnsureAccountIsActive;
 use App\Http\Middleware\EnsureActiveWorkspace;
 use App\Http\Middleware\EnsureUserHasRole;
 use App\Http\Middleware\SecurityHeaders;
@@ -17,6 +18,7 @@ return Application::configure(basePath: dirname(__DIR__))
     ->withMiddleware(function (Middleware $middleware): void {
         $middleware->web(append: [SecurityHeaders::class]);
         $middleware->alias([
+            'active' => EnsureAccountIsActive::class,
             'role' => EnsureUserHasRole::class,
             'workspace' => EnsureActiveWorkspace::class,
         ]);

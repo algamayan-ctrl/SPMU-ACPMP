@@ -19,7 +19,6 @@ use App\Http\Controllers\ReportController;
 use App\Http\Controllers\SettingController;
 use App\Http\Controllers\TechnicalOperationController;
 use App\Http\Controllers\UserAdministrationController;
-use App\Http\Controllers\WorkspaceController;
 use Illuminate\Support\Facades\Route;
 
 Route::view('/', 'welcome')->name('home');
@@ -29,9 +28,7 @@ Route::middleware('guest')->group(function (): void {
     Route::post('/login', [LoginController::class, 'store'])->middleware('throttle:5,1')->name('login.store');
 });
 
-Route::middleware('auth')->group(function (): void {
-    Route::get('/workspace', [WorkspaceController::class, 'choose'])->name('workspace.choose');
-    Route::post('/workspace', [WorkspaceController::class, 'select'])->name('workspace.select');
+Route::middleware(['auth', 'active'])->group(function (): void {
     Route::get('/dashboard', DashboardController::class)->name('dashboard');
     Route::post('/logout', [LoginController::class, 'destroy'])->name('logout');
 
@@ -70,6 +67,7 @@ Route::middleware('auth')->group(function (): void {
     Route::middleware('workspace:BORROWER')->group(function (): void {
         Route::get('/requests/{borrowingRequest}/edit', [BorrowingRequestController::class, 'edit'])->name('requests.edit');
         Route::put('/requests/{borrowingRequest}', [BorrowingRequestController::class, 'update'])->name('requests.update');
+        Route::post('/requests/{borrowingRequest}/recover-draft-document', [BorrowingRequestController::class, 'recoverDraftDocument'])->name('requests.recover-draft-document');
         Route::post('/requests/{borrowingRequest}/submit', [BorrowingRequestController::class, 'submit'])->name('requests.submit');
     });
     Route::post('/requests/{borrowingRequest}/cancel', [BorrowingRequestController::class, 'cancel'])->middleware('workspace:BORROWER,SPMU')->name('requests.cancel');

@@ -7,8 +7,8 @@ use App\Enums\AccountStatus;
 use App\Enums\EmploymentType;
 use App\Enums\UserRole;
 use App\Models\OrganizationalUnit;
-use App\Models\Role;
 use App\Models\User;
+use App\Services\UserRoleAssignmentService;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
@@ -29,7 +29,7 @@ class CreateSystemUser extends Command
 
     protected $description = 'Create or update an authorized employee account and assign an active role';
 
-    public function handle(): int
+    public function handle(UserRoleAssignmentService $roleAssignments): int
     {
         $employmentType = EmploymentType::tryFrom(Str::upper((string) $this->option('employment-type')));
         $roleCode = UserRole::tryFrom(Str::upper((string) $this->option('role')));
@@ -59,9 +59,7 @@ class CreateSystemUser extends Command
         }
 
         $unit = OrganizationalUnit::query()->where('unit_code', $unitCode)->where('active', true)->first();
-        $role = Role::query()->where('role_code', $roleCode->value)->where('active', true)->first();
-
-        if (! $unit || ! $role) {
+        if (! $unit) {
             $this->error('The requested organizational unit or role is unavailable. Run the database seeders first.');
 
             return SymfonyCommand::FAILURE;
@@ -95,7 +93,7 @@ class CreateSystemUser extends Command
             return SymfonyCommand::INVALID;
         }
 
-        $user = DB::transaction(function () use ($email, $employeeNo, $employmentType, $name, $password, $classification, $unit): User {
+        $user = DB::transaction(function () use ($email, $employeeNo, $employmentType, $name, $password, $classification, $unit, $roleAssignments): User {
             $user = User::query()->updateOrCreate(
                 ['email' => $email],
                 [
@@ -114,11 +112,7 @@ class CreateSystemUser extends Command
                 ],
             );
 
-            DB::table('user_roles')->where('user_id', $user->id)->whereNull('revoked_at')->update(['revoked_at' => now()]);
-            foreach ($classification->roles() as $classificationRole) {
-                $roleId = Role::query()->where('role_code', $classificationRole->value)->where('active', true)->value('id');
-                DB::table('user_roles')->insert(['user_id' => $user->id, 'role_id' => $roleId, 'assigned_at' => now()]);
-            }
+            $roleAssignments->synchronize($user, $classification);
 
             return $user;
         });

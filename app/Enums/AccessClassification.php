@@ -14,12 +14,12 @@ enum AccessClassification: string
     public function label(): string
     {
         return match ($this) {
-            self::BorrowerOnly => 'Borrower only',
-            self::SpmuHead => 'SPMU Head - approver, not a borrower',
-            self::SpmuOfficer => 'SPMU Action Officer + Borrower',
-            self::GsuHead => 'GSU Head - approver, not a borrower',
-            self::VpafHead => 'VPAF Head - approver, not a borrower',
-            self::IctuMaintainer => 'ICTU Maintainer + Borrower',
+            self::BorrowerOnly => 'Borrower',
+            self::SpmuHead => 'SPMU Head',
+            self::SpmuOfficer => 'SPMU Action Officer',
+            self::GsuHead => 'GSU Head',
+            self::VpafHead => 'VPAF Head',
+            self::IctuMaintainer => 'ICTU Maintainer',
         };
     }
 
@@ -29,11 +29,16 @@ enum AccessClassification: string
         return match ($this) {
             self::BorrowerOnly => [UserRole::Borrower],
             self::SpmuHead => [UserRole::Spmu],
-            self::SpmuOfficer => [UserRole::Borrower, UserRole::Spmu],
+            self::SpmuOfficer => [UserRole::Spmu],
             self::GsuHead => [UserRole::Gsu],
             self::VpafHead => [UserRole::Vpaf],
-            self::IctuMaintainer => [UserRole::Borrower, UserRole::Ictu],
+            self::IctuMaintainer => [UserRole::Ictu],
         };
+    }
+
+    public function primaryWorkspace(): UserRole
+    {
+        return $this->roles()[0];
     }
 
     /** @return list<string> */
@@ -44,6 +49,6 @@ enum AccessClassification: string
 
     public function mayBorrow(): bool
     {
-        return in_array(UserRole::Borrower, $this->roles(), true);
+        return $this === self::BorrowerOnly;
     }
 }

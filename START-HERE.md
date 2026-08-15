@@ -45,11 +45,11 @@ The local demo password is `SPMU-Demo-2026!`.
 | Role | Email | Main work |
 |---|---|---|
 | Borrower | `borrower@spmu.test` | Inventory, calendar, requests, approved-letter download, slip acknowledgement |
-| SPMU Action Officer | `spmu@spmu.test` | Borrower/SPMU choice; inventory, final quantities, release/return, evidence, accountability |
+| SPMU Action Officer | `spmu@spmu.test` | SPMU operations; inventory, final quantities, release/return, evidence, accountability |
 | SPMU Head | `spmu-head@spmu.test` | First approval and required Head signatures; cannot borrow |
 | GSU Head | `gsu@spmu.test` | Second approval; cannot borrow |
 | VPAF Head | `vpaf@spmu.test` | Final approval/allocation and reports; cannot borrow |
-| ICTU Maintainer | `ictu@spmu.test` | Borrower/ICTU choice; accounts, classifications, delegations, audit, technical operations |
+| ICTU Maintainer | `ictu@spmu.test` | ICTU administration; accounts, classifications, delegations, audit, technical operations |
 
 Sign out before testing another role. These are local demonstration identities, not production accounts.
 

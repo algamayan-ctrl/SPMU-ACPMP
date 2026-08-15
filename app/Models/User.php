@@ -77,25 +77,19 @@ class User extends Authenticatable
     /** @return list<string> */
     public function allowedWorkspaces(): array
     {
-        if ($this->access_classification instanceof AccessClassification) {
-            $workspaces = $this->access_classification->workspaces();
-            $delegated = TemporaryDelegation::query()
-                ->where('delegate_user_id', $this->id)->where('status', 'ACTIVE')->whereNull('revoked_at')
-                ->where('effective_from', '<=', now())->where('effective_to', '>=', now())->pluck('office_role')->all();
+        $workspace = $this->primaryWorkspace();
 
-            return array_values(array_unique(array_merge($workspaces, $delegated)));
-        }
+        return $workspace ? [$workspace] : [];
+    }
 
-        return $this->roles()
-            ->wherePivotNull('revoked_at')
-            ->pluck('role_code')
-            ->map(fn ($role) => $role instanceof UserRole ? $role->value : (string) $role)
-            ->values()->all();
+    public function primaryWorkspace(): ?string
+    {
+        return $this->resolvedAccessClassification()?->primaryWorkspace()->value;
     }
 
     public function mayBorrow(): bool
     {
-        return $this->access_classification?->mayBorrow() ?? $this->hasRole(UserRole::Borrower);
+        return $this->resolvedAccessClassification()?->mayBorrow() ?? false;
     }
 
     public function hasWorkspace(string $workspace): bool
@@ -116,6 +110,23 @@ class User extends Authenticatable
             ->first();
     }
 
+    /** @return list<string> */
+    public function delegatedApprovalWorkspaces(): array
+    {
+        return TemporaryDelegation::query()
+            ->where('delegate_user_id', $this->id)
+            ->whereIn('office_role', [UserRole::Spmu->value, UserRole::Gsu->value, UserRole::Vpaf->value])
+            ->where('status', 'ACTIVE')
+            ->whereNull('revoked_at')
+            ->where('effective_from', '<=', now())
+            ->where('effective_to', '>=', now())
+            ->distinct()
+            ->pluck('office_role')
+            ->map(fn (string $workspace) => strtoupper($workspace))
+            ->values()
+            ->all();
+    }
+
     public function currentSignature(): HasOne
     {
         return $this->hasOne(UserSignature::class)->where('status', 'ACTIVE')->latestOfMany();
@@ -133,5 +144,10 @@ class User extends Authenticatable
             ->where(function ($query): void {
                 $query->whereNull('effective_to')->orWhere('effective_to', '>', now());
             });
+    }
+
+    private function resolvedAccessClassification(): ?AccessClassification
+    {
+        return AccessClassification::tryFrom(strtoupper((string) $this->getRawOriginal('access_classification')));
     }
 }

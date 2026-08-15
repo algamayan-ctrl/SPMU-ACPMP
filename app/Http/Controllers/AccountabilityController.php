@@ -26,7 +26,7 @@ class AccountabilityController extends Controller
 {
     public function index(Request $request): View
     {
-        $incidentQuery = Incident::with(['borrower', 'lines'])->latest('reported_at');
+        $incidentQuery = Incident::with(['borrower', 'custody.request', 'lines'])->latest('reported_at');
         $billingQuery = BillingStatement::with(['borrower', 'lines', 'payments', 'documents'])->latest('issued_at');
         $restrictionQuery = BorrowerRestriction::latest('effective_from');
         $overdueQuery = OverdueCase::with(['borrower', 'custody.lines', 'penalties'])->latest('overdue_started_at');
@@ -257,7 +257,8 @@ class AccountabilityController extends Controller
         $openIncident = Incident::query()->where('custody_transaction_id', $custodyId)->whereNotIn('status', ['RESOLVED', 'CLOSED'])->exists();
         $openLaundry = LaundryRecord::query()->whereHas('returnLine.custodyLine', fn ($query) => $query->where('custody_transaction_id', $custodyId))->whereNot('status', 'VERIFIED')->exists();
         $openOverdue = OverdueCase::query()->where('custody_transaction_id', $custodyId)->whereNot('status', 'RESOLVED')->exists();
-        if (! $openIncident && ! $openLaundry && ! $openOverdue) {
+        $openGatePass = $custody->gatePass()->whereNot('status', 'VERIFIED')->exists();
+        if (! $openIncident && ! $openLaundry && ! $openOverdue && ! $openGatePass) {
             $custody->update(['status' => 'CLOSED', 'closed_at' => now()]);
         }
     }

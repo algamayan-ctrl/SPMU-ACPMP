@@ -24,14 +24,14 @@ These steps use the manuscript-approved tools. Laragon, XAMPP, and WAMP are not 
 
 13. Sign in with one of the local demonstration accounts.
 
-| Workspace | Email | Password |
+| Portal | Email | Password |
 |---|---|---|
 | Borrower | `borrower@spmu.test` | `SPMU-Demo-2026!` |
-| SPMU Action Officer / Borrower | `spmu@spmu.test` | `SPMU-Demo-2026!` |
+| SPMU Action Officer | `spmu@spmu.test` | `SPMU-Demo-2026!` |
 | SPMU Head | `spmu-head@spmu.test` | `SPMU-Demo-2026!` |
 | GSU Head | `gsu@spmu.test` | `SPMU-Demo-2026!` |
 | VPAF Head | `vpaf@spmu.test` | `SPMU-Demo-2026!` |
-| ICTU Maintainer / Borrower | `ictu@spmu.test` | `SPMU-Demo-2026!` |
+| ICTU Maintainer | `ictu@spmu.test` | `SPMU-Demo-2026!` |
 
 14. To stop the local server, open its VS Code terminal and press **Ctrl+C**.
 

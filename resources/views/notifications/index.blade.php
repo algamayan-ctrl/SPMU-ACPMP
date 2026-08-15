@@ -1,5 +1,23 @@
 @extends('layouts.app', ['title' => 'Notifications'])
 @section('content')
-<section class="page-heading"><div><p class="eyebrow">In-system notices</p><h1>My notifications</h1><p>Approval, deadline, release, return, evidence, and accountability notices addressed to your account.</p></div><form method="post" action="{{ route('notifications.read-all') }}">@csrf<button class="button secondary">Mark all as read</button></form></section>
-<section class="content-area"><div class="timeline">@forelse($notifications as $notification)<article class="{{ $notification->read_at ? '' : 'unread' }}"><span>{{ optional($notification->attempted_at)->format('M d') }}</span><div><strong>{{ str_replace('_',' ',$notification->event->event_code) }}</strong><p>{{ $notification->event->payload_snapshot_json['message'] ?? $notification->provider_response }}</p><small>{{ optional($notification->attempted_at)->format('M j, Y g:i A') }} · {{ $notification->read_at ? 'Read' : 'Unread' }}</small>@if(!$notification->read_at)<form method="post" action="{{ route('notifications.read',$notification) }}" class="top-gap">@csrf<button class="button secondary small">Mark read</button></form>@endif</div></article>@empty<p class="empty-state">No notifications yet.</p>@endforelse</div><div class="top-gap">{{ $notifications->links() }}</div></section>
+<section class="page-heading"><div><p class="eyebrow">Account updates</p><h1>My notifications</h1><p>Review approval, deadline, release, return, evidence, and accountability updates addressed to you.</p></div><form method="post" action="{{ route('notifications.read-all') }}">@csrf<button class="button secondary">Mark all as read</button></form></section>
+
+<section class="content-area">
+    <div class="notification-list borrower-notifications">
+    @forelse($notifications as $notification)
+        @php
+            $eventLabel = str($notification->event->event_code)->replace('_',' ')->lower()->title();
+            $message = $notification->event->payload_snapshot_json['message'] ?? $notification->provider_response ?? 'A system update was recorded.';
+        @endphp
+        <article class="notification-item {{ $notification->read_at ? '' : 'unread' }}">
+            <div class="notification-date"><strong>{{ optional($notification->attempted_at)->format('d') }}</strong><span>{{ optional($notification->attempted_at)->format('M Y') }}</span></div>
+            <div class="notification-copy"><div class="notification-heading"><h2>{{ $eventLabel }}</h2>@if(!$notification->read_at)<x-status-badge status="UNREAD" label="New" />@endif</div><p>{{ $message }}</p><small>{{ optional($notification->attempted_at)->format('d M Y, g:i A') ?: 'Time not recorded' }}</small></div>
+            @if(!$notification->read_at)<form method="post" action="{{ route('notifications.read',$notification) }}">@csrf<button class="button ghost small">Mark as read</button></form>@endif
+        </article>
+    @empty
+        <div class="empty-state borrower-empty-state"><div><strong>No notifications yet.</strong><span>Updates addressed to your account will appear here.</span></div></div>
+    @endforelse
+    </div>
+    <div class="top-gap">{{ $notifications->links() }}</div>
+</section>
 @endsection

@@ -8,11 +8,22 @@ if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
 }
 
 if (-not (Test-Path -LiteralPath $destinationPath)) {
+    $rng = [Security.Cryptography.RandomNumberGenerator]::Create()
+
     $bytes = New-Object byte[] 32
-    [Security.Cryptography.RandomNumberGenerator]::Fill($bytes)
+    $rng.GetBytes($bytes)
     $appKey = 'base64:' + [Convert]::ToBase64String($bytes)
-    $databasePassword = [Convert]::ToBase64String([Security.Cryptography.RandomNumberGenerator]::GetBytes(24)).Replace('/','A').Replace('+','B').TrimEnd('=')
-    $rootPassword = [Convert]::ToBase64String([Security.Cryptography.RandomNumberGenerator]::GetBytes(28)).Replace('/','C').Replace('+','D').TrimEnd('=')
+
+    $dbBytes = New-Object byte[] 24
+    $rng.GetBytes($dbBytes)
+    $databasePassword = [Convert]::ToBase64String($dbBytes).Replace('/','A').Replace('+','B').TrimEnd('=')
+
+    $rootBytes = New-Object byte[] 28
+    $rng.GetBytes($rootBytes)
+    $rootPassword = [Convert]::ToBase64String($rootBytes).Replace('/','C').Replace('+','D').TrimEnd('=')
+
+    $rng.Dispose()
+
     $content = Get-Content -LiteralPath $templatePath -Raw
     $content = $content.Replace('base64:REPLACE_WITH_GENERATED_KEY', $appKey)
     $content = $content.Replace('REPLACE_WITH_GENERATED_DATABASE_PASSWORD', $databasePassword)

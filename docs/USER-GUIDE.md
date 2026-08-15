@@ -1,12 +1,12 @@
 # SPMU-ACPMP User Guide
 
-## Access and workspace rules
+## Access and portal rules
 
 - Only CSPC employees, faculty, and staff may hold accounts. A student or external person cannot be the accountable borrower.
-- SPMU Head, GSU Head, and VPAF Head are approval-only classifications and cannot borrow.
-- SPMU Action Officers can choose Borrower or SPMU. ICTU Head/designated maintainers can choose Borrower or ICTU. Other ICTU, GSU, and VPAF employees are Borrower only unless ICTU changes their classification.
+- Only `BORROWER_ONLY` accounts may borrow. SPMU Heads, SPMU Action Officers, GSU Heads, VPAF Heads, and ICTU Maintainers use only their assigned operational portal.
+- A formal temporary delegation grants only the applicable approval authority; it does not change the delegate's normal portal classification.
 - Nobody may approve, verify, release, or receive their own borrowing transaction.
-- A temporary delegate uses their own account and e-signature. ICTU records the written authority, office, period, reason, Head, and delegate before the temporary approval workspace becomes available.
+- A temporary delegate uses their own account and e-signature. ICTU records the written authority, office, period, reason, Head, and delegate before the limited approval authority becomes available.
 
 ## Borrower
 
@@ -27,7 +27,7 @@
 
 ## SPMU Action Officer
 
-1. Use the SPMU workspace for operational verification, inventory, release, return, forms, evidence, accountability, and reports.
+1. Use the SPMU Operations portal for verification, inventory, release, return, forms, evidence, accountability, and reports.
 2. Maintain descriptive inventory, quantities, units, linen flags, provisional values, and Barricade off-campus eligibility with an audit reason.
 3. Review routed requests but do not apply the SPMU Head approval signature.
 4. For release, encode final issued quantities, record reasons for reductions, physically count/prepare items, and unlock borrower acknowledgement.
@@ -51,7 +51,7 @@ The Vice President for Administration and Finance receives only requests approve
 
 ## ICTU
 
-ICTU registers CSPC accounts, assigns access classifications, records/revokes temporary delegations, controls deployment, scheduler, backups, monitoring, and technical audit evidence. ICTU cannot perform SPMU custody work or approval decisions unless a separate, valid business-office delegation explicitly grants that approval workspace.
+ICTU registers CSPC accounts, assigns access classifications, records/revokes temporary delegations, controls deployment, scheduler, backups, monitoring, and technical audit evidence. ICTU cannot perform SPMU custody work or approval decisions unless a separate, valid business-office delegation explicitly grants that limited approval authority.
 
 ## Status principles
 

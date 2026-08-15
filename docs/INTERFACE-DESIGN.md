@@ -8,16 +8,16 @@ SPMU-ACPMP remains based on the approved CSPC property-borrowing process: Borrow
 
 ## Shared usability rules
 
-1. Show only the tools authorized for the current workspace.
+1. Show only the tools authorized for the assigned portal.
 2. Use familiar words such as `Create new request`, `View details`, `Check availability`, and `Return deadline`.
 3. Keep the current role visible near the top of every page.
 4. Put the most common task first and avoid presenting every possible action at once.
 5. Use large form controls, clear labels, visible status tags, and explicit empty-state messages.
 6. Never rely on color alone; every status includes readable text.
 7. Keep advanced information available on detail pages instead of crowding dashboards.
-8. Preserve the same navigation order and page pattern throughout a workspace.
+8. Preserve the same navigation order and page pattern throughout a portal.
 
-## Workspace menus
+## Portal menus
 
 ### Borrower
 
@@ -66,11 +66,11 @@ SPMU-ACPMP remains based on the approved CSPC property-borrowing process: Borrow
 - Audit Trail
 - Delivery Records
 
-ICTU does not receive a borrowing calendar or approval queue in its maintenance workspace. An ICTU maintainer who is also allowed to borrow must switch to the separate Borrower workspace.
+ICTU does not receive a borrowing calendar or general approval queue in its administration portal. ICTU Maintainers cannot borrow; formal temporary delegation remains limited to the applicable approval action.
 
 ## Page pattern
 
-1. Compact top bar: page name, current workspace, notifications, profile, and sign out.
+1. Compact top bar: page name, assigned portal, notifications, profile, and sign out.
 2. Page heading: short category label, plain-language title, one supporting sentence, and at most a few relevant actions.
 3. Dashboard: three summary cards, one attention list, common-task shortcuts, and an upcoming-deadline preview when relevant.
 4. Record lists: focused filters, readable status labels, and a `View details` action.
