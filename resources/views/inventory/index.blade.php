@@ -8,7 +8,12 @@
 @endphp
 
 
+{{-- ========================================================= --}}
+{{-- PAGE HEADING                                              --}}
+{{-- ========================================================= --}}
+
 <section class="page-heading">
+
     <div>
         <p class="eyebrow">
             {{ $isBorrower ? 'Inventory availability' : 'Inventory monitoring' }}
@@ -20,11 +25,12 @@
 
         @if(!$isBorrower)
             <p>
-                Monitor current physical stock, scheduled allocations,
-                active custody, and availability for a selected borrowing period.
+                Monitor current physical stock, allocated quantities,
+                active custody, condition, and borrowing restrictions.
             </p>
         @endif
     </div>
+
 
     @if($isBorrower)
 
@@ -46,13 +52,15 @@
         </a>
 
     @endif
+
 </section>
 
 
 <section class="content-area">
 
+
     {{-- ===================================================== --}}
-    {{-- DATE AVAILABILITY FILTER                              --}}
+    {{-- AVAILABILITY DATE FILTER                              --}}
     {{-- ===================================================== --}}
 
     <form
@@ -71,6 +79,7 @@
             >
         </label>
 
+
         <label>
             Expected return date
 
@@ -80,6 +89,7 @@
                 value="{{ $to->format('Y-m-d\TH:i') }}"
             >
         </label>
+
 
         <button class="button primary">
             Check availability
@@ -98,20 +108,18 @@
             class="availability-window"
             role="note"
         >
-
             <strong>
-                Availability for
+                Selected borrowing period:
                 {{ $from->format('d M Y, g:i A') }}
                 to
                 {{ $to->format('d M Y, g:i A') }}
             </strong>
 
             <span>
-                Quantities are calculated for the complete selected
-                borrowing period and are rechecked when your request
-                is submitted and finally approved.
+                Physical available shows stock currently in SPMU custody.
+                Selected-period availability also considers reservations and active
+                borrowings that overlap the dates above.
             </span>
-
         </div>
 
 
@@ -121,13 +129,32 @@
 
                 <thead>
                     <tr>
-                        <th scope="col">Item</th>
-                        <th scope="col">Category and unit</th>
-                        <th scope="col">Available quantity</th>
-                        <th scope="col">Use conditions</th>
-                        <th scope="col">Condition</th>
+                        <th scope="col">
+                            Item
+                        </th>
+
+                        <th scope="col">
+                            Category and unit
+                        </th>
+
+                        <th scope="col">
+                            Availability
+                        </th>
+
+                        <th scope="col">
+                            Current status
+                        </th>
+
+                        <th scope="col">
+                            Use conditions
+                        </th>
+
+                        <th scope="col">
+                            Condition
+                        </th>
                     </tr>
                 </thead>
+
 
                 <tbody>
 
@@ -135,9 +162,48 @@
 
                         @php
                             $balance = $balances[$item->id];
+
+                            /*
+                             * Date-aware quantity available for the
+                             * borrowing period selected above.
+                             */
+                            $periodAvailable =
+                                (float) ($balance['available'] ?? 0);
+
+                            /*
+                             * Actual physical stock currently present
+                             * and serviceable at SPMU.
+                             */
+                            $currentAvailable =
+                                (float) (
+                                    $balance['current_available']
+                                    ?? $balance['available']
+                                    ?? 0
+                                );
+
+                            /*
+                             * Reserved but not yet physically released.
+                             */
+                            $allocated =
+                                (float) ($balance['allocated'] ?? 0);
+
+                            /*
+                             * Physically released and still outstanding.
+                             */
+                            $onCustody =
+                                (float) ($balance['borrowed'] ?? 0);
+
+                            $total =
+                                (float) ($balance['total'] ?? 0);
                         @endphp
 
+
                         <tr>
+
+
+                            {{-- ================================= --}}
+                            {{-- ITEM                              --}}
+                            {{-- ================================= --}}
 
                             <td data-label="Item">
 
@@ -146,13 +212,19 @@
                                 </strong>
 
                                 @if($item->specification)
+
                                     <small>
                                         {{ $item->specification }}
                                     </small>
+
                                 @endif
 
                             </td>
 
+
+                            {{-- ================================= --}}
+                            {{-- CATEGORY / UNIT                   --}}
+                            {{-- ================================= --}}
 
                             <td data-label="Category and unit">
 
@@ -165,37 +237,38 @@
                             </td>
 
 
-                            <td data-label="Available quantity">
+                            {{-- ================================= --}}
+                            {{-- SELECTED-DATE AVAILABILITY        --}}
+                            {{-- ================================= --}}
+
+                            <td data-label="Availability">
 
                                 @if(
                                     $item->borrowable
                                     && $item->condition_code === 'SERVICEABLE'
                                 )
 
-                                    <strong
-                                        class="availability-number"
-                                    >
-                                        {{ $balance['available'] + 0 }}
+                                    <strong class="availability-number">
+                                        {{ $periodAvailable + 0 }}
                                     </strong>
 
                                     <small>
-                                        of
-                                        {{ $balance['total'] + 0 }}
-                                        total
+                                        of {{ $total + 0 }} total
                                     </small>
 
-                                    @if((float) $balance['available'] > 0)
+
+                                    @if($periodAvailable > 0)
 
                                         <x-status-badge
                                             status="AVAILABLE"
-                                            label="Available for selected period"
+                                            label="Available for selected dates"
                                         />
 
                                     @else
 
                                         <x-status-badge
                                             status="UNAVAILABLE"
-                                            label="Unavailable for selected period"
+                                            label="Unavailable for selected dates"
                                         />
 
                                     @endif
@@ -212,6 +285,49 @@
                             </td>
 
 
+                            {{-- ================================= --}}
+                            {{-- CURRENT INVENTORY STATUS          --}}
+                            {{-- ================================= --}}
+
+                            <td data-label="Current status">
+
+                                <span class="quantity-pair">
+
+                                    <span>
+                                        Available now
+
+                                        <strong>
+                                            {{ $currentAvailable + 0 }}
+                                        </strong>
+                                    </span>
+
+
+                                    <span>
+                                        Allocated
+
+                                        <strong>
+                                            {{ $allocated + 0 }}
+                                        </strong>
+                                    </span>
+
+
+                                    <span>
+                                        On custody
+
+                                        <strong>
+                                            {{ $onCustody + 0 }}
+                                        </strong>
+                                    </span>
+
+                                </span>
+
+                            </td>
+
+
+                            {{-- ================================= --}}
+                            {{-- USE CONDITIONS                    --}}
+                            {{-- ================================= --}}
+
                             <td data-label="Use conditions">
 
                                 <span>
@@ -222,6 +338,7 @@
                                     }}
                                 </span>
 
+
                                 @if($item->laundry_required)
 
                                     <small>
@@ -229,6 +346,7 @@
                                     </small>
 
                                 @endif
+
 
                                 @if($item->provisional)
 
@@ -241,6 +359,10 @@
                             </td>
 
 
+                            {{-- ================================= --}}
+                            {{-- CONDITION                         --}}
+                            {{-- ================================= --}}
+
                             <td data-label="Condition">
 
                                 <x-status-badge
@@ -251,11 +373,13 @@
 
                         </tr>
 
+
                     @empty
 
                         <tr>
+
                             <td
-                                colspan="5"
+                                colspan="6"
                                 class="empty-state"
                             >
 
@@ -264,11 +388,12 @@
                                 </strong>
 
                                 <span>
-                                    Try again later or contact SPMU if
-                                    you need assistance.
+                                    Try again later or contact SPMU
+                                    if you need assistance.
                                 </span>
 
                             </td>
+
                         </tr>
 
                     @endforelse
@@ -281,7 +406,7 @@
 
 
     {{-- ===================================================== --}}
-    {{-- SPMU / OPERATIONAL VIEW                               --}}
+    {{-- SPMU / OPERATIONAL INVENTORY VIEW                     --}}
     {{-- ===================================================== --}}
 
     @else
@@ -292,33 +417,38 @@
         >
 
             <strong>
-                Selected borrowing period:
-                <x-date :value="$from" with-time />
-                to
-                <x-date :value="$to" with-time />
+                Current inventory status
             </strong>
 
             <span>
-                Physical available shows stock currently in SPMU custody.
-                Selected-period availability also considers reservations
-                and active borrowings that overlap the dates above.
+                Physical availability shows actual serviceable stock currently
+                available at SPMU. Allocated quantities are reserved but not yet
+                released, while On custody shows quantities physically issued
+                to borrowers.
             </span>
 
         </div>
 
 
-        <div class="table-wrap operational-table inventory-operations-table">
+        <div
+            class="
+                table-wrap
+                operational-table
+                inventory-operations-table
+            "
+        >
 
             <table>
 
                 <thead>
                     <tr>
+
                         <th scope="col">
                             Item
                         </th>
 
                         <th scope="col">
-                            Physical availability
+                            Availability
                         </th>
 
                         <th scope="col">
@@ -338,6 +468,7 @@
                                 Actions
                             </span>
                         </th>
+
                     </tr>
                 </thead>
 
@@ -349,31 +480,51 @@
                         @php
                             $balance = $balances[$item->id];
 
+                            /*
+                             * CURRENT physical availability.
+                             *
+                             * Allocated stock is still physically present,
+                             * therefore it is not deducted here.
+                             */
                             $currentAvailable =
                                 (float) (
                                     $balance['current_available']
                                     ?? $balance['available']
+                                    ?? 0
                                 );
-
-                            $periodAvailable =
-                                (float) $balance['available'];
-
-                            $allocated =
-                                (float) $balance['allocated'];
-
-                            $borrowed =
-                                (float) $balance['borrowed'];
-
-                            $laundry =
-                                (float) $balance['laundry'];
-
-                            $incident =
-                                (float) $balance['incident'];
 
 
                             /*
-                             * Main operational status reflects the
-                             * CURRENT physical inventory state.
+                             * Reserved but not yet released.
+                             */
+                            $allocated =
+                                (float) ($balance['allocated'] ?? 0);
+
+
+                            /*
+                             * Physically released and still outstanding.
+                             */
+                            $borrowed =
+                                (float) ($balance['borrowed'] ?? 0);
+
+
+                            /*
+                             * Other unavailable operational states.
+                             */
+                            $laundry =
+                                (float) ($balance['laundry'] ?? 0);
+
+                            $incident =
+                                (float) ($balance['incident'] ?? 0);
+
+                            $total =
+                                (float) ($balance['total'] ?? 0);
+
+
+                            /*
+                             * Main operational status reflects actual
+                             * physical inventory rather than a future
+                             * reservation window.
                              */
                             $displayStatus =
                                 !$item->borrowable
@@ -410,6 +561,7 @@
 
                         <tr>
 
+
                             {{-- ================================= --}}
                             {{-- ITEM                              --}}
                             {{-- ================================= --}}
@@ -420,6 +572,7 @@
                                     {{ $item->unique_description }}
                                 </strong>
 
+
                                 @if($item->specification)
 
                                     <small>
@@ -427,6 +580,7 @@
                                     </small>
 
                                 @endif
+
 
                                 <small>
                                     {{ $item->category->category_name }}
@@ -438,10 +592,10 @@
 
 
                             {{-- ================================= --}}
-                            {{-- CURRENT PHYSICAL AVAILABILITY     --}}
+                            {{-- PHYSICAL AVAILABILITY             --}}
                             {{-- ================================= --}}
 
-                            <td data-label="Physical availability">
+                            <td data-label="Availability">
 
                                 <strong
                                     class="
@@ -456,51 +610,54 @@
                                     {{ $currentAvailable + 0 }}
                                 </strong>
 
+
                                 <small>
-                                    of {{ $balance['total'] + 0 }} total
+                                    of {{ $total + 0 }} total
                                 </small>
+
 
                                 <x-status-badge
                                     :status="$displayStatus"
                                 />
 
-                                <small>
-                                    Selected period:
-                                    <strong>
-                                        {{ $periodAvailable + 0 }}
-                                    </strong>
-                                    available
-                                </small>
-
                             </td>
 
 
                             {{-- ================================= --}}
-                            {{-- COMMITMENTS                       --}}
+                            {{-- COMMITTED QUANTITIES              --}}
                             {{-- ================================= --}}
 
                             <td data-label="Committed quantities">
 
                                 <span class="quantity-pair">
 
+
+                                    {{-- Always visible --}}
                                     <span>
                                         Allocated
+
                                         <strong>
                                             {{ $allocated + 0 }}
                                         </strong>
                                     </span>
 
+
+                                    {{-- Always visible --}}
                                     <span>
                                         On custody
+
                                         <strong>
                                             {{ $borrowed + 0 }}
                                         </strong>
                                     </span>
 
+
+                                    {{-- Only show when applicable --}}
                                     @if($laundry > 0)
 
                                         <span>
                                             In laundry
+
                                             <strong>
                                                 {{ $laundry + 0 }}
                                             </strong>
@@ -508,10 +665,13 @@
 
                                     @endif
 
+
+                                    {{-- Only show when applicable --}}
                                     @if($incident > 0)
 
                                         <span>
                                             In accountability
+
                                             <strong>
                                                 {{ $incident + 0 }}
                                             </strong>
@@ -533,6 +693,7 @@
                                 <x-status-badge
                                     :status="$item->condition_code"
                                 />
+
 
                                 @if($incident > 0)
 
@@ -560,6 +721,7 @@
                                     }}
                                 </span>
 
+
                                 <small>
                                     {{
                                         $item->borrowable
@@ -568,6 +730,7 @@
                                     }}
                                 </small>
 
+
                                 @if($item->laundry_required)
 
                                     <small>
@@ -575,6 +738,7 @@
                                     </small>
 
                                 @endif
+
 
                                 @if($item->provisional)
 
@@ -596,15 +760,20 @@
                                 @if($isSpmu)
 
                                     <a
-                                        class="table-action ui-pressable"
+                                        class="
+                                            table-action
+                                            ui-pressable
+                                        "
                                         href="{{ route('inventory.edit', $item) }}"
                                     >
+
                                         <x-icon
                                             name="edit"
                                             size="16"
                                         />
 
                                         Edit item
+
                                     </a>
 
                                 @else
@@ -623,6 +792,7 @@
                     @empty
 
                         <tr>
+
                             <td
                                 colspan="6"
                                 class="empty-state"
@@ -637,6 +807,7 @@
                                 </span>
 
                             </td>
+
                         </tr>
 
                     @endforelse
