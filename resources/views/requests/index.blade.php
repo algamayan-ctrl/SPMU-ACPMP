@@ -15,21 +15,127 @@
 @if($isBorrower)
     <div class="request-list" aria-label="My borrowing requests">
         @forelse($requests as $request)
-            @php
+           @php
                 $version = $request->currentVersion;
-                $action = match($request->status) {
-                    App\Enums\RequestStatus::Draft => ['Continue editing', 'Complete the draft, review the request letter, then submit it.'],
-                    App\Enums\RequestStatus::ReturnedForRevision => ['Revise request', 'Review the recorded remarks and submit a corrected version.'],
-                    App\Enums\RequestStatus::FinalApprovedAwaitingDownload => ['Download approved letter', 'Open the request and download the approved letter before the deadline.'],
-                    App\Enums\RequestStatus::ApprovedReadyForRelease => ['View release status', 'Your approved request is ready for SPMU release processing.'],
-                    App\Enums\RequestStatus::UnderSpmu => ['View progress', 'Waiting for SPMU review. No action is required right now.'],
-                    App\Enums\RequestStatus::UnderGsu => ['View progress', 'Waiting for GSU review. No action is required right now.'],
-                    App\Enums\RequestStatus::UnderVpaf => ['View progress', 'Waiting for VPAF review. No action is required right now.'],
-                    App\Enums\RequestStatus::Rejected => ['View decision', 'Review the final decision and remarks.'],
-                    App\Enums\RequestStatus::Cancelled => ['View record', 'This request was cancelled.'],
-                    App\Enums\RequestStatus::Expired => ['View record', 'The approved-letter download period expired.'],
-                    default => ['View progress', 'Open the request for its latest status.'],
+                $custody = $request->custody;
+                $custodyStatus = $custody?->status;
+
+                $displayStatus = match($custodyStatus) {
+                    'ACTIVE' => 'ACTIVE',
+                    'PARTIALLY_RETURNED' => 'PARTIALLY_RETURNED',
+                    'OVERDUE' => 'OVERDUE',
+                    'EARLY_RETURN' => 'EARLY_RETURN',
+                    'INCIDENT_OPEN' => 'INCIDENT_OPEN',
+                    'OBLIGATION_OPEN' => 'OBLIGATION_OPEN',
+                    'CLOSED' => 'CLOSED',
+                    default => $request->status,
                 };
+
+                $displayStatusLabel = match($custodyStatus) {
+                    'ACTIVE' => 'Released',
+                    'PARTIALLY_RETURNED' => 'Partially Returned',
+                    'OVERDUE' => 'Overdue',
+                    'EARLY_RETURN' => 'Early Return',
+                    'INCIDENT_OPEN' => 'Incident Open',
+                    'OBLIGATION_OPEN' => 'Obligation Open',
+                    'CLOSED' => 'Returned',
+                    default => null,
+                };
+
+                $action = match($custodyStatus) {
+                    'ACTIVE' => [
+                        'Open borrowing',
+                        'The approved items have been physically released and are currently under your custody.'
+                    ],
+
+                    'PARTIALLY_RETURNED' => [
+                        'Open borrowing',
+                        'Some released items have already been returned. Review the remaining outstanding quantities.'
+                    ],
+
+                    'OVERDUE' => [
+                        'Review overdue borrowing',
+                        'The return deadline has passed. Open the borrowing record for the current return and accountability status.'
+                    ],
+
+                    'EARLY_RETURN' => [
+                        'Open borrowing',
+                        'An Early Return process is currently recorded for this borrowing.'
+                    ],
+
+                    'INCIDENT_OPEN' => [
+                        'Review incident',
+                        'An incident remains open for this borrowing.'
+                    ],
+
+                    'OBLIGATION_OPEN' => [
+                        'Review obligations',
+                        'The items have been returned, but an outstanding obligation still requires resolution.'
+                    ],
+
+                    'CLOSED' => [
+                        'View completed borrowing',
+                        'This borrowing has been completed and the custody record is closed.'
+                    ],
+
+                    default => match($request->status) {
+                        App\Enums\RequestStatus::Draft => [
+                            'Continue editing',
+                            'Complete the draft, review the request letter, then submit it.'
+                        ],
+
+                        App\Enums\RequestStatus::ReturnedForRevision => [
+                            'Revise request',
+                            'Review the recorded remarks and submit a corrected version.'
+                        ],
+
+                        App\Enums\RequestStatus::FinalApprovedAwaitingDownload => [
+                            'Download approved letter',
+                            'Open the request and download the approved letter before the deadline.'
+                        ],
+
+                        App\Enums\RequestStatus::ApprovedReadyForRelease => [
+                            'View release status',
+                            'Your approved request is ready for SPMU release processing.'
+                        ],
+
+                        App\Enums\RequestStatus::UnderSpmu => [
+                            'View progress',
+                            'Waiting for SPMU review. No action is required right now.'
+                        ],
+
+                        App\Enums\RequestStatus::UnderGsu => [
+                            'View progress',
+                            'Waiting for GSU review. No action is required right now.'
+                        ],
+
+                        App\Enums\RequestStatus::UnderVpaf => [
+                            'View progress',
+                            'Waiting for VPAF review. No action is required right now.'
+                        ],
+
+                        App\Enums\RequestStatus::Rejected => [
+                            'View decision',
+                            'Review the final decision and remarks.'
+                        ],
+
+                        App\Enums\RequestStatus::Cancelled => [
+                            'View record',
+                            'This request was cancelled.'
+                        ],
+
+                        App\Enums\RequestStatus::Expired => [
+                            'View record',
+                            'The approved-letter download period expired.'
+                        ],
+
+                        default => [
+                            'View progress',
+                            'Open the request for its latest status.'
+                        ],
+                    },
+                };
+
                 $requiresAction = in_array($request->status, [
                     App\Enums\RequestStatus::Draft,
                     App\Enums\RequestStatus::ReturnedForRevision,
@@ -39,7 +145,10 @@
             <a class="request-list-item ui-pressable {{ $requiresAction ? 'is-action-required' : '' }}" href="{{ route('requests.show', $request) }}">
                 <span class="request-list-main">
                     <span class="request-list-purpose">{{ $version?->purpose_event ?: 'Borrowing request' }}</span>
-                    <span class="request-list-heading"><span class="record-reference">{{ $request->request_no }}</span><x-status-badge :status="$request->status" /></span>
+                    <span class="request-list-heading"><span class="record-reference">{{ $request->request_no }}</span><x-status-badge
+                        :status="$displayStatus"
+                        :label="$displayStatusLabel"/>
+                    </span>
                     <small>{{ $action[1] }}</small>
                 </span>
                 <span class="request-list-meta">
@@ -58,7 +167,75 @@
     </div>
 @else
     <div class="table-wrap"><table><thead><tr><th>Request</th><th>Borrower</th><th>Event and period</th><th>Items</th><th>Status</th><th></th></tr></thead><tbody>
-    @forelse($requests as $request)<tr><td><strong>{{ $request->request_no }}</strong><small>Version {{ $request->current_version_no }}</small></td><td>{{ $request->borrower->full_name }}</td><td>{{ $request->currentVersion?->purpose_event }}<small>{{ optional($request->currentVersion?->needed_from)->format('d M Y, g:i A') }} to {{ optional($request->currentVersion?->return_due_at)->format('d M Y, g:i A') }}</small></td><td>{{ $request->currentVersion?->items->count() ?? 0 }} item type(s)</td><td><x-status-badge :status="$request->status" /></td><td><a class="table-action" href="{{ route('requests.show', $request) }}">View details</a></td></tr>@empty<tr><td colspan="6" class="empty-state">No borrowing requests found.</td></tr>@endforelse
+    @forelse($requests as $request)
+    <tr>
+        <td>
+            <strong>{{ $request->request_no }}</strong>
+            <small>Version {{ $request->current_version_no }}</small>
+        </td>
+
+        <td>{{ $request->borrower->full_name }}</td>
+
+        <td>
+            {{ $request->currentVersion?->purpose_event }}
+            <small>
+                {{ optional($request->currentVersion?->needed_from)->format('d M Y, g:i A') }}
+                to
+                {{ optional($request->currentVersion?->return_due_at)->format('d M Y, g:i A') }}
+            </small>
+        </td>
+
+        <td>
+            {{ $request->currentVersion?->items->count() ?? 0 }} item type(s)
+        </td>
+
+        <td>
+            @php
+                $custodyStatus = $request->custody?->status;
+
+                $tableDisplayStatus = match($custodyStatus) {
+                    'ACTIVE' => 'ACTIVE',
+                    'PARTIALLY_RETURNED' => 'PARTIALLY_RETURNED',
+                    'OVERDUE' => 'OVERDUE',
+                    'EARLY_RETURN' => 'EARLY_RETURN',
+                    'INCIDENT_OPEN' => 'INCIDENT_OPEN',
+                    'OBLIGATION_OPEN' => 'OBLIGATION_OPEN',
+                    'CLOSED' => 'CLOSED',
+                    default => $request->status,
+                };
+
+                $tableDisplayLabel = match($custodyStatus) {
+                    'ACTIVE' => 'Released',
+                    'PARTIALLY_RETURNED' => 'Partially Returned',
+                    'OVERDUE' => 'Overdue',
+                    'EARLY_RETURN' => 'Early Return',
+                    'INCIDENT_OPEN' => 'Incident Open',
+                    'OBLIGATION_OPEN' => 'Obligation Open',
+                    'CLOSED' => 'Returned',
+                    default => null,
+                };
+            @endphp
+
+            <x-status-badge
+                :status="$tableDisplayStatus"
+                :label="$tableDisplayLabel"
+            />
+        </td>
+
+        <td>
+            <a class="table-action" href="{{ route('requests.show', $request) }}">
+                View details
+            </a>
+        </td>
+    </tr>
+
+    @empty
+    <tr>
+        <td colspan="6" class="empty-state">
+            No borrowing requests found.
+        </td>
+    </tr>
+    @endforelse
     </tbody></table></div>
 @endif
 </section>
