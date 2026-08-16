@@ -9,7 +9,7 @@
         (() => {
             const root = document.documentElement;
             const storageKey = root.dataset.themeStorageKey;
-            let preference = 'system';
+            let preference = 'light';
 
             if (storageKey) {
                 try {
@@ -18,9 +18,7 @@
                 } catch (_) {}
             }
 
-            const resolved = preference === 'system'
-                ? (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
-                : preference;
+            const resolved = preference === 'dark' ? 'dark' : 'light';
 
             root.dataset.theme = resolved;
             root.dataset.themePreference = preference;
@@ -126,7 +124,7 @@
 @else
     <header class="site-header public-header">
         <a class="brand" href="{{ route('home') }}" aria-label="SPMU-ACPMP home"><span class="brand-mark">SA</span><span><strong>SPMU-ACPMP</strong><small>Asset custody and monitoring</small></span></a>
-        <nav><a href="{{ route('login') }}">Sign in</a></nav>
+        <nav><a href="#how-it-works">Learn more</a><a href="{{ route('login') }}">Sign in</a></nav>
     </header>
     <main id="main-content" tabindex="-1">
         @if(session('status'))<div class="notice success" role="status"><x-icon name="success" /><div>{{ session('status') }}</div></div>@endif

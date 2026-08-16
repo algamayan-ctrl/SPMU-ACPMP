@@ -29,24 +29,16 @@ class ProfileController extends Controller
     public function show(Request $request): View
     {
         $user = $request->user()->load('organizationalUnit', 'currentSignature.file');
-        $borrowerUnits = collect();
-        $missingBorrowerDepartments = [];
-
-        if ($user->access_classification === AccessClassification::BorrowerOnly) {
-            $borrowerUnits = OrganizationalUnit::query()
-                ->where('active', true)
-                ->whereIn('unit_name', self::BORROWER_DEPARTMENT_NAMES)
-                ->get();
-
-            $borrowerUnitNames = $borrowerUnits->pluck('unit_name')->all();
-            $missingBorrowerDepartments = array_values(array_diff(self::BORROWER_DEPARTMENT_NAMES, $borrowerUnitNames));
-            $borrowerUnits = $borrowerUnits->sortBy(fn (OrganizationalUnit $unit) => array_search($unit->unit_name, self::BORROWER_DEPARTMENT_NAMES, true))->values();
-        }
 
         return view('profile.show', [
             'user' => $user,
-            'borrowerUnits' => $borrowerUnits,
-            'missingBorrowerDepartments' => $missingBorrowerDepartments,
+            'borrowerUnits' => $user->access_classification === AccessClassification::BorrowerOnly
+                ? OrganizationalUnit::query()
+                    ->where('active', true)
+                    ->whereIn('unit_name', self::BORROWER_DEPARTMENT_NAMES)
+                    ->orderByRaw('FIELD(unit_name, ?) ASC', [implode(',', self::BORROWER_DEPARTMENT_NAMES)])
+                    ->get()
+                : collect(),
         ]);
     }
 
@@ -68,12 +60,6 @@ class ProfileController extends Controller
                 ->whereIn('unit_name', self::BORROWER_DEPARTMENT_NAMES)
                 ->pluck('id')
                 ->all();
-
-            if ($allowedBorrowerUnitIds === []) {
-                throw ValidationException::withMessages([
-                    'organizational_unit_id' => 'Borrower departments are not configured in the organization catalog: '.implode(', ', self::BORROWER_DEPARTMENT_NAMES).'.',
-                ]);
-            }
 
             $rules['employee_no'] = ['required', 'string', 'max:80', Rule::unique('users')->ignore($user->id)];
             $rules['organizational_unit_id'] = [

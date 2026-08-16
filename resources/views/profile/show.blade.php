@@ -19,9 +19,6 @@
             </div>
 
             @if($isBorrower)
-                @if($missingBorrowerDepartments !== [])
-                    <p class="field-help">Borrower department configuration is incomplete. Missing: {{ implode(', ', $missingBorrowerDepartments) }}.</p>
-                @endif
                 <div class="form-columns">
                     <label>Borrower Number
                         <input name="employee_no" value="{{ old('employee_no', $user->employee_no) }}" required maxlength="80" autocomplete="off">

@@ -11,12 +11,10 @@
 
     const storedPreference = () => {
         const current = root.dataset.themePreference;
-        return allowedPreferences.includes(current) ? current : 'system';
+        return allowedPreferences.includes(current) ? current : 'light';
     };
 
-    const resolvedTheme = (preference) => preference === 'system'
-        ? (systemTheme.matches ? 'dark' : 'light')
-        : preference;
+    const resolvedTheme = (preference) => preference === 'dark' ? 'dark' : 'light';
 
     const readablePreference = (preference) => preference === 'system' ? 'Default' : `${preference[0].toUpperCase()}${preference.slice(1)}`;
 
@@ -26,7 +24,7 @@
             const status = select.closest('.appearance-settings-card')?.querySelector('[data-appearance-status]');
             if (status) {
                 status.textContent = preference === 'system'
-                    ? `Default theme is currently using ${resolvedTheme(preference)} mode on this device.`
+                    ? 'Default theme is light.'
                     : `${readablePreference(preference)} mode is selected for this account on this browser.`;
             }
         });
@@ -56,9 +54,7 @@
     });
 
     systemTheme.addEventListener('change', () => {
-        if (storedPreference() === 'system') {
-            applyPreference('system');
-        }
+        // Default is now always light, so no need to reapply on system theme change
     });
 
     applyPreference(storedPreference());

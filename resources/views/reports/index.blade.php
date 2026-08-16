@@ -1,16 +1,219 @@
-@extends('layouts.app', ['title' => 'Reports and Analytics'])
+@extends('layouts.app', ['title' => 'Reports & Analytics'])
 @section('content')
+@php
+    $periodLabel = $from->isSameDay($to) ? $from->format('d M Y') : $from->format('d M Y').' – '.$to->format('d M Y');
+    $requestMax = $requestStatuses->isNotEmpty() ? max($requestStatuses->max() ?? 0, 1) : 1;
+    $custodyMax = $custodyStatuses->isNotEmpty() ? max($custodyStatuses->max() ?? 0, 1) : 1;
+    $utilizationMax = $topItems->isNotEmpty() ? max($topItems->max('used_quantity') ?? 0, 1) : 1;
+    $approvalHours = (int) floor($averageApprovalSeconds / 3600);
+    $approvalMinutes = (int) floor(($averageApprovalSeconds % 3600) / 60);
+    $approvalLabel = $averageApprovalSeconds ? ($approvalHours.'h '.$approvalMinutes.'m') : 'N/A';
+@endphp
+
 <section class="page-heading">
-    <div><p class="eyebrow">Descriptive analytics and KPI evidence</p><h1>Reports and performance monitoring</h1></div>
-    <div class="actions">@if(auth()->user()->hasRole('SPMU') || auth()->user()->hasRole('ICTU'))<a class="button secondary" href="{{ route('reports.audit') }}">Audit trail</a><a class="button secondary" href="{{ route('reports.notifications') }}">Notification delivery</a>@endif<button class="button primary" onclick="window.print()">Print report</button></div>
+    <div>
+        <p class="eyebrow">Business intelligence</p>
+        <h1>Reports &amp; Analytics</h1>
+    </div>
+    <div class="actions report-header-actions">
+        @if(auth()->user()->hasRole('SPMU') || auth()->user()->hasRole('ICTU'))
+            <a class="button secondary ui-pressable" href="{{ route('reports.audit') }}"><x-icon name="reports" size="16" />Audit Trail</a>
+            <a class="button secondary ui-pressable" href="{{ route('reports.notifications') }}"><x-icon name="notifications" size="16" />Delivery</a>
+        @endif
+        <button class="button primary ui-pressable" type="button" onclick="window.print()"><x-icon name="printer" size="16" />Print</button>
+    </div>
 </section>
+
 <section class="content-area">
-    <form method="get" class="card form-columns"><label>Period from<input type="date" name="from" value="{{ $from->toDateString() }}"></label><label>Period to<input type="date" name="to" value="{{ $to->toDateString() }}"></label><button class="button primary">Apply period</button></form>
-    <div class="actions top-gap">@foreach(['inventory','borrowing','utilization','overdue','penalty','compliance'] as $type)<a class="button secondary small" href="{{ route('reports.export',['type'=>$type,'from'=>$from->toDateString(),'to'=>$to->toDateString()]) }}">Export {{ ucfirst($type) }} CSV</a>@endforeach @if(auth()->user()->hasRole('SPMU') || auth()->user()->hasRole('ICTU')) @foreach(['notification','audit'] as $type)<a class="button secondary small" href="{{ route('reports.export',['type'=>$type,'from'=>$from->toDateString(),'to'=>$to->toDateString()]) }}">Export {{ ucfirst($type) }} CSV</a>@endforeach @endif</div>
+    <form method="get" class="card report-filter-card">
+        <div class="report-filter-row">
+            <label>
+                <span>From</span>
+                <input type="date" name="from" value="{{ $from->toDateString() }}">
+            </label>
+            <label>
+                <span>To</span>
+                <input type="date" name="to" value="{{ $to->toDateString() }}">
+            </label>
+            <button class="button primary ui-pressable" type="submit">Apply</button>
+        </div>
+        <p class="report-period-summary">Active period: {{ $periodLabel }}</p>
+    </form>
+
+    <div class="report-export-row top-gap">
+        <details class="report-export-menu">
+            <summary class="button secondary ui-pressable"><x-icon name="reports" size="16" />Export <x-icon name="chevron-down" size="16" /></summary>
+            <div class="report-export-panel">
+                @foreach(['inventory','borrowing','utilization','overdue','penalty','compliance'] as $type)
+                    <a href="{{ route('reports.export', ['type' => $type, 'from' => $from->toDateString(), 'to' => $to->toDateString()]) }}">{{ ucfirst($type) }} CSV</a>
+                @endforeach
+                @if(auth()->user()->hasRole('SPMU') || auth()->user()->hasRole('ICTU'))
+                    @foreach(['notification','audit'] as $type)
+                        <a href="{{ route('reports.export', ['type' => $type, 'from' => $from->toDateString(), 'to' => $to->toDateString()]) }}">{{ ucfirst($type) }} CSV</a>
+                    @endforeach
+                @endif
+            </div>
+        </details>
+    </div>
 </section>
-<section class="content-grid three"><div class="card"><span class="eyebrow">Audit evidence</span><strong class="metric">{{ number_format($auditCount) }}</strong><p>Attributable business and technical events</p></div><div class="card"><span class="eyebrow">Failed deliveries</span><strong class="metric">{{ number_format($failedNotifications) }}</strong><p>Visible provider/configuration failures</p></div><div class="card"><span class="eyebrow">Tracked inventory</span><strong class="metric">{{ number_format($items->count()) }}</strong><p>Quantity-based descriptions</p></div></section>
-<section class="content-grid three"><div class="card"><span class="eyebrow">Overdue / repeat</span><strong class="metric">{{ $overdueCount }} / {{ $repeatOffenders }}</strong><p>Overdue cases and repeat borrowers in period</p></div><div class="card"><span class="eyebrow">Penalty value</span><strong class="metric">PHP {{ number_format((float)$penaltyTotal,2) }}</strong><p>Assessed penalties in period</p></div><div class="card"><span class="eyebrow">Return compliance</span><strong class="metric">{{ number_format($returnCompliance['percentage'],1) }}%</strong><p>{{ $returnCompliance['closed'] }} closed of {{ $returnCompliance['released'] }} released · {{ $dueSoonCount }} due soon</p></div></section>
-<section class="content-grid two"><div class="card"><h2>Request status distribution</h2><div class="bar-list">@forelse($requestStatuses as $status=>$total)<div><span>{{ str_replace('_',' ',$status) }}</span><strong>{{ $total }}</strong></div>@empty<p>No request data.</p>@endforelse</div></div><div class="card"><h2>Custody status distribution</h2><div class="bar-list">@forelse($custodyStatuses as $status=>$total)<div><span>{{ str_replace('_',' ',$status) }}</span><strong>{{ $total }}</strong></div>@empty<p>No custody data.</p>@endforelse</div></div></section>
-<section class="content-area"><div class="card"><h2>Inventory state report</h2><div class="table-wrap"><table><thead><tr><th>Item</th><th>Category</th><th>Total</th><th>Available</th><th>Allocated</th><th>Borrowed</th><th>Laundry</th><th>Damaged / Maintenance</th><th>Lost</th><th>Stolen</th><th>Destroyed</th><th>Condemned</th></tr></thead><tbody>@foreach($items as $item)<tr><td>{{ $item->unique_description }}</td><td>{{ $item->category->category_name }}</td><td>{{ $balances[$item->id]['total'] }}</td><td>{{ $balances[$item->id]['available'] }}</td><td>{{ $balances[$item->id]['allocated'] }}</td><td>{{ $balances[$item->id]['borrowed'] }}</td><td>{{ $balances[$item->id]['laundry'] }}</td><td>{{ $balances[$item->id]['damaged_maintenance'] }}</td><td>{{ $balances[$item->id]['lost'] }}</td><td>{{ $balances[$item->id]['stolen'] }}</td><td>{{ $balances[$item->id]['destroyed'] }}</td><td>{{ $balances[$item->id]['condemned'] }}</td></tr>@endforeach</tbody></table></div></div></section>
-<section class="content-area"><div class="card"><h2>Utilization ranking</h2><div class="bar-list">@foreach($topItems as $item)<div><span>{{ $item->unique_description }}</span><strong>{{ $item->used_quantity+0 }} released</strong></div>@endforeach</div><div class="callout"><strong>Manuscript KPI formulas</strong><p>Average recorded digital approval cycle: {{ $averageApprovalSeconds ? gmdate('H:i:s',$averageApprovalSeconds) : 'No completed cycle in period' }}. Time Efficiency = ((Old Processing Time - New Processing Time) / Old Processing Time) × 100 · Accuracy = Correct Transactions / Total Transactions × 100 · Productivity = Total Output / Total Input.</p></div></div></section>
+
+<section class="content-grid three report-kpi-grid">
+    <article class="card dashboard-kpi-card kpi-accent-info">
+        <span class="kpi-icon" aria-hidden="true"><x-icon name="reports" size="18" /></span>
+        <strong class="kpi-value">{{ number_format($auditCount) }}</strong>
+        <span class="kpi-label">Audit events</span>
+    </article>
+    <article class="card dashboard-kpi-card kpi-accent-warning">
+        <span class="kpi-icon" aria-hidden="true"><x-icon name="notifications" size="18" /></span>
+        <strong class="kpi-value">{{ number_format($failedNotifications) }}</strong>
+        <span class="kpi-label">Failed deliveries</span>
+    </article>
+    <article class="card dashboard-kpi-card kpi-accent-success">
+        <span class="kpi-icon" aria-hidden="true"><x-icon name="inventory" size="18" /></span>
+        <strong class="kpi-value">{{ number_format($items->count()) }}</strong>
+        <span class="kpi-label">Tracked inventory</span>
+    </article>
+</section>
+
+<section class="content-grid three report-kpi-grid">
+    <article class="card dashboard-kpi-card kpi-accent-danger">
+        <span class="kpi-icon" aria-hidden="true"><x-icon name="accountability" size="18" /></span>
+        <strong class="kpi-value">{{ $overdueCount }} Overdue</strong>
+        <span class="kpi-label">{{ $repeatOffenders }} Repeat borrowers</span>
+    </article>
+    <article class="card dashboard-kpi-card kpi-accent-warning">
+        <span class="kpi-icon" aria-hidden="true"><x-icon name="settings" size="18" /></span>
+        <strong class="kpi-value">{{ (float) $penaltyTotal > 0 ? 'PHP '.number_format((float) $penaltyTotal, 2) : 'Amount not yet determined' }}</strong>
+        <span class="kpi-label">Penalty value</span>
+    </article>
+    <article class="card dashboard-kpi-card kpi-accent-info">
+        <span class="kpi-icon" aria-hidden="true"><x-icon name="approval" size="18" /></span>
+        <strong class="kpi-value">{{ $returnCompliance['released'] > 0 ? number_format($returnCompliance['percentage'], 1).'%' : 'N/A' }}</strong>
+        <span class="kpi-label">Return compliance</span>
+    </article>
+</section>
+
+<section class="content-grid two">
+    <div class="card report-distribution-card">
+        <div class="section-heading compact-section-heading">
+            <div><p class="eyebrow">Request flow</p><h2>Request status distribution</h2></div>
+        </div>
+        @if($requestStatuses->isNotEmpty())
+            <div class="distribution-list">
+                @foreach($requestStatuses as $status => $total)
+                    <div class="distribution-row">
+                        <div class="distribution-row-head">
+                            <span>{{ str($status)->replace('_', ' ')->title() }}</span>
+                            <strong>{{ $total }}</strong>
+                        </div>
+                        <div class="distribution-bar-track"><span class="distribution-bar-fill" style="width: {{ (($total / $requestMax) * 100) }}%"></span></div>
+                    </div>
+                @endforeach
+            </div>
+        @else
+            <p class="empty-state-inline">No request activity for this period.</p>
+        @endif
+    </div>
+
+    <div class="card report-distribution-card">
+        <div class="section-heading compact-section-heading">
+            <div><p class="eyebrow">Custody flow</p><h2>Custody status distribution</h2></div>
+        </div>
+        @if($custodyStatuses->isNotEmpty())
+            <div class="distribution-list">
+                @foreach($custodyStatuses as $status => $total)
+                    <div class="distribution-row">
+                        <div class="distribution-row-head">
+                            <span>{{ str($status)->replace('_', ' ')->title() }}</span>
+                            <strong>{{ $total }}</strong>
+                        </div>
+                        <div class="distribution-bar-track"><span class="distribution-bar-fill" style="width: {{ (($total / $custodyMax) * 100) }}%"></span></div>
+                    </div>
+                @endforeach
+            </div>
+        @else
+            <p class="empty-state-inline">No custody activity for this period.</p>
+        @endif
+    </div>
+</section>
+
+<section class="content-area">
+    <div class="card report-table-card">
+        <div class="section-heading compact-section-heading">
+            <div><p class="eyebrow">Inventory snapshot</p><h2>Inventory state report</h2></div>
+        </div>
+        <div class="report-table-scroll">
+            <table class="report-table">
+                <thead>
+                    <tr>
+                        <th>Item</th>
+                        <th>Category</th>
+                        <th class="numeric">Total</th>
+                        <th class="numeric">Available</th>
+                        <th class="numeric">Allocated</th>
+                        <th class="numeric">Borrowed</th>
+                        <th class="numeric">Laundry</th>
+                        <th class="numeric">Damaged / Maintenance</th>
+                        <th class="numeric">Lost</th>
+                        <th class="numeric">Stolen</th>
+                        <th class="numeric">Destroyed</th>
+                        <th class="numeric">Condemned</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach($items as $item)
+                        @php($balance = $balances[$item->id])
+                        <tr>
+                            <td>{{ $item->unique_description }}</td>
+                            <td>{{ $item->category->category_name }}</td>
+                            <td class="numeric {{ $balance['total'] > 0 ? 'is-nonzero' : '' }}">{{ $balance['total'] + 0 }}</td>
+                            <td class="numeric {{ $balance['available'] > 0 ? 'is-nonzero' : '' }}">{{ $balance['available'] + 0 }}</td>
+                            <td class="numeric {{ $balance['allocated'] > 0 ? 'is-nonzero' : '' }}">{{ $balance['allocated'] + 0 }}</td>
+                            <td class="numeric {{ $balance['borrowed'] > 0 ? 'is-nonzero' : '' }}">{{ $balance['borrowed'] + 0 }}</td>
+                            <td class="numeric {{ $balance['laundry'] > 0 ? 'is-nonzero' : '' }}">{{ $balance['laundry'] + 0 }}</td>
+                            <td class="numeric {{ $balance['damaged_maintenance'] > 0 ? 'is-nonzero' : '' }}">{{ $balance['damaged_maintenance'] + 0 }}</td>
+                            <td class="numeric {{ $balance['lost'] > 0 ? 'is-nonzero' : '' }}">{{ $balance['lost'] + 0 }}</td>
+                            <td class="numeric {{ $balance['stolen'] > 0 ? 'is-nonzero' : '' }}">{{ $balance['stolen'] + 0 }}</td>
+                            <td class="numeric {{ $balance['destroyed'] > 0 ? 'is-nonzero' : '' }}">{{ $balance['destroyed'] + 0 }}</td>
+                            <td class="numeric {{ $balance['condemned'] > 0 ? 'is-nonzero' : '' }}">{{ $balance['condemned'] + 0 }}</td>
+                        </tr>
+                    @endforeach
+                </tbody>
+            </table>
+        </div>
+    </div>
+</section>
+
+<section class="content-area">
+    <div class="card report-utilization-card">
+        <div class="section-heading compact-section-heading">
+            <div><p class="eyebrow">Usage intensity</p><h2>Utilization ranking</h2></div>
+        </div>
+        @if($topItems->isNotEmpty() && $topItems->sum('used_quantity') > 0)
+            <div class="distribution-list">
+                @foreach($topItems->take(10) as $item)
+                    <div class="distribution-row">
+                        <div class="distribution-row-head">
+                            <span>{{ $item->unique_description }}</span>
+                            <strong>{{ $item->used_quantity + 0 }} released</strong>
+                        </div>
+                        <div class="distribution-bar-track"><span class="distribution-bar-fill" style="width: {{ (($item->used_quantity / $utilizationMax) * 100) }}%"></span></div>
+                    </div>
+                @endforeach
+            </div>
+        @else
+            <p class="empty-state-inline">No utilization activity for this period.</p>
+        @endif
+
+        <details class="report-formula-panel">
+            <summary>How these KPIs are calculated</summary>
+            <div class="report-formula-body">
+                <p><strong>Return compliance:</strong> closed released custody transactions ÷ released transactions × 100.</p>
+                <p><strong>Average approval cycle:</strong> {{ $averageApprovalSeconds ? $approvalLabel : 'No completed cycle in period' }} average recorded duration.</p>
+                <p><strong>Penalty value:</strong> total assessed amount within the selected reporting period.</p>
+                <p><strong>Utilization:</strong> total released quantity per item in the selected period.</p>
+            </div>
+        </details>
+    </div>
+</section>
 @endsection

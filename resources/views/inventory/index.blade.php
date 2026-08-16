@@ -38,6 +38,7 @@
             class="button primary ui-pressable"
             href="{{ route('requests.create') }}"
         >
+            <x-icon name="plus" />
             Create borrowing request
         </a>
 

@@ -29,6 +29,18 @@ class OrganizationalUnitSeeder extends Seeder
                 ],
             );
         }
+
+        foreach ($this->borrowerColleges() as $code => $name) {
+            OrganizationalUnit::query()->firstOrCreate(
+                ['unit_code' => $code],
+                [
+                    'parent_unit_id' => $institution->id,
+                    'unit_name' => $name,
+                    'unit_type' => 'ACADEMIC_UNIT',
+                    'active' => true,
+                ],
+            );
+        }
     }
 
     /** @return array<string, string> */
@@ -39,6 +51,19 @@ class OrganizationalUnitSeeder extends Seeder
             'GSU' => 'General Services Unit',
             'VPAF' => 'Office of the Vice President for Administration and Finance',
             'ICTU' => 'Information and Communications Technology Unit',
+        ];
+    }
+
+    /** @return array<string, string> */
+    private function borrowerColleges(): array
+    {
+        return [
+            'CHS' => 'College of Health and Sciences',
+            'CEA' => 'College of Engineering and Architecture',
+            'CTHBM' => 'College of Tourism, Hospitality and Business Management',
+            'CCS' => 'College of Computer Studies',
+            'CAS' => 'College of Arts and Sciences',
+            'CTDE' => 'College of Technological Developmental Education',
         ];
     }
 }

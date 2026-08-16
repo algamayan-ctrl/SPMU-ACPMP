@@ -38,6 +38,9 @@
         @case('notifications')
             <path d="M18 8a6 6 0 1 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M14 21h-4" />
             @break
+        @case('printer')
+            <path d="M7 9V4h10v5" /><path d="M7 18H5a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2" /><path d="M7 14h10v6H7z" /><path d="M8 18h8" />
+            @break
         @case('profile')
             <circle cx="12" cy="8" r="4" /><path d="M4 21a8 8 0 0 1 16 0" />
             @break
@@ -73,6 +76,21 @@
             @break
         @case('error')
             <circle cx="12" cy="12" r="9" /><path d="M12 8v5M12 16.5v.1" />
+            @break
+        @case('email')
+            <path d="M4 4h16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Z" /><path d="m22 6-10 7-10-7" />
+            @break
+        @case('lock')
+            <rect x="3" y="11" width="18" height="11" rx="2" /><path d="M7 11V7a5 5 0 0 1 10 0v4" />
+            @break
+        @case('eye')
+            <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8Z" /><circle cx="12" cy="12" r="3" />
+            @break
+        @case('shield-lock')
+            <path d="M12 2 3 5.5V11c0 5 3 8 9 9.5 6-1.5 9-4.5 9-9.5V5.5L12 2Z" /><rect x="10" y="9" width="4" height="6" rx="0.5" /><path d="M12 15v1" />
+            @break
+        @case('help')
+            <circle cx="12" cy="12" r="10" /><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3M12 17v.01" />
             @break
         @default
             <circle cx="12" cy="12" r="9" />
