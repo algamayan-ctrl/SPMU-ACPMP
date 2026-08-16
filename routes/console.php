@@ -8,4 +8,6 @@ Artisan::command('inspire', function () {
     $this->comment(Inspiring::quote());
 })->purpose('Display an inspiring quote');
 
-Schedule::command('spmu:process-deadlines')->everyFifteenMinutes()->withoutOverlapping();
+Schedule::command('spmu:process-deadlines')
+    ->everyMinute()
+    ->withoutOverlapping();
