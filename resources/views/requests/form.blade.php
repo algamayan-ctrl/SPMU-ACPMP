@@ -36,7 +36,7 @@
             <label>Purpose of borrowing<input name="purpose_event" value="{{ old('purpose_event', $version->purpose_event) }}" required>@error('purpose_event')<small class="field-error">{{ $message }}</small>@enderror</label>
             <label>Event or activity location<input name="location" value="{{ old('location', $version->location) }}" required>@error('location')<small class="field-error">{{ $message }}</small>@enderror</label>
         </div>
-        <label class="full-span">Event or activity details<textarea name="event_details" required>{{ old('event_details', $version->event_details) }}</textarea><small>Include enough information for reviewers to understand the institutional use.</small>@error('event_details')<small class="field-error">{{ $message }}</small>@enderror</label>
+
         <label class="full-span">Additional note to reviewers <small>(optional)</small><textarea name="remarks">{{ old('remarks', $version->remarks) }}</textarea>@error('remarks')<small class="field-error">{{ $message }}</small>@enderror</label>
     </section>
 
@@ -56,8 +56,7 @@
         <div id="student-fields" class="form-columns full-span">
             <label>Student organization <small>(optional)</small><input name="student_organization" value="{{ old('student_organization', $version->student_organization) }}"></label>
             <label>Program or department<input name="represented_program_department" value="{{ old('represented_program_department', $version->represented_program_department) }}">@error('represented_program_department')<small class="field-error">{{ $message }}</small>@enderror</label>
-            <label>Year level<input name="represented_year_level" value="{{ old('represented_year_level', $version->represented_year_level) }}">@error('represented_year_level')<small class="field-error">{{ $message }}</small>@enderror</label>
-        </div>
+
     </section>
 
     <section class="card form-section item-selection-section" aria-labelledby="items-heading">
