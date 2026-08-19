@@ -135,27 +135,71 @@ class RequestWorkflowService
             ]);
 
             if ($decision === 'REJECTED') {
+                $this->restoreReservationIfPresent($request, 'REJECTED', $remarks ?: 'Request rejected after SPMU reservation.');
                 $this->transition($request, RequestStatus::Rejected, $approver, $remarks);
             } elseif ($decision === 'RETURNED_FOR_REVISION') {
+                $this->restoreReservationIfPresent($request, 'RETURNED_FOR_REVISION', $remarks ?: 'Request returned for revision after SPMU reservation.');
                 $this->transition($request, RequestStatus::ReturnedForRevision, $approver, $remarks);
-            } elseif ($stage === ApprovalStage::Vpaf) {
+            } elseif ($stage === ApprovalStage::Spmu) {
+                /*
+                 * SPMU is the inventory decision point. A submitted request is
+                 * only a request; it becomes a reservation after SPMU approves
+                 * and this atomic availability check succeeds.
+                 */
                 try {
                     $this->inventory->allocate($request->currentVersion);
                 } catch (ValidationException $exception) {
-                    $step->update(['decision' => 'RETURNED_FOR_REVISION', 'remarks' => $exception->getMessage()]);
-                    $this->transition($request, RequestStatus::ReturnedForRevision, $approver, $exception->getMessage());
-                    $this->notifications->send('REQUEST_RETURNED_FOR_REVISION', collect([$request->borrower])->merge($this->usersWithRole(UserRole::Spmu))->unique('id'), "Request {$request->request_no} returned because inventory became insufficient. {$exception->getMessage()}", $request);
-                    $this->audit->record('FINAL_APPROVAL_ALLOCATION_CONFLICT', $step, reason: $exception->getMessage(), after: ['decision' => 'RETURNED_FOR_REVISION']);
+                    $step->update([
+                        'decision' => 'RETURNED_FOR_REVISION',
+                        'remarks' => $exception->getMessage(),
+                    ]);
+                    $this->transition(
+                        $request,
+                        RequestStatus::ReturnedForRevision,
+                        $approver,
+                        $exception->getMessage()
+                    );
+                    $this->notifications->send(
+                        'REQUEST_RETURNED_FOR_REVISION',
+                        collect([$request->borrower])->merge($this->usersWithRole(UserRole::Spmu))->unique('id'),
+                        "Request {$request->request_no} returned because inventory became insufficient. {$exception->getMessage()}",
+                        $request
+                    );
+                    $this->audit->record(
+                        'SPMU_APPROVAL_ALLOCATION_CONFLICT',
+                        $step,
+                        reason: $exception->getMessage(),
+                        after: ['decision' => 'RETURNED_FOR_REVISION']
+                    );
 
                     return;
                 }
+
+                $next = ApprovalStage::Gsu;
+                $request->currentVersion->approvalSteps
+                    ->firstWhere('stage_code', $next)
+                    ?->update(['received_at' => now(), 'decision' => 'RECEIVED']);
+                $this->transition(
+                    $request,
+                    RequestStatus::UnderGsu,
+                    $approver,
+                    'SPMU approved the request, reserved the approved quantity, and routed it to GSU.'
+                );
+                $this->notifications->send(
+                    'ROUTED_FOR_APPROVAL',
+                    $this->usersWithRole(UserRole::Gsu),
+                    "Request {$request->request_no} is ready for GSU review.",
+                    $request,
+                    ['SYSTEM', 'EMAIL'],
+                );
+            } elseif ($stage === ApprovalStage::Vpaf) {
                 $deadlineTime = SystemSetting::value('approved_letter_download_time', '23:59');
                 $deadline = now()->setTimeFromTimeString(is_string($deadlineTime) ? $deadlineTime : '23:59');
                 if ($deadline->lte(now())) {
                     $deadline = now()->endOfDay();
                 }
                 $request->update(['final_approved_at' => now(), 'download_deadline_at' => $deadline]);
-                $this->transition($request, RequestStatus::FinalApprovedAwaitingDownload, $approver, 'VPAF final approval and atomic allocation completed.');
+                $this->transition($request, RequestStatus::FinalApprovedAwaitingDownload, $approver, 'Final approval completed. Existing SPMU inventory reservation remains active.');
                 $document = $this->documents->requestLetter($request->fresh(), true);
                 foreach ($request->currentVersion->approvalSteps as $approval) {
                     DB::table('document_approvals')->insert([
@@ -186,14 +230,20 @@ class RequestWorkflowService
                     $request,
                 );
             } else {
-                $next = $stage === ApprovalStage::Spmu ? ApprovalStage::Gsu : ApprovalStage::Vpaf;
-                $nextStatus = $next === ApprovalStage::Gsu ? RequestStatus::UnderGsu : RequestStatus::UnderVpaf;
-                $request->currentVersion->approvalSteps->firstWhere('stage_code', $next)?->update(['received_at' => now(), 'decision' => 'RECEIVED']);
-                $this->transition($request, $nextStatus, $approver, $stage->value.' approved and routed to '.$next->value.'.');
+                $next = ApprovalStage::Vpaf;
+                $request->currentVersion->approvalSteps
+                    ->firstWhere('stage_code', $next)
+                    ?->update(['received_at' => now(), 'decision' => 'RECEIVED']);
+                $this->transition(
+                    $request,
+                    RequestStatus::UnderVpaf,
+                    $approver,
+                    $stage->value.' approved and routed to '.$next->value.'.'
+                );
                 $this->notifications->send(
                     'ROUTED_FOR_APPROVAL',
-                    $this->usersWithRole(UserRole::from($next->value)),
-                    "Request {$request->request_no} is ready for {$next->value} review.",
+                    $this->usersWithRole(UserRole::Vpaf),
+                    "Request {$request->request_no} is ready for VPAF review.",
                     $request,
                     ['SYSTEM', 'EMAIL'],
                 );
@@ -210,6 +260,26 @@ class RequestWorkflowService
 
             $this->audit->record('APPROVAL_DECISION', $step, reason: $remarks, after: ['stage' => $stage->value, 'decision' => $decision]);
         }, 3);
+    }
+
+    private function hasActiveReservation(BorrowingRequest $request): bool
+    {
+        $version = $request->currentVersion;
+
+        if (! $version) {
+            return false;
+        }
+
+        return $version->items()
+            ->whereHas('allocation', fn ($query) => $query->whereIn('status', ['ACTIVE', 'PARTIALLY_RELEASED']))
+            ->exists();
+    }
+
+    private function restoreReservationIfPresent(BorrowingRequest $request, string $status, string $reason): void
+    {
+        if ($this->hasActiveReservation($request)) {
+            $this->inventory->restore($request, $status, $reason);
+        }
     }
 
     private function isHeadForStage(User $user, ApprovalStage $stage): bool
@@ -241,8 +311,10 @@ class RequestWorkflowService
         }
 
         DB::transaction(function () use ($request, $actor, $reason): void {
+            $hasReservation = $this->hasActiveReservation($request);
             $afterApproval = in_array($request->status, [RequestStatus::FinalApprovedAwaitingDownload, RequestStatus::ApprovedReadyForRelease], true);
-            if ($afterApproval) {
+
+            if ($hasReservation) {
                 $this->inventory->restore($request, 'CANCELLED', $reason);
             }
             DB::table('request_cancellations')->insert([

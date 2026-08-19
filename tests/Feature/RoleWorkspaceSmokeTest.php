@@ -64,7 +64,7 @@ class RoleWorkspaceSmokeTest extends TestCase
     {
         $expectations = [
             UserRole::Borrower->value => [
-                'see' => ['Available Items', 'My Requests', 'My Borrowings', 'Accountability'],
+                'see' => ['Inventory', 'My Requests', 'My Borrowings', 'Accountability'],
                 'hide' => ['Approval Queue', 'User Accounts'],
             ],
             UserRole::Spmu->value => [

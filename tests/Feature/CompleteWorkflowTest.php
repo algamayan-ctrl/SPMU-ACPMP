@@ -70,6 +70,8 @@ class CompleteWorkflowTest extends TestCase
 
         $this->actingAs($spmu)->post(route('approvals.decide', $request), ['decision' => 'APPROVED'])->assertSessionHasNoErrors();
         $this->assertSame(RequestStatus::UnderGsu, $request->fresh()->status);
+        $this->assertDatabaseHas('allocations', ['allocated_quantity' => 20, 'status' => 'ACTIVE']);
+        $this->assertDatabaseHas('inventory_transactions', ['transaction_type' => 'SPMU_APPROVAL_ALLOCATION']);
         $this->actingAs($gsu)->post(route('approvals.decide', $request), ['decision' => 'APPROVED'])->assertSessionHasNoErrors();
         $this->assertSame(RequestStatus::UnderVpaf, $request->fresh()->status);
         $this->actingAs($vpaf)->post(route('approvals.decide', $request), ['decision' => 'APPROVED'])->assertSessionHasNoErrors();
@@ -94,6 +96,75 @@ class CompleteWorkflowTest extends TestCase
         $this->assertSame('ACTIVE', $custody->fresh()->status);
         $this->assertDatabaseHas('custody_lines', ['custody_transaction_id' => $custody->id, 'actual_released_quantity' => 20]);
         $this->assertDatabaseHas('inventory_transaction_lines', ['from_state' => 'ALLOCATED', 'to_state' => 'BORROWED', 'quantity' => 20]);
+    }
+
+    public function test_downstream_return_restores_the_spmu_reservation(): void
+    {
+        $borrower = $this->roleUser(UserRole::Borrower);
+        $spmu = $this->classificationUser(AccessClassification::SpmuHead);
+        $gsu = $this->roleUser(UserRole::Gsu);
+        $item = InventoryItem::where('unique_description', 'Monoblock Chairs')->firstOrFail();
+
+        $request = BorrowingRequest::create([
+            'request_no' => 'BR-FLOW-RESTORE-001',
+            'borrower_user_id' => $borrower->id,
+            'accountable_unit_id' => $borrower->organizational_unit_id,
+            'current_version_no' => 1,
+            'status' => RequestStatus::Draft,
+        ]);
+
+        $version = $request->versions()->create([
+            'version_no' => 1,
+            'purpose_event' => 'Reservation restoration test',
+            'location' => 'CSPC Gymnasium',
+            'needed_from' => now()->addDays(4),
+            'return_due_at' => now()->addDays(5),
+            'off_campus' => false,
+            'created_by_user_id' => $borrower->id,
+        ]);
+
+        RequestItem::create([
+            'request_version_id' => $version->id,
+            'inventory_item_id' => $item->id,
+            'description_snapshot' => $item->unique_description,
+            'unit_snapshot' => $item->unit->unit_name,
+            'requested_quantity' => 5,
+            'use_location' => 'ON_CAMPUS',
+        ]);
+
+        $this->actingAs($borrower)
+            ->post(route('requests.submit', $request))
+            ->assertSessionHasNoErrors();
+
+        $this->actingAs($spmu)
+            ->post(route('approvals.decide', $request), ['decision' => 'APPROVED'])
+            ->assertSessionHasNoErrors();
+
+        $this->assertDatabaseHas('allocations', [
+            'allocated_quantity' => 5,
+            'restored_quantity' => 0,
+            'status' => 'ACTIVE',
+        ]);
+
+        $this->actingAs($gsu)
+            ->post(route('approvals.decide', $request), [
+                'decision' => 'RETURNED_FOR_REVISION',
+                'remarks' => 'Please correct the supporting information.',
+            ])
+            ->assertSessionHasNoErrors();
+
+        $this->assertSame(RequestStatus::ReturnedForRevision, $request->fresh()->status);
+        $this->assertDatabaseHas('allocations', [
+            'allocated_quantity' => 5,
+            'restored_quantity' => 5,
+            'status' => 'RETURNED_FOR_REVISION',
+        ]);
+        $this->assertDatabaseHas('inventory_transaction_lines', [
+            'inventory_item_id' => $item->id,
+            'from_state' => 'ALLOCATED',
+            'to_state' => 'AVAILABLE',
+            'quantity' => 5,
+        ]);
     }
 
     public function test_borrower_can_reduce_release_quantity_and_unused_allocation_is_restored(): void

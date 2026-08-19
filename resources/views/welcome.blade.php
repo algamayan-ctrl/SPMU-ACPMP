@@ -5,7 +5,6 @@
     <div class="hero-content">
         <h1 id="landing-title">Supply and Property Management Unit</h1>
         <p class="hero-statement">Borrow CSPC property with a clear, guided process.</p>
-        <p class="hero-description">Check availability, submit requests, track approvals, and manage returns in one secure system.</p>
         <div class="actions">
             <a class="button primary" href="{{ route('login') }}">Sign in</a>
             <a class="button secondary" href="#how-it-works">Learn more</a>
@@ -72,7 +71,7 @@
     </div>
 </section>
 
-<section class="section-block info-grid-section">
+<section id="help" class="section-block info-grid-section">
     <div class="info-grid">
         <article class="info-card info-card--green">
             <div class="info-card__header">

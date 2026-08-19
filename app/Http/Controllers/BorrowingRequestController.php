@@ -296,6 +296,15 @@ class BorrowingRequestController extends Controller
         return $request->validate([
             'purpose_event' => ['required', 'string', 'max:255'],
             'location' => ['required', 'string', 'max:255'],
+
+            'premises' => [
+                'required',
+                Rule::in([
+                    'ON_CAMPUS',
+                    'OFF_CAMPUS',
+                ]),
+            ],
+
             'needed_from' => ['required', 'date', 'after:now'],
             'return_due_at' => ['required', 'date', 'after:needed_from'],
 
@@ -323,11 +332,6 @@ class BorrowingRequestController extends Controller
                 'max:1000',
             ],
 
-            'off_campus' => [
-                'nullable',
-                'boolean',
-            ],
-
             'item_ids' => [
                 'required',
                 'array',
@@ -349,19 +353,6 @@ class BorrowingRequestController extends Controller
                 'nullable',
                 'numeric',
                 'min:0',
-            ],
-
-            'locations' => [
-                'nullable',
-                'array',
-            ],
-
-            'locations.*' => [
-                'nullable',
-                Rule::in([
-                    'ON_CAMPUS',
-                    'OFF_CAMPUS',
-                ]),
             ],
         ]);
     }
@@ -387,17 +378,15 @@ class BorrowingRequestController extends Controller
             'represented_program_department' =>
                 $data['represented_program_department'] ?? null,
 
-            // Legacy field retained in the database/model.
-            // It is no longer collected from the revised form.
-            'represented_year_level' => null,
+            /*
+             * Legacy database fields such as event_details and
+             * represented_year_level are intentionally omitted.
+             *
+             * This keeps older stored values readable while the revised
+             * Create/Edit form no longer collects or overwrites them.
+             */
 
-            // Legacy field retained in the database/model.
-            // It is no longer collected from the revised form.
-            'event_details' => null,
-
-            'off_campus' => collect(
-                $data['locations'] ?? []
-            )->contains('OFF_CAMPUS'),
+            'off_campus' => $data['premises'] === 'OFF_CAMPUS',
 
             'remarks' => $data['remarks'] ?? null,
             'created_by_user_id' => $userId,
@@ -410,6 +399,7 @@ class BorrowingRequestController extends Controller
         InventoryService $inventory
     ): void {
         $selected = 0;
+        $location = $data['premises'];
 
         foreach ($data['item_ids'] as $itemId) {
             $quantity = (float) (
@@ -425,6 +415,26 @@ class BorrowingRequestController extends Controller
                 ->where('borrowable', true)
                 ->findOrFail($itemId);
 
+            /*
+             * Premises is request-level.
+             *
+             * OFF_CAMPUS is intentionally stricter than merely trusting
+             * the submitted form or the item's flag: current policy allows
+             * only the inventory item named Barricade.
+             */
+            if ($location === 'OFF_CAMPUS') {
+                $isBarricade = strcasecmp(
+                    trim((string) $item->unique_description),
+                    'Barricade'
+                ) === 0;
+
+                if (! $isBarricade || ! $item->off_campus_allowed) {
+                    throw ValidationException::withMessages([
+                        'premises' => 'Off-campus borrowing is permitted only for Barricade.',
+                    ]);
+                }
+            }
+
             $balance = $inventory->availability(
                 $item,
                 Carbon::parse($data['needed_from']),
@@ -434,37 +444,6 @@ class BorrowingRequestController extends Controller
             if ($quantity > $balance['available']) {
                 throw ValidationException::withMessages([
                     'quantities' => "{$item->unique_description} has only {$balance['available']} available for the complete period.",
-                ]);
-            }
-
-            $location = strtoupper(
-                (string) (
-                    $data['locations'][$item->id]
-                    ?? 'ON_CAMPUS'
-                )
-            );
-
-            if (
-                ! $item->off_campus_allowed
-                && $location !== 'ON_CAMPUS'
-            ) {
-                throw ValidationException::withMessages([
-                    'locations' => "{$item->unique_description} is restricted to On-Campus use.",
-                ]);
-            }
-
-            if (
-                ! in_array(
-                    $location,
-                    [
-                        'ON_CAMPUS',
-                        'OFF_CAMPUS',
-                    ],
-                    true
-                )
-            ) {
-                throw ValidationException::withMessages([
-                    'locations' => 'Choose a valid campus location for each selected item.',
                 ]);
             }
 

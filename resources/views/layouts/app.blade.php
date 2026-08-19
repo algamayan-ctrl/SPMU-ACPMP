@@ -37,9 +37,9 @@
         $navigation = match ($activeWorkspace) {
             'BORROWER' => [
                 ['dashboard', 'dashboard', 'Dashboard', 'dashboard'],
-                ['inventory.index', 'inventory.*', 'Available Items', 'inventory'],
-                ['calendar.index', 'calendar.*', 'Borrowing Calendar', 'calendar'],
+                ['inventory.index', 'inventory.*', 'Inventory', 'inventory'],
                 ['requests.index', 'requests.*', 'My Requests', 'requests'],
+                ['calendar.index', 'calendar.*', 'Borrowing Calendar', 'calendar'],
                 ['custody.index', 'custody.*', 'My Borrowings', 'custody'],
                 ['accountability.index', 'accountability.*', 'Accountability', 'accountability'],
             ],
@@ -124,7 +124,7 @@
 @else
     <header class="site-header public-header">
         <a class="brand" href="{{ route('home') }}" aria-label="SPMU-ACPMP home"><span class="brand-mark">SA</span><span><strong>SPMU-ACPMP</strong><small>Asset custody and monitoring</small></span></a>
-        <nav><a href="#how-it-works">Learn more</a><a href="{{ route('login') }}">Sign in</a></nav>
+        <nav><a href="#how-it-works">Learn more</a><a href="#help">Help</a><a href="{{ route('login') }}">Sign in</a></nav>
     </header>
     <main id="main-content" tabindex="-1">
         @if(session('status'))<div class="notice success" role="status"><x-icon name="success" /><div>{{ session('status') }}</div></div>@endif

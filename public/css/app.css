@@ -1497,9 +1497,13 @@ body > footer span:last-child {
     content: '';
     position: absolute;
     inset: 0;
-    background:
-        linear-gradient(90deg, rgba(7, 27, 53, .8) 0%, rgba(7, 27, 53, .72) 22%, rgba(7, 27, 53, .5) 38%, rgba(11, 52, 90, .34) 56%, rgba(130, 175, 214, .18) 72%, rgba(255, 255, 255, 0) 100%),
-        linear-gradient(135deg, rgba(7, 27, 53, .8) 0%, rgba(12, 45, 82, .52) 45%, rgba(23, 105, 170, .28) 100%);
+    background: linear-gradient(
+        90deg,
+        rgba(7, 27, 53, .34) 0%,
+        rgba(7, 27, 53, .20) 24%,
+        rgba(7, 27, 53, .08) 48%,
+        rgba(7, 27, 53, 0) 68%
+    );
     pointer-events: none;
     z-index: 1;
 }
