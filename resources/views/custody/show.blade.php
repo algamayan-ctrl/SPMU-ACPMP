@@ -433,10 +433,365 @@
             </div>
 
             <p>
-                Laundry-required linen follows the Laundry Worker workflow. Final inventory availability remains controlled by the current return and SPMU verification process.
+                Laundry-required linen is received and physically inspected by the Laundry Worker.
+                The accomplished handwritten Laundry Form is uploaded by Laundry, then reviewed by
+                the SPMU Action Officer before the final property return is closed.
             </p>
+
+            @if($laundryJob->latestEvidence)
+                <div class="evidence-row top-gap">
+                    <div>
+                        <strong>Accomplished Laundry Form</strong>
+                        <small>
+                            Uploaded {{ optional($laundryJob->latestEvidence->submitted_at)->format('d M Y, g:i A') ?: '—' }}
+                            · {{ str($laundryJob->latestEvidence->verification_status)->replace('_', ' ')->title() }}
+                        </small>
+                    </div>
+
+                    @if($laundryJob->latestEvidence->file)
+                        <a
+                            class="button secondary small ui-pressable"
+                            href="{{ route('files.show', $laundryJob->latestEvidence->file, false) }}"
+                            target="_blank"
+                            rel="noopener"
+                        >
+                            View Uploaded Scan
+                        </a>
+                    @endif
+                </div>
+
+                @if($laundryJob->latestEvidence->rejection_reason)
+                    <div class="callout warning top-gap">
+                        <strong>Replacement scan requested</strong>
+                        <p>{{ $laundryJob->latestEvidence->rejection_reason }}</p>
+                    </div>
+                @endif
+            @else
+                <div class="callout warning top-gap">
+                    <strong>No accomplished Laundry Form uploaded yet.</strong>
+                    <p>
+                        The Laundry Worker must physically inspect the linen, complete the printed form,
+                        and upload the accomplished scan from the Laundry workspace.
+                    </p>
+                </div>
+            @endif
+
+            @if($isSpmuHead && $laundryJob->latestEvidence?->verification_status === 'PENDING_VERIFICATION')
+                <div class="callout info top-gap">
+                    <strong>Awaiting SPMU Action Officer verification.</strong>
+                    <p>
+                        You can monitor and view the uploaded scan here. Operational verification and
+                        transcription of the accomplished Laundry Form are assigned to the SPMU Action Officer.
+                    </p>
+                </div>
+            @endif
         </article>
     </section>
+
+    @if(
+        $isSpmuOfficer
+        && $laundryJob->latestEvidence
+        && $laundryJob->latestEvidence->verification_status === 'PENDING_VERIFICATION'
+    )
+        <section class="content-grid two">
+            <article class="card">
+                <div class="card-header">
+                    <div>
+                        <p class="eyebrow">Laundry evidence</p>
+                        <h2>Review accomplished Laundry Form</h2>
+                    </div>
+                    <x-status-badge status="PENDING_VERIFICATION" />
+                </div>
+
+                <p>
+                    Compare the uploaded scan with the physical linen transaction. Encode only what is
+                    written on the accomplished form. Do not add or infer findings that are not on the form.
+                </p>
+
+                @if($laundryJob->latestEvidence->file)
+                    <a
+                        class="button secondary ui-pressable"
+                        href="{{ route('files.show', $laundryJob->latestEvidence->file, false) }}"
+                        target="_blank"
+                        rel="noopener"
+                    >
+                        Open Accomplished Laundry Form
+                    </a>
+                @endif
+            </article>
+
+            <form
+                method="post"
+                action="{{ route('laundry.verify-form', $laundryJob) }}"
+                class="card form-grid"
+            >
+                @csrf
+                <input type="hidden" name="decision" value="VERIFIED">
+
+                <div class="card-header">
+                    <div>
+                        <p class="eyebrow">SPMU Action Officer</p>
+                        <h2>Verify and encode Laundry inspection</h2>
+                    </div>
+                </div>
+
+                <label>
+                    Laundry Worker Name
+                    <input
+                        name="worker_name"
+                        value="{{ old('worker_name', $laundryJob->worker_name) }}"
+                        required
+                    >
+                </label>
+
+                <div class="content-grid two">
+                    <label>
+                        Linen Received by Laundry
+                        <input
+                            type="datetime-local"
+                            name="worker_received_at"
+                            value="{{ old(
+                                'worker_received_at',
+                                optional($laundryJob->worker_received_at)->format('Y-m-d\\TH:i')
+                            ) }}"
+                            required
+                        >
+                    </label>
+
+                    <label>
+                        Laundry Completed
+                        <input
+                            type="datetime-local"
+                            name="worker_completed_at"
+                            value="{{ old(
+                                'worker_completed_at',
+                                optional($laundryJob->worker_completed_at)->format('Y-m-d\\TH:i')
+                            ) }}"
+                            required
+                        >
+                    </label>
+                </div>
+
+                <div class="table-wrap">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Item</th>
+                                <th>Issued</th>
+                                <th>Received</th>
+                                <th>Finding</th>
+                                <th>Affected</th>
+                                <th>Completed</th>
+                                <th>Remarks</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach($laundryJob->lines as $line)
+                                <tr>
+                                    <td>
+                                        <strong>{{ $line->custodyLine->requestItem->description_snapshot }}</strong>
+                                        <small>{{ $line->custodyLine->requestItem->unit_snapshot }}</small>
+                                    </td>
+                                    <td>{{ $line->issued_quantity + 0 }}</td>
+                                    <td>
+                                        <input
+                                            type="number"
+                                            step="0.001"
+                                            min="0"
+                                            max="{{ $line->issued_quantity }}"
+                                            name="lines[{{ $line->id }}][received_quantity]"
+                                            value="{{ old(
+                                                'lines.'.$line->id.'.received_quantity',
+                                                $line->received_quantity ?? $line->issued_quantity
+                                            ) }}"
+                                            required
+                                        >
+                                    </td>
+                                    <td>
+                                        <select
+                                            name="lines[{{ $line->id }}][issue_type]"
+                                            required
+                                        >
+                                            @foreach([
+                                                'NONE' => 'No issue',
+                                                'STAINED' => 'Stained',
+                                                'TORN' => 'Torn',
+                                                'DAMAGED' => 'Damaged',
+                                                'OTHER' => 'Other',
+                                            ] as $value => $label)
+                                                <option
+                                                    value="{{ $value }}"
+                                                    @selected(
+                                                        old(
+                                                            'lines.'.$line->id.'.issue_type',
+                                                            $line->issue_type ?? 'NONE'
+                                                        ) === $value
+                                                    )
+                                                >
+                                                    {{ $label }}
+                                                </option>
+                                            @endforeach
+                                        </select>
+                                    </td>
+                                    <td>
+                                        <input
+                                            type="number"
+                                            step="0.001"
+                                            min="0"
+                                            max="{{ $line->issued_quantity }}"
+                                            name="lines[{{ $line->id }}][affected_quantity]"
+                                            value="{{ old(
+                                                'lines.'.$line->id.'.affected_quantity',
+                                                $line->affected_quantity ?? 0
+                                            ) }}"
+                                            required
+                                        >
+                                    </td>
+                                    <td>
+                                        <input
+                                            type="number"
+                                            step="0.001"
+                                            min="0"
+                                            max="{{ $line->issued_quantity }}"
+                                            name="lines[{{ $line->id }}][completed_quantity]"
+                                            value="{{ old(
+                                                'lines.'.$line->id.'.completed_quantity',
+                                                $line->completed_quantity ?? $line->issued_quantity
+                                            ) }}"
+                                            required
+                                        >
+                                    </td>
+                                    <td>
+                                        <input
+                                            name="lines[{{ $line->id }}][remarks]"
+                                            value="{{ old(
+                                                'lines.'.$line->id.'.remarks',
+                                                $line->remarks
+                                            ) }}"
+                                        >
+                                    </td>
+                                </tr>
+                            @endforeach
+                        </tbody>
+                    </table>
+                </div>
+
+                <label>
+                    Laundry Worker Remarks
+                    <textarea name="worker_remarks">{{ old(
+                        'worker_remarks',
+                        $laundryJob->worker_remarks
+                    ) }}</textarea>
+                </label>
+
+                <button class="button primary ui-pressable">
+                    Verify Laundry Form & Save Inspection
+                </button>
+            </form>
+        </section>
+
+        <section class="content-area narrow">
+            <form
+                method="post"
+                action="{{ route('laundry.verify-form', $laundryJob) }}"
+                class="card form-grid"
+            >
+                @csrf
+                <input type="hidden" name="decision" value="REJECTED">
+
+                <div class="card-header">
+                    <div>
+                        <p class="eyebrow">Unreadable / incorrect scan</p>
+                        <h2>Request replacement Laundry Form</h2>
+                    </div>
+                </div>
+
+                <label>
+                    Reason for replacement
+                    <textarea
+                        name="rejection_reason"
+                        required
+                    >{{ old('rejection_reason') }}</textarea>
+                </label>
+
+                <button class="button danger ui-pressable">
+                    Request Replacement Scan
+                </button>
+            </form>
+        </section>
+    @elseif(
+        $isSpmu
+        && $laundryJob->latestEvidence
+        && $laundryJob->latestEvidence->verification_status === 'VERIFIED'
+    )
+        <section class="content-area">
+            <article class="card">
+                <div class="card-header">
+                    <div>
+                        <p class="eyebrow">Laundry verification</p>
+                        <h2>Accomplished form verified</h2>
+                    </div>
+                    <x-status-badge status="VERIFIED" />
+                </div>
+
+                <dl class="detail-list">
+                    <dt>Laundry Worker</dt>
+                    <dd>{{ $laundryJob->worker_name ?: '—' }}</dd>
+
+                    <dt>Received by Laundry</dt>
+                    <dd>{{ optional($laundryJob->worker_received_at)->format('d M Y, g:i A') ?: '—' }}</dd>
+
+                    <dt>Laundry Completed</dt>
+                    <dd>{{ optional($laundryJob->worker_completed_at)->format('d M Y, g:i A') ?: '—' }}</dd>
+
+                    <dt>Verified by SPMU</dt>
+                    <dd>{{ $laundryJob->formVerifier?->full_name ?: '—' }}</dd>
+
+                    <dt>Verified at</dt>
+                    <dd>{{ optional($laundryJob->form_verified_at)->format('d M Y, g:i A') ?: '—' }}</dd>
+                </dl>
+
+                @if($laundryJob->worker_remarks)
+                    <div class="callout info top-gap">
+                        <strong>Laundry remarks</strong>
+                        <p>{{ $laundryJob->worker_remarks }}</p>
+                    </div>
+                @endif
+
+                <div class="table-wrap top-gap">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Item</th>
+                                <th>Issued</th>
+                                <th>Received</th>
+                                <th>Finding</th>
+                                <th>Affected</th>
+                                <th>Completed</th>
+                                <th>Remarks</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach($laundryJob->lines as $line)
+                                <tr>
+                                    <td>
+                                        <strong>{{ $line->custodyLine->requestItem->description_snapshot }}</strong>
+                                        <small>{{ $line->custodyLine->requestItem->unit_snapshot }}</small>
+                                    </td>
+                                    <td>{{ $line->issued_quantity + 0 }}</td>
+                                    <td>{{ ($line->received_quantity ?? 0) + 0 }}</td>
+                                    <td>{{ str($line->issue_type ?: 'NONE')->replace('_', ' ')->title() }}</td>
+                                    <td>{{ ($line->affected_quantity ?? 0) + 0 }}</td>
+                                    <td>{{ ($line->completed_quantity ?? 0) + 0 }}</td>
+                                    <td>{{ $line->remarks ?: '—' }}</td>
+                                </tr>
+                            @endforeach
+                        </tbody>
+                    </table>
+                </div>
+            </article>
+        </section>
+    @endif
 @endif
 
 @if($isSpmuOfficer && $custody->released_at && $outstandingTotal > 0)

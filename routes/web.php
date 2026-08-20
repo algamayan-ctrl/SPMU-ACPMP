@@ -392,7 +392,7 @@ Route::middleware(['auth', 'active'])->group(function (): void {
         ->name('overdue.bill');
 
     Route::post('/billings/{billing}/payments', [AccountabilityController::class, 'recordPayment'])
-        ->middleware('workspace:BORROWER')
+        ->middleware('workspace:SPMU')
         ->name('payments.store');
 
     Route::post('/payments/{payment}/verify', [AccountabilityController::class, 'verifyPayment'])

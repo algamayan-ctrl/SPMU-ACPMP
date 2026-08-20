@@ -109,6 +109,52 @@ class SimpleLaundryWorkflowTest extends TestCase
         ]);
     }
 
+    public function test_spmu_receives_laundry_worker_scan_and_action_officer_can_open_verification_workspace(): void
+    {
+        [$job] = $this->laundryCase();
+        $worker = $this->classificationUser(AccessClassification::LaundryWorker);
+        $spmuOfficer = $this->classificationUser(AccessClassification::SpmuOfficer);
+        $spmuHead = $this->classificationUser(AccessClassification::SpmuHead);
+
+        $this->withSession(['active_workspace' => 'LAUNDRY'])
+            ->actingAs($worker)
+            ->post(route('laundry.upload-form', $job), [
+                'evidence' => UploadedFile::fake()->create(
+                    'accomplished-laundry-form.pdf',
+                    20,
+                    'application/pdf'
+                ),
+            ])
+            ->assertSessionHasNoErrors();
+
+        $this->withSession(['active_workspace' => 'LAUNDRY'])
+            ->actingAs($worker)
+            ->post(route('laundry.release-to-borrower', $job))
+            ->assertSessionHasNoErrors();
+
+        $job->refresh();
+        $this->assertSame('FOR_SPMU_FINAL_CHECK', $job->status);
+
+        $this->withSession(['active_workspace' => 'SPMU'])
+            ->actingAs($spmuOfficer)
+            ->get(route('custody.show', $job->custody_transaction_id))
+            ->assertOk()
+            ->assertSeeText('Accomplished Laundry Form')
+            ->assertSeeText('View Uploaded Scan')
+            ->assertSeeText('Review accomplished Laundry Form')
+            ->assertSeeText('Verify and encode Laundry inspection')
+            ->assertSeeText('Verify Laundry Form & Save Inspection');
+
+        $this->withSession(['active_workspace' => 'SPMU'])
+            ->actingAs($spmuHead)
+            ->get(route('custody.show', $job->custody_transaction_id))
+            ->assertOk()
+            ->assertSeeText('Accomplished Laundry Form')
+            ->assertSeeText('View Uploaded Scan')
+            ->assertSeeText('Awaiting SPMU Action Officer verification.')
+            ->assertDontSeeText('Verify Laundry Form & Save Inspection');
+    }
+
     public function test_spmu_transcribes_the_scan_and_only_final_spmu_return_makes_linen_available(): void
     {
         [$job, $jobLine] = $this->laundryCase();

@@ -157,6 +157,84 @@ class CustodyService
         }, 3);
     }
 
+    /**
+     * Expire pickup claim windows that were not completed before the
+     * configured cutoff.
+     *
+     * Expiring the pickup window does not cancel the approved request or
+     * release its inventory reservation. It only closes the current claim
+     * window so the SPMU Action Officer can schedule a new pickup window.
+     * Any earlier preparation must be reconfirmed for the new schedule.
+     */
+    public function expirePickupWindows(): int
+    {
+        $expired = 0;
+
+        CustodyTransaction::query()
+            ->where('status', 'PREPARING_RELEASE')
+            ->whereNull('released_at')
+            ->whereNotNull('pickup_expires_at')
+            ->whereNull('pickup_expired_at')
+            ->where('pickup_expires_at', '<', now())
+            ->orderBy('id')
+            ->each(function (CustodyTransaction $custody) use (&$expired): void {
+                DB::transaction(function () use ($custody, &$expired): void {
+                    $locked = CustodyTransaction::query()
+                        ->lockForUpdate()
+                        ->find($custody->id);
+
+                    if (
+                        ! $locked
+                        || $locked->status !== 'PREPARING_RELEASE'
+                        || $locked->released_at
+                        || ! $locked->pickup_expires_at
+                        || $locked->pickup_expired_at
+                        || $locked->pickup_expires_at->gte(now())
+                    ) {
+                        return;
+                    }
+
+                    $expiredAt = now();
+
+                    $locked->update([
+                        'pickup_expired_at' => $expiredAt,
+                        'prepared_by_user_id' => null,
+                        'prepared_at' => null,
+                    ]);
+
+                    $locked->lines()->update([
+                        'item_status' => 'CONFIRMED',
+                    ]);
+
+                    $this->audit->record(
+                        'PICKUP_WINDOW_EXPIRED',
+                        $locked,
+                        after: [
+                            'pickup_expires_at' => $locked->pickup_expires_at->toIso8601String(),
+                            'pickup_expired_at' => $expiredAt->toIso8601String(),
+                            'reservation_released' => false,
+                            'requires_rescheduling' => true,
+                        ]
+                    );
+
+                    $locked->loadMissing('borrower');
+
+                    if ($locked->borrower) {
+                        $this->notifications->send(
+                            'PICKUP_WINDOW_EXPIRED',
+                            collect([$locked->borrower]),
+                            "The pickup window for {$locked->custody_no} has expired. The approved reservation remains in place; wait for SPMU to schedule a new pickup window.",
+                            $locked
+                        );
+                    }
+
+                    $expired++;
+                }, 3);
+            });
+
+        return $expired;
+    }
+
     public function schedulePickup(
         CustodyTransaction $custody,
         User $spmu,
@@ -839,16 +917,89 @@ class CustodyService
                 }
             }
 
-            $allReturned = $custody->lines->every(fn ($line) => (float) $line->returned_quantity >= (float) $line->actual_released_quantity);
-            $overdue = OverdueCase::query()->where('custody_transaction_id', $custody->id)->first();
+            $allReturned = $custody->lines->every(
+                fn ($line) =>
+                    (float) $line->returned_quantity
+                    >= (float) $line->actual_released_quantity
+            );
+
+            $overdue = OverdueCase::query()
+                ->where('custody_transaction_id', $custody->id)
+                ->first();
+
+            if ($allReturned) {
+                /*
+                 * PENDING_RETURN means that physical property is still
+                 * outstanding. Once every released quantity for this custody
+                 * has been physically returned, lift that restriction unless
+                 * the same borrower still has another custody with an
+                 * outstanding issued quantity.
+                 */
+                $hasOtherOutstandingCustody = CustodyTransaction::query()
+                    ->where('borrower_user_id', $custody->borrower_user_id)
+                    ->whereKeyNot($custody->id)
+                    ->whereHas(
+                        'lines',
+                        fn ($query) =>
+                            $query->whereColumn(
+                                'returned_quantity',
+                                '<',
+                                'actual_released_quantity'
+                            )
+                    )
+                    ->exists();
+
+                if (! $hasOtherOutstandingCustody) {
+                    BorrowerRestriction::query()
+                        ->where('borrower_user_id', $custody->borrower_user_id)
+                        ->where('restriction_type', 'PENDING_RETURN')
+                        ->where('status', 'ACTIVE')
+                        ->update([
+                            'status' => 'LIFTED',
+                            'effective_to' => now(),
+                            'lifted_by_user_id' => $spmu->id,
+                        ]);
+                }
+            }
+
             if ($overdue && $allReturned && $overdue->status !== 'RESOLVED') {
                 $rate = SystemSetting::value('daily_overdue_tariff');
-                $days = max(1, (int) ceil($overdue->grace_expires_at->diffInMinutes(now()) / 1440));
+                $days = max(
+                    1,
+                    (int) ceil(
+                        $overdue->grace_expires_at->diffInMinutes(now())
+                        / 1440
+                    )
+                );
+
                 $overdue->update([
                     'rate_snapshot' => is_numeric($rate) ? $rate : null,
-                    'accrued_amount' => is_numeric($rate) ? round($days * (float) $rate, 2) : 0,
+                    'accrued_amount' => is_numeric($rate)
+                        ? round($days * (float) $rate, 2)
+                        : 0,
                     'status' => 'RETURNED_PENDING_SETTLEMENT',
                 ]);
+
+                /*
+                 * The physical-return restriction is finished at this point,
+                 * but the late-return accountability remains open until the
+                 * assessed fee is settled or formally waived.
+                 */
+                BorrowerRestriction::query()->firstOrCreate(
+                    [
+                        'borrower_user_id' => $custody->borrower_user_id,
+                        'restriction_type' => 'OVERDUE_RETURN',
+                        'status' => 'ACTIVE',
+                    ],
+                    [
+                        'reason' =>
+                            'Late return under '
+                            .$custody->custody_no
+                            .' is awaiting accountability settlement.',
+                        'effective_from' => now(),
+                        'imposed_by_user_id' => $spmu->id,
+                    ]
+                );
             }
             $hasOpenIncident = Incident::query()
                 ->where('custody_transaction_id', $custody->id)

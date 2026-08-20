@@ -26,7 +26,7 @@
         <article class="workflow-step" data-step="02">
             <span class="step-number">02</span>
             <h3>Approval</h3>
-            <p>Track the request through SPMU verification, reservation, pickup, return, and accountability processing. Required GSU/VPAF institutional signatures are completed physically on the printed Borrowing Request Letter; SPMU verifies the uploaded signed scan.</p>
+            <p>Track the request through SPMU verification, reservation, pickup, return, and accountability processing. Required institutional signatures are completed physically on the printed Borrowing Request Letter. GSU/VPAF institutional signatures are signatories only; SPMU verifies the uploaded signed scan.</p>
         </article>
         <article class="workflow-step" data-step="03">
             <span class="step-number">03</span>
