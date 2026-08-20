@@ -2,7 +2,6 @@
 
 namespace Tests\Feature;
 
-use App\Enums\UserRole;
 use App\Models\InventoryItem;
 use App\Models\Role;
 use Database\Seeders\DatabaseSeeder;
@@ -19,9 +18,11 @@ class FoundationTest extends TestCase
         $this->get('/')
             ->assertOk()
             ->assertSee('SPMU-ACPMP')
-            ->assertSee('SPMU')
-            ->assertSee('GSU')
-            ->assertSee('VPAF');
+            ->assertSee('SPMU verification')
+            ->assertSee('Required institutional signatures are completed physically')
+            ->assertSee('GSU/VPAF institutional signatures')
+            ->assertDontSee('GSU Approval')
+            ->assertDontSee('VPAF Approval');
     }
 
     public function test_core_schema_and_reference_data_are_ready(): void
@@ -32,7 +33,22 @@ class FoundationTest extends TestCase
             $this->assertTrue(Schema::hasTable($table), "Expected the {$table} table to exist.");
         }
 
-        $this->assertSame(count(UserRole::cases()), Role::query()->count());
+        $this->assertSame(
+            ['BORROWER', 'ICTU', 'LAUNDRY', 'SPMU'],
+            Role::query()
+                ->where('active', true)
+                ->orderBy('role_code')
+                ->pluck('role_code')
+                ->map(fn ($role) => is_object($role) ? $role->value : (string) $role)
+                ->all()
+        );
+
+        $this->assertFalse(
+            Role::query()
+                ->whereIn('role_code', ['GSU', 'VPAF'])
+                ->where('active', true)
+                ->exists()
+        );
         $this->assertSame('6.000', InventoryItem::query()->where('unique_description', 'Barricade')->value('total_quantity'));
         $this->assertTrue(InventoryItem::query()->where('unique_description', 'Barricade')->value('provisional'));
     }

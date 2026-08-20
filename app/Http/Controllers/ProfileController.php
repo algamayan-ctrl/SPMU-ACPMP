@@ -4,14 +4,10 @@ namespace App\Http\Controllers;
 
 use App\Enums\AccessClassification;
 use App\Models\OrganizationalUnit;
-use App\Models\SystemSetting;
-use App\Models\UserSignature;
 use App\Services\AuditService;
-use App\Services\ProtectedFileService;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Validation\Rule;
-use Illuminate\Validation\ValidationException;
 use Illuminate\View\View;
 
 class ProfileController extends Controller
@@ -28,7 +24,7 @@ class ProfileController extends Controller
 
     public function show(Request $request): View
     {
-        $user = $request->user()->load('organizationalUnit', 'currentSignature.file');
+        $user = $request->user()->load('organizationalUnit');
 
         return view('profile.show', [
             'user' => $user,
@@ -36,7 +32,7 @@ class ProfileController extends Controller
                 ? OrganizationalUnit::query()
                     ->where('active', true)
                     ->whereIn('unit_name', self::BORROWER_DEPARTMENT_NAMES)
-                    ->orderByRaw('FIELD(unit_name, ?) ASC', [implode(',', self::BORROWER_DEPARTMENT_NAMES)])
+                    ->orderBy('unit_name')
                     ->get()
                 : collect(),
         ]);
@@ -46,6 +42,7 @@ class ProfileController extends Controller
     {
         $user = $request->user();
         $isBorrower = $user->access_classification === AccessClassification::BorrowerOnly;
+
         $rules = [
             'full_name' => ['required', 'string', 'max:255'],
             'designation' => ['nullable', 'string', 'max:255'],
@@ -54,6 +51,7 @@ class ProfileController extends Controller
             'email_notifications' => ['nullable', 'boolean'],
             'sms_notifications' => ['nullable', 'boolean'],
         ];
+
         if ($isBorrower) {
             $allowedBorrowerUnitIds = OrganizationalUnit::query()
                 ->where('active', true)
@@ -61,14 +59,17 @@ class ProfileController extends Controller
                 ->pluck('id')
                 ->all();
 
-            $rules['employee_no'] = ['required', 'string', 'max:80', Rule::unique('users')->ignore($user->id)];
-            $rules['organizational_unit_id'] = [
+            $rules['employee_no'] = [
                 'required',
-                Rule::in($allowedBorrowerUnitIds),
+                'string',
+                'max:80',
+                Rule::unique('users')->ignore($user->id),
             ];
+            $rules['organizational_unit_id'] = ['required', Rule::in($allowedBorrowerUnitIds)];
         }
 
         $data = $request->validate($rules);
+
         $updatedFields = ['full_name', 'designation', 'mobile_no', 'notification_preferences'];
         $updates = [
             'full_name' => $data['full_name'],
@@ -80,6 +81,7 @@ class ProfileController extends Controller
                 'sms' => $request->boolean('sms_notifications'),
             ],
         ];
+
         if ($isBorrower) {
             $updates['employee_no'] = $data['employee_no'];
             $updates['organizational_unit_id'] = $data['organizational_unit_id'];
@@ -93,22 +95,4 @@ class ProfileController extends Controller
         return back()->with('status', 'Account settings updated.');
     }
 
-    public function signature(Request $request, ProtectedFileService $files, AuditService $audit): RedirectResponse
-    {
-        $maxKb = ((int) SystemSetting::value('max_upload_mb', 5)) * 1024;
-        $data = $request->validate(['signature' => ['required', 'file', 'mimes:png,jpg,jpeg,webp', 'max:'.$maxKb]]);
-        $user = $request->user();
-
-        $user->currentSignature()->update(['status' => 'REPLACED', 'effective_to' => now()]);
-        $file = $files->storeUpload($data['signature'], 'profile-signatures', 'PROFILE_SIGNATURE');
-        $signature = UserSignature::query()->create([
-            'user_id' => $user->id,
-            'stored_file_id' => $file->id,
-            'effective_from' => now(),
-            'status' => 'ACTIVE',
-        ]);
-        $audit->record('PROFILE_SIGNATURE_REPLACED', $signature, after: ['sha256' => $file->sha256]);
-
-        return back()->with('status', 'E-signature uploaded. Future signing actions will use this version; older snapshots remain unchanged.');
-    }
 }

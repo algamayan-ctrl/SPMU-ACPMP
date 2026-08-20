@@ -26,7 +26,7 @@
         <article class="workflow-step" data-step="02">
             <span class="step-number">02</span>
             <h3>Approval</h3>
-            <p>Track the request through the required SPMU, GSU, and VPAF review stages.</p>
+            <p>Track the request through SPMU verification, reservation, pickup, return, and accountability processing. Required GSU/VPAF institutional signatures are completed physically on the printed Borrowing Request Letter; SPMU verifies the uploaded signed scan.</p>
         </article>
         <article class="workflow-step" data-step="03">
             <span class="step-number">03</span>
@@ -81,7 +81,7 @@
             </div>
             <ul>
                 <li>Make sure your account information is current.</li>
-                <li>Prepare your e-signature.</li>
+                <li>Prepare the required supporting documents and obtain the required handwritten/wet signatures.</li>
                 <li>Check item availability and required dates.</li>
                 <li>Provide the correct purpose or event information.</li>
                 <li>Return borrowed property within the approved schedule.</li>

@@ -2,25 +2,11 @@
 
 ## Design direction
 
-The interface uses the SPHERE manuscript only as a usability reference. It adopts a familiar blue role menu, a quiet white workspace, compact summary cards, clear task lists, readable tables, and plain-language actions. It does not copy SPHERE's rental, facility, payment, attendance, plan, or public-registration functions.
-
-SPMU-ACPMP remains based on the approved CSPC property-borrowing process: Borrower request, SPMU approval, GSU approval, VPAF approval and allocation, approved-letter download, Borrower Slip, release, item-level return, conditional forms, accountability, reports, and ICTU administration.
-
-## Shared usability rules
-
-1. Show only the tools authorized for the assigned portal.
-2. Use familiar words such as `Create new request`, `View details`, `Check availability`, and `Return deadline`.
-3. Keep the current role visible near the top of every page.
-4. Put the most common task first and avoid presenting every possible action at once.
-5. Use large form controls, clear labels, visible status tags, and explicit empty-state messages.
-6. Never rely on color alone; every status includes readable text.
-7. Keep advanced information available on detail pages instead of crowding dashboards.
-8. Preserve the same navigation order and page pattern throughout a portal.
+The interface uses a compact navy role menu, white work area, clear status badges, focused forms and role-specific actions. Navigation exposes only what the signed-in classification needs.
 
 ## Portal menus
 
 ### Borrower
-
 - Dashboard
 - Available Items
 - Borrowing Calendar
@@ -29,7 +15,6 @@ SPMU-ACPMP remains based on the approved CSPC property-borrowing process: Borrow
 - Accountability
 
 ### SPMU
-
 - Dashboard
 - Approval Queue
 - All Requests
@@ -38,27 +23,13 @@ SPMU-ACPMP remains based on the approved CSPC property-borrowing process: Borrow
 - Release and Return
 - Accountability
 - Reports
-- Configuration
+- Configuration (as authorized)
 
-### GSU Approver
-
-- Dashboard
-- Approval Queue
-- Request Records
-- Inventory View
-- Borrowing Calendar
-
-### VPAF Approver
-
-- Dashboard
-- Approval Queue
-- Request Records
-- Inventory View
-- Borrowing Calendar
-- Reports
+### Laundry Worker
+- Dashboard / Laundry Requests
+- Active linen job details and accomplished Laundry Form upload only
 
 ### ICTU
-
 - Dashboard
 - User Accounts
 - Delegated Approvers
@@ -66,17 +37,27 @@ SPMU-ACPMP remains based on the approved CSPC property-borrowing process: Borrow
 - Audit Trail
 - Delivery Records
 
-ICTU does not receive a borrowing calendar or general approval queue in its administration portal. ICTU Maintainers cannot borrow; formal temporary delegation remains limited to the applicable approval action.
+There are no GSU or VPAF portals. Their names appear only where the physical Borrowing Request Letter identifies required institutional signatories.
 
-## Page pattern
+## SPMU verification workspace
 
-1. Compact top bar: page name, assigned portal, notifications, profile, and sign out.
-2. Page heading: short category label, plain-language title, one supporting sentence, and at most a few relevant actions.
-3. Dashboard: three summary cards, one attention list, common-task shortcuts, and an upcoming-deadline preview when relevant.
-4. Record lists: focused filters, readable status labels, and a `View details` action.
-5. Forms: visible labels above controls, one clear primary action, and explanatory text only where it prevents a mistake.
-6. Mobile view: collapsible role menu, single-column cards, horizontally scrollable data tables, and touch-friendly controls.
+For a submitted request, SPMU uses a split review screen:
+
+- left: scanned fully signed Borrowing Request Letter (PDF/image preview);
+- right: verification checklist and decision controls;
+- decisions: Verify & Approve, Return for Revision, Reject.
+
+No e-signature control appears in this workspace.
+
+## Shared usability rules
+
+1. Show only role-authorized tools.
+2. Use plain-language actions and concise helper copy.
+3. Keep status/action information visible without exposing unnecessary technical metadata.
+4. Use responsive tables/cards and accessible focus/labels.
+5. Avoid duplicate controls and old workspace-switching UI.
+6. Keep physical-document actions explicit: print, wet-sign, scan, upload, verify.
 
 ## Protected process rules
 
-Interface simplification must never remove or bypass sequential approvals, self-approval restrictions, signature attribution, same-day approved-letter download, allocation controls, item-level custody status, Gate Pass and Laundry Form conditions, return inspection, accountability evidence, or audit records.
+UI simplification must not bypass SPMU verification, self-action restrictions, exact reservation, physical preparation/release, Gate Pass/Laundry conditions, return inspection, accountability evidence, delegation attribution or audit records.

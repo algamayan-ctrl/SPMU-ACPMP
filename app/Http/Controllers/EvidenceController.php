@@ -6,6 +6,7 @@ use App\Enums\UserRole;
 use App\Models\CustodyTransaction;
 use App\Models\EvidenceSubmission;
 use App\Models\GeneratedDocument;
+use App\Models\LaundryJob;
 use App\Models\LaundryRecord;
 use App\Models\SystemSetting;
 use App\Services\AuditService;
@@ -30,6 +31,19 @@ class EvidenceController extends Controller
         $submission = DB::transaction(function () use ($request, $document, $files, $audit, $notifications, $data): EvidenceSubmission {
             $document = GeneratedDocument::query()->lockForUpdate()->findOrFail($document->id);
             $custody = $this->applicableCustody($document);
+
+            if (
+                $document->document_type === 'LAUNDRY_FORM'
+                && LaundryJob::query()
+                    ->where('custody_transaction_id', $custody->id)
+                    ->exists()
+            ) {
+                abort(
+                    403,
+                    'The active Laundry Form is uploaded by the Laundry Worker through the simple Laundry portal.'
+                );
+            }
+
             $borrower = $custody->borrower;
             abort_unless($request->user()->id === $borrower->id || $request->user()->hasRole(UserRole::Spmu), 403);
             $fallback = $request->user()->id !== $borrower->id;
@@ -77,6 +91,19 @@ class EvidenceController extends Controller
             }
             $evidence->loadMissing('document');
             $custody = $this->applicableCustody($evidence->document);
+
+            if (
+                $evidence->document->document_type === 'LAUNDRY_FORM'
+                && LaundryJob::query()
+                    ->where('custody_transaction_id', $custody->id)
+                    ->exists()
+            ) {
+                abort(
+                    403,
+                    'Use the SPMU Laundry Form verification panel so the signed form is encoded and verified in one accountable step.'
+                );
+            }
+
             $evidence->update([
                 'verified_by_user_id' => $request->user()->id,
                 'verification_status' => $data['decision'],
@@ -86,7 +113,7 @@ class EvidenceController extends Controller
             if ($data['decision'] === 'VERIFIED' && $evidence->document->document_type === 'LAUNDRY_FORM') {
                 LaundryRecord::query()
                     ->whereHas('returnLine.custodyLine', fn ($query) => $query->where('custody_transaction_id', $custody->id))
-                    ->whereNot('status', 'VERIFIED')
+                    ->where('status', '!=', 'VERIFIED')
                     ->update(['status' => 'EVIDENCE_VERIFIED_PENDING_PHYSICAL_CHECK']);
             }
             $audit->record('PAPER_EVIDENCE_'.$data['decision'], $evidence, reason: $data['reason'] ?? null);
@@ -125,11 +152,30 @@ class EvidenceController extends Controller
             if ((int) $custody->gatePass?->pass_document_id !== (int) $document->id || ! $custody->released_at || $custody->gatePass?->status === 'VERIFIED') {
                 throw ValidationException::withMessages(['evidence' => 'This Gate Pass is not currently awaiting post-release evidence.']);
             }
-        } elseif (! LaundryRecord::query()
-            ->whereHas('returnLine.custodyLine', fn ($query) => $query->where('custody_transaction_id', $custody->id))
-            ->whereNot('status', 'VERIFIED')
-            ->exists()) {
-            throw ValidationException::withMessages(['evidence' => 'This Laundry Form is not currently awaiting laundry-service evidence.']);
+        } elseif ($document->document_type === 'LAUNDRY_FORM') {
+            $activeLaundryJob = LaundryJob::query()
+                ->where('custody_transaction_id', $custody->id)
+                ->where('status', '!=', 'LAUNDRY_COMPLETED')
+                ->exists();
+
+            $historicalLaundryRecord = LaundryRecord::query()
+                ->whereHas(
+                    'returnLine.custodyLine',
+                    fn ($query) =>
+                        $query->where(
+                            'custody_transaction_id',
+                            $custody->id
+                        )
+                )
+                ->where('status', '!=', 'VERIFIED')
+                ->exists();
+
+            if (! $activeLaundryJob && ! $historicalLaundryRecord) {
+                throw ValidationException::withMessages([
+                    'evidence' =>
+                        'This Laundry Form is not currently awaiting laundry-service evidence.',
+                ]);
+            }
         }
 
         return $custody;

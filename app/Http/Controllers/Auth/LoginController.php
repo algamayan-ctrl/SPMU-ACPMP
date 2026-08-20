@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Auth;
 
+use App\Enums\AccessClassification;
 use App\Enums\AccountStatus;
 use App\Http\Controllers\Controller;
 use Illuminate\Http\RedirectResponse;
@@ -33,6 +34,20 @@ class LoginController extends Controller
 
         $request->session()->regenerate();
         $user = $request->user();
+        $classification = AccessClassification::tryFrom(
+            strtoupper((string) $user?->getRawOriginal('access_classification'))
+        );
+
+        if (! $classification?->isPortalEnabled()) {
+            Auth::logout();
+            $request->session()->invalidate();
+            $request->session()->regenerateToken();
+
+            return back()->withErrors([
+                'email' => 'This account uses a retired or invalid system role. Contact ICTU.',
+            ])->onlyInput('email');
+        }
+
         $workspace = $user->primaryWorkspace();
 
         if (! $workspace) {

@@ -162,7 +162,9 @@
                 </thead>
                 <tbody>
                     @foreach($items as $item)
-                        @php($balance = $balances[$item->id])
+                        @php
+                            $balance = $balances[$item->id];
+                        @endphp
                         <tr>
                             <td>{{ $item->unique_description }}</td>
                             <td>{{ $item->category->category_name }}</td>

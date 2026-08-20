@@ -14,8 +14,15 @@ class BorrowingRequest extends Model
     use HasFactory;
 
     protected $fillable = [
-        'request_no', 'borrower_user_id', 'accountable_unit_id', 'current_version_no',
-        'status', 'final_approved_at', 'download_deadline_at',
+        'request_no',
+        'borrower_user_id',
+        'accountable_unit_id',
+        'current_version_no',
+        'status',
+        'final_approved_at',
+
+        /* Historical download workflow field. */
+        'download_deadline_at',
     ];
 
     protected function casts(): array
@@ -52,8 +59,25 @@ class BorrowingRequest extends Model
         return $this->hasMany(RequestStatusHistory::class, 'request_id')->latest('changed_at');
     }
 
+    public function supportingDocuments(): HasMany
+    {
+        return $this->hasMany(RequestSupportingDocument::class, 'request_id');
+    }
+
     public function custody(): HasOne
     {
         return $this->hasOne(CustodyTransaction::class, 'request_id');
+    }
+
+    public function cancellations(): HasMany
+    {
+        return $this->hasMany(RequestCancellation::class, 'request_id');
+    }
+
+    public function pendingCancellation(): HasOne
+    {
+        return $this->hasOne(RequestCancellation::class, 'request_id')
+            ->where('status', 'PENDING_SPMU')
+            ->latestOfMany();
     }
 }

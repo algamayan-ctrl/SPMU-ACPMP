@@ -83,12 +83,19 @@ class InventoryService
                 '
                 COALESCE(
                     SUM(
-                        GREATEST(
-                            COALESCE(allocations.allocated_quantity, 0)
-                            - COALESCE(allocations.released_quantity, 0)
-                            - COALESCE(allocations.restored_quantity, 0),
-                            0
-                        )
+                        CASE
+                            WHEN (
+                                COALESCE(allocations.allocated_quantity, 0)
+                                - COALESCE(allocations.released_quantity, 0)
+                                - COALESCE(allocations.restored_quantity, 0)
+                            ) > 0
+                            THEN (
+                                COALESCE(allocations.allocated_quantity, 0)
+                                - COALESCE(allocations.released_quantity, 0)
+                                - COALESCE(allocations.restored_quantity, 0)
+                            )
+                            ELSE 0
+                        END
                     ),
                     0
                 ) AS quantity
@@ -148,17 +155,24 @@ class InventoryService
                     'OVERDUE',
                     'EARLY_RETURN',
                     'INCIDENT_OPEN',
+                    'OBLIGATION_OPEN',
                 ]
             )
             ->selectRaw(
                 '
                 COALESCE(
                     SUM(
-                        GREATEST(
-                            COALESCE(custody_lines.actual_released_quantity, 0)
-                            - COALESCE(custody_lines.returned_quantity, 0),
-                            0
-                        )
+                        CASE
+                            WHEN (
+                                COALESCE(custody_lines.actual_released_quantity, 0)
+                                - COALESCE(custody_lines.returned_quantity, 0)
+                            ) > 0
+                            THEN (
+                                COALESCE(custody_lines.actual_released_quantity, 0)
+                                - COALESCE(custody_lines.returned_quantity, 0)
+                            )
+                            ELSE 0
+                        END
                     ),
                     0
                 ) AS quantity
@@ -211,6 +225,7 @@ class InventoryService
                     'OVERDUE',
                     'EARLY_RETURN',
                     'INCIDENT_OPEN',
+                    'OBLIGATION_OPEN',
                 ]
             )
             ->where(
@@ -227,11 +242,17 @@ class InventoryService
                 '
                 COALESCE(
                     SUM(
-                        GREATEST(
-                            COALESCE(custody_lines.actual_released_quantity, 0)
-                            - COALESCE(custody_lines.returned_quantity, 0),
-                            0
-                        )
+                        CASE
+                            WHEN (
+                                COALESCE(custody_lines.actual_released_quantity, 0)
+                                - COALESCE(custody_lines.returned_quantity, 0)
+                            ) > 0
+                            THEN (
+                                COALESCE(custody_lines.actual_released_quantity, 0)
+                                - COALESCE(custody_lines.returned_quantity, 0)
+                            )
+                            ELSE 0
+                        END
                     ),
                     0
                 ) AS quantity
@@ -501,7 +522,7 @@ class InventoryService
 
 
     /**
-     * Allocate inventory after final VPAF approval.
+     * Reserve inventory only after SPMU verification/approval.
      *
      * @return list<Allocation>
      */
@@ -518,10 +539,10 @@ class InventoryService
                 'inventory_transactions'
             )->insertGetId([
                 'actor_user_id' => auth()->id(),
-                'transaction_type' => 'FINAL_APPROVAL_ALLOCATION',
+                'transaction_type' => 'SPMU_APPROVAL_RESERVATION',
                 'source_type' => RequestVersion::class,
                 'source_id' => $version->id,
-                'reason' => 'Atomic allocation after final VPAF approval.',
+                'reason' => 'Atomic reservation after SPMU verification/approval.',
                 'correlation_id' => (string) Str::uuid(),
                 'occurred_at' => now(),
                 'created_at' => now(),
@@ -564,6 +585,7 @@ class InventoryService
                  */
                 if (
                     ! $item->borrowable
+                    || $item->condition_code !== 'SERVICEABLE'
                     || $requested <= 0
                     || $balance['available'] < $requested
                 ) {
@@ -572,14 +594,14 @@ class InventoryService
                             "{$item->unique_description} has only "
                             .$balance['available']
                             .' available for the requested period. '
-                            .'The request was returned to SPMU without allocation.',
+                            .'The verified approved request cannot be fulfilled as documented and must be returned for revision.',
                     ]);
                 }
 
 
                 /*
-                 * Final approved quantity matches the quantity that passed
-                 * the final inventory availability check.
+                 * Approved quantity remains exactly the quantity in the verified approved request.
+                 * SPMU does not silently reduce it to match stock.
                  */
                 $requestItem->update([
                     'approved_quantity' =>
@@ -588,7 +610,8 @@ class InventoryService
 
 
                 /*
-                 * Create active reservation/allocation.
+                 * Create active reservation. Internal ALLOCATED terminology is retained
+                 * for compatibility; user-facing language is Reserved.
                  */
                 $allocation = Allocation::query()->create([
                     'request_item_id' => $requestItem->id,
@@ -609,7 +632,7 @@ class InventoryService
                 /*
                  * Record inventory ledger movement:
                  *
-                 * AVAILABLE -> ALLOCATED
+                 * AVAILABLE -> ALLOCATED (displayed as RESERVED)
                  */
                 DB::table(
                     'inventory_transaction_lines'

@@ -74,9 +74,9 @@
             Items needed from
 
             <input
-                type="datetime-local"
+                type="date"
                 name="from"
-                value="{{ $from->format('Y-m-d\TH:i') }}"
+                value="{{ $from->format('Y-m-d') }}"
             >
         </label>
 
@@ -85,9 +85,9 @@
             Expected return date
 
             <input
-                type="datetime-local"
+                type="date"
                 name="to"
-                value="{{ $to->format('Y-m-d\TH:i') }}"
+                value="{{ $to->format('Y-m-d') }}"
             >
         </label>
 
@@ -111,15 +111,13 @@
         >
             <strong>
                 Selected borrowing period:
-                {{ $from->format('d M Y, g:i A') }}
+                {{ $from->format('d M Y') }}
                 to
-                {{ $to->format('d M Y, g:i A') }}
+                {{ $to->format('d M Y') }}
             </strong>
 
             <span>
-                Physical available shows stock currently in SPMU custody.
-                Selected-period availability also considers reservations and active
-                borrowings that overlap the dates above.
+                Only serviceable/good-condition and currently borrowable stock is shown to borrowers. Selected-period availability also considers SPMU-approved reservations and active borrowings that overlap the dates above. Viewing availability does not reserve inventory.
             </span>
         </div>
 

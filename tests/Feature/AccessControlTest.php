@@ -113,9 +113,11 @@ class AccessControlTest extends TestCase
         $classification = match ($roleCode) {
             UserRole::Borrower => AccessClassification::BorrowerOnly,
             UserRole::Spmu => AccessClassification::SpmuOfficer,
-            UserRole::Gsu => AccessClassification::GsuHead,
-            UserRole::Vpaf => AccessClassification::VpafHead,
+            UserRole::Laundry => AccessClassification::LaundryWorker,
             UserRole::Ictu => AccessClassification::IctuMaintainer,
+            UserRole::Gsu, UserRole::Vpaf => throw new \InvalidArgumentException(
+                'Retired GSU/VPAF roles cannot be created as active test users.'
+            ),
         };
         $user = User::factory()->create(['access_classification' => $classification]);
         $role = Role::query()->where('role_code', $roleCode->value)->firstOrFail();

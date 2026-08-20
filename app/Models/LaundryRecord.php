@@ -7,15 +7,67 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
 class LaundryRecord extends Model
 {
-    protected $fillable = ['return_line_id', 'form_document_id', 'verified_by_user_id', 'worker_name', 'worker_received_at', 'worker_completed_at', 'cleaned_quantity', 'damaged_quantity', 'status', 'verified_at'];
+    protected $fillable = [
+        'return_line_id',
+        'form_document_id',
+        'accomplished_file_id',
+        'uploaded_by_user_id',
+        'uploaded_at',
+        'verified_by_user_id',
+        'worker_user_id',
+        'worker_name',
+        'worker_received_at',
+        'worker_completed_at',
+        'quantity_received',
+        'received_condition',
+        'cleaned_quantity',
+        'damaged_quantity',
+        'remarks',
+        'status',
+        'verified_at',
+        'verification_remarks',
+    ];
 
     protected function casts(): array
     {
-        return ['worker_received_at' => 'datetime', 'worker_completed_at' => 'datetime', 'cleaned_quantity' => 'decimal:3', 'damaged_quantity' => 'decimal:3', 'verified_at' => 'datetime'];
+        return [
+            'uploaded_at' => 'datetime',
+            'worker_received_at' => 'datetime',
+            'worker_completed_at' => 'datetime',
+            'quantity_received' => 'decimal:3',
+            'cleaned_quantity' => 'decimal:3',
+            'damaged_quantity' => 'decimal:3',
+            'verified_at' => 'datetime',
+        ];
     }
 
     public function returnLine(): BelongsTo
     {
         return $this->belongsTo(ReturnLine::class);
+    }
+
+    public function formDocument(): BelongsTo
+    {
+        return $this->belongsTo(GeneratedDocument::class, 'form_document_id');
+    }
+
+    public function accomplishedFile(): BelongsTo
+    {
+        return $this->belongsTo(StoredFile::class, 'accomplished_file_id');
+    }
+
+    public function uploadedBy(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'uploaded_by_user_id');
+    }
+
+    public function worker(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'worker_user_id');
+    }
+
+    public function verifiedBy(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'verified_by_user_id');
     }
 }

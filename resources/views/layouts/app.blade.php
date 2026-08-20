@@ -37,9 +37,9 @@
         $navigation = match ($activeWorkspace) {
             'BORROWER' => [
                 ['dashboard', 'dashboard', 'Dashboard', 'dashboard'],
-                ['inventory.index', 'inventory.*', 'Available Items', 'inventory'],
-                ['calendar.index', 'calendar.*', 'Borrowing Calendar', 'calendar'],
+                ['inventory.index', 'inventory.*', 'Inventory', 'inventory'],
                 ['requests.index', 'requests.*', 'My Requests', 'requests'],
+                ['calendar.index', 'calendar.*', 'Borrowing Calendar', 'calendar'],
                 ['custody.index', 'custody.*', 'My Borrowings', 'custody'],
                 ['accountability.index', 'accountability.*', 'Accountability', 'accountability'],
             ],
@@ -54,21 +54,6 @@
                 ['reports.index', 'reports.index', 'Reports', 'reports'],
                 ['administration.index', 'administration.*', 'Configuration', 'settings'],
             ],
-            'GSU' => [
-                ['dashboard', 'dashboard', 'Dashboard', 'dashboard'],
-                ['approvals.index', 'approvals.*', 'Approval Queue', 'approval'],
-                ['requests.index', 'requests.*', 'Request Records', 'requests'],
-                ['inventory.index', 'inventory.*', 'Inventory View', 'inventory'],
-                ['calendar.index', 'calendar.*', 'Borrowing Calendar', 'calendar'],
-            ],
-            'VPAF' => [
-                ['dashboard', 'dashboard', 'Dashboard', 'dashboard'],
-                ['approvals.index', 'approvals.*', 'Approval Queue', 'approval'],
-                ['requests.index', 'requests.*', 'Request Records', 'requests'],
-                ['inventory.index', 'inventory.*', 'Inventory View', 'inventory'],
-                ['calendar.index', 'calendar.*', 'Borrowing Calendar', 'calendar'],
-                ['reports.index', 'reports.*', 'Reports', 'reports'],
-            ],
             'ICTU' => [
                 ['dashboard', 'dashboard', 'Dashboard', 'dashboard'],
                 ['administration.users.index', 'administration.users.*', 'User Accounts', 'users'],
@@ -76,6 +61,9 @@
                 ['administration.settings.index', 'administration.settings.*', 'System Settings', 'settings'],
                 ['reports.audit', 'reports.audit', 'Audit Trail', 'reports'],
                 ['reports.notifications', 'reports.notifications', 'Delivery Records', 'notifications'],
+            ],
+            'LAUNDRY' => [
+                ['laundry.index', 'laundry.*', 'Laundry Requests', 'custody'],
             ],
             default => [],
         };
@@ -124,7 +112,7 @@
 @else
     <header class="site-header public-header">
         <a class="brand" href="{{ route('home') }}" aria-label="SPMU-ACPMP home"><span class="brand-mark">SA</span><span><strong>SPMU-ACPMP</strong><small>Asset custody and monitoring</small></span></a>
-        <nav><a href="#how-it-works">Learn more</a><a href="{{ route('login') }}">Sign in</a></nav>
+        <nav><a href="#how-it-works">Learn more</a><a href="#help">Help</a><a href="{{ route('login') }}">Sign in</a></nav>
     </header>
     <main id="main-content" tabindex="-1">
         @if(session('status'))<div class="notice success" role="status"><x-icon name="success" /><div>{{ session('status') }}</div></div>@endif

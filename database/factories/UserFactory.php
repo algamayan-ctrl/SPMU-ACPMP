@@ -2,6 +2,7 @@
 
 namespace Database\Factories;
 
+use App\Enums\AccessClassification;
 use App\Enums\AccountStatus;
 use App\Enums\EmploymentType;
 use App\Models\User;
@@ -38,6 +39,7 @@ class UserFactory extends Factory
                 'sms' => false,
             ],
             'account_status' => AccountStatus::Active,
+            'access_classification' => AccessClassification::BorrowerOnly,
             'email_verified_at' => now(),
             'password' => static::$password ??= Hash::make('password'),
             'remember_token' => Str::random(10),

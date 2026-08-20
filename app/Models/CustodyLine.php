@@ -5,6 +5,7 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Relations\HasOne;
 
 class CustodyLine extends Model
 {
@@ -33,5 +34,10 @@ class CustodyLine extends Model
     public function returnLines(): HasMany
     {
         return $this->hasMany(ReturnLine::class);
+    }
+
+    public function laundryJobLine(): HasOne
+    {
+        return $this->hasOne(LaundryJobLine::class);
     }
 }

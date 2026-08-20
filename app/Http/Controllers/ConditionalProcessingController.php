@@ -13,7 +13,7 @@ use App\Models\OverdueCase;
 use App\Models\SystemSetting;
 use App\Services\AuditService;
 use App\Services\DocumentService;
-use App\Services\SignatureService;
+use App\Services\ProtectedFileService;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -22,127 +22,196 @@ use Illuminate\Validation\ValidationException;
 
 class ConditionalProcessingController extends Controller
 {
-    public function signGatePassVerified(Request $request, GatePass $gatePass, SignatureService $signatures, DocumentService $documents, AuditService $audit): RedirectResponse
-    {
-        $signed = DB::transaction(function () use ($request, $gatePass, $signatures, $documents, $audit): bool {
-            $gatePass = GatePass::query()->lockForUpdate()->findOrFail($gatePass->id);
-            $gatePass->loadMissing('custody.request');
-            if ($request->user()->access_classification !== AccessClassification::SpmuOfficer || $gatePass->custody->borrower_user_id === $request->user()->id) {
-                abort(403, 'Only a non-borrowing-on-this-request SPMU Action Officer may sign Verified By.');
-            }
-            if ($gatePass->prepared_verified_at) {
-                return false;
-            }
-            if ($gatePass->status !== 'PENDING' || $gatePass->custody->status !== 'PREPARING_RELEASE') {
-                throw ValidationException::withMessages(['gate_pass' => 'The Gate Pass is not in a state that allows the Verified By signature.']);
-            }
+    public function gatePass(
+        Request $request,
+        GatePass $gatePass,
+        ProtectedFileService $files,
+        AuditService $audit
+    ): RedirectResponse {
+        abort_unless(
+            $request->user()->access_classification
+                === AccessClassification::SpmuOfficer,
+            403,
+            'Only the SPMU Action Officer may verify the accomplished physical Gate Pass.'
+        );
 
-            $snapshot = $signatures->snapshot($request->user(), 'GATE_PASS_VERIFIED_BY', 'SPMU_ACTION_OFFICER');
-            $gatePass->update(['prepared_verified_by_user_id' => $request->user()->id, 'prepared_verifier_signature_snapshot_id' => $snapshot->id, 'prepared_verified_at' => now(), 'status' => 'AWAITING_HEAD_APPROVAL']);
-            $documents->replaceConditionalForm($gatePass->custody, 'GATE_PASS');
-            $audit->record('GATE_PASS_DIGITALLY_VERIFIED', $gatePass, after: ['signature_snapshot_id' => $snapshot->id]);
+        /*
+         * If this record is already final, return without accepting or storing
+         * another file. This makes repeated submissions idempotent.
+         */
+        if ($gatePass->status === 'VERIFIED') {
+            return back()->with(
+                'status',
+                'This Gate Pass is already verified. No duplicate scan or verification was recorded.'
+            );
+        }
 
-            return true;
-        }, 3);
+        $maxKb =
+            ((int) SystemSetting::value('max_upload_mb', 5))
+            * 1024;
 
-        return back()->with('status', $signed
-            ? 'Gate Pass Verified By signature recorded. SPMU Head approval is required before printing.'
-            : 'The Gate Pass Verified By signature was already recorded. No duplicate signature or document was created.');
-    }
-
-    public function signGatePassApproved(Request $request, GatePass $gatePass, SignatureService $signatures, DocumentService $documents, AuditService $audit): RedirectResponse
-    {
-        $signed = DB::transaction(function () use ($request, $gatePass, $signatures, $documents, $audit): bool {
-            $gatePass = GatePass::query()->lockForUpdate()->findOrFail($gatePass->id);
-            $gatePass->loadMissing('custody.request');
-            $delegation = $request->user()->activeDelegationFor('SPMU');
-            if ($request->user()->access_classification !== AccessClassification::SpmuHead && ! $delegation) {
-                abort(403, 'Only the SPMU Head or a valid temporary delegated approver may sign Approved By.');
-            }
-            if ($gatePass->approved_at) {
-                return false;
-            }
-            if ($gatePass->status !== 'AWAITING_HEAD_APPROVAL' || ! $gatePass->prepared_verified_at || $gatePass->prepared_verified_by_user_id === $request->user()->id || $gatePass->custody->borrower_user_id === $request->user()->id) {
-                throw ValidationException::withMessages(['gate_pass' => 'A separate SPMU Action Officer must first complete Verified By, and no signer may act on their own borrowing.']);
-            }
-            $snapshot = $signatures->snapshot($request->user(), 'GATE_PASS_APPROVED_BY', 'SPMU_HEAD');
-            $gatePass->update(['approved_by_user_id' => $request->user()->id, 'approver_signature_snapshot_id' => $snapshot->id, 'temporary_delegation_id' => $delegation?->id, 'approved_at' => now(), 'status' => 'READY_FOR_PRINTING']);
-            $documents->replaceConditionalForm($gatePass->custody, 'GATE_PASS');
-            $audit->record('GATE_PASS_DIGITALLY_APPROVED', $gatePass, after: ['signature_snapshot_id' => $snapshot->id, 'temporary_delegation_id' => $delegation?->id]);
-
-            return true;
-        }, 3);
-
-        return back()->with('status', $signed
-            ? 'Gate Pass digitally approved and ready for printing. The guard signs after campus exit.'
-            : 'The Gate Pass approval was already recorded. No duplicate signature or document was created.');
-    }
-
-    public function approveLaundryForm(Request $request, CustodyTransaction $custody, SignatureService $signatures, DocumentService $documents, AuditService $audit): RedirectResponse
-    {
-        $signed = DB::transaction(function () use ($request, $custody, $signatures, $documents, $audit): bool {
-            $custody = CustodyTransaction::query()->lockForUpdate()->findOrFail($custody->id);
-            $custody->loadMissing('lines.requestItem.inventoryItem');
-            abort_unless($custody->lines->contains(fn ($line) => $line->requestItem->inventoryItem->laundry_required), 404);
-            $delegation = $request->user()->activeDelegationFor('SPMU');
-            if ($request->user()->access_classification !== AccessClassification::SpmuHead && ! $delegation) {
-                abort(403, 'Only the SPMU Head or a valid temporary delegated approver may approve the Laundry Form.');
-            }
-            if ($custody->laundry_approved_at) {
-                return false;
-            }
-            if ($custody->status !== 'PREPARING_RELEASE' || ! $custody->laundry_borrower_signature_snapshot_id || $custody->borrower_user_id === $request->user()->id) {
-                throw ValidationException::withMessages(['laundry' => 'The borrower must first sign the receipt acknowledgement and Laundry Form.']);
-            }
-            $snapshot = $signatures->snapshot($request->user(), 'LAUNDRY_FORM_APPROVED_BY', 'SPMU_HEAD');
-            $custody->update(['laundry_approved_by_user_id' => $request->user()->id, 'laundry_approver_signature_snapshot_id' => $snapshot->id, 'laundry_temporary_delegation_id' => $delegation?->id, 'laundry_approved_at' => now()]);
-            $documents->replaceConditionalForm($custody, 'LAUNDRY_FORM');
-            $audit->record('LAUNDRY_FORM_DIGITALLY_APPROVED', $custody, after: ['signature_snapshot_id' => $snapshot->id, 'temporary_delegation_id' => $delegation?->id]);
-
-            return true;
-        }, 3);
-
-        return back()->with('status', $signed
-            ? 'Laundry Form contains the Borrower and SPMU Head digital signatures and is ready for printing.'
-            : 'The Laundry Form approval was already recorded. No duplicate signature or document was created.');
-    }
-
-    public function gatePass(Request $request, GatePass $gatePass, AuditService $audit): RedirectResponse
-    {
         $data = $request->validate([
-            'guard_name' => ['required', 'string', 'max:255'],
-            'guard_signed_at' => ['required', 'date'],
+            'accomplished_form' => [
+                'required',
+                'file',
+                'mimes:pdf,png,jpg,jpeg,webp',
+                'max:'.$maxKb,
+            ],
+            'guard_name' => [
+                'required',
+                'string',
+                'max:255',
+            ],
+            'guard_signed_at' => [
+                'required',
+                'date',
+            ],
+            'remarks' => [
+                'nullable',
+                'string',
+                'max:2000',
+            ],
         ]);
-        $verified = DB::transaction(function () use ($request, $gatePass, $audit, $data): bool {
-            $gatePass = GatePass::query()->lockForUpdate()->findOrFail($gatePass->id);
-            $gatePass->loadMissing('custody');
-            if ($gatePass->status === 'VERIFIED') {
-                return false;
-            }
-            if ($gatePass->status !== 'READY_FOR_PRINTING' || ! $gatePass->approved_at || ! $gatePass->custody->released_at) {
-                throw ValidationException::withMessages(['gate_pass' => 'The current approved Gate Pass can be physically verified only after item release.']);
-            }
-            $verifiedEvidence = $gatePass->pass_document_id
-                && DB::table('evidence_submissions')->where('generated_document_id', $gatePass->pass_document_id)->where('verification_status', 'VERIFIED')->exists();
-            if (! $verifiedEvidence) {
-                throw ValidationException::withMessages(['gate_pass' => 'Verify the uploaded signed Gate Pass evidence before completing the paper-form record.']);
-            }
-            $gatePass->update([
-                'guard_name' => $data['guard_name'],
-                'guard_signed_at' => $data['guard_signed_at'],
-                'verified_by_user_id' => $request->user()->id,
-                'verified_at' => now(),
-                'status' => 'VERIFIED',
-            ]);
-            $gatePass->custody->lines()->whereHas('requestItem', fn ($query) => $query->where('use_location', 'OFF_CAMPUS'))->update(['compliance_status' => 'CLEARED_GATE']);
-            $audit->record('GATE_PASS_PHYSICAL_VERIFICATION', $gatePass, after: $data);
 
-            return true;
-        }, 3);
+        $verified = DB::transaction(
+            function () use (
+                $request,
+                $gatePass,
+                $files,
+                $audit,
+                $data
+            ): bool {
+                $gatePass = GatePass::query()
+                    ->lockForUpdate()
+                    ->findOrFail($gatePass->id);
 
-        return back()->with('status', $verified
-            ? 'Gate Pass paper signature and physical event verified.'
-            : 'The Gate Pass physical verification was already completed. No duplicate action was recorded.');
+                $gatePass->loadMissing('custody');
+
+                if ($gatePass->status === 'VERIFIED') {
+                    return false;
+                }
+
+                if (
+                    ! $gatePass->custody?->released_at
+                    || ! in_array(
+                        $gatePass->status,
+                        ['PENDING', 'READY_FOR_PRINTING'],
+                        true
+                    )
+                ) {
+                    throw ValidationException::withMessages([
+                        'gate_pass' =>
+                            'The accomplished Gate Pass can be verified only after the approved items have been physically released.',
+                    ]);
+                }
+
+                $file = $files->storeUpload(
+                    $data['accomplished_form'],
+                    'gate-pass-evidence/'.$gatePass->id,
+                    'PAPER_EVIDENCE'
+                );
+
+                $gatePass->update([
+                    'accomplished_file_id' =>
+                        $file->id,
+
+                    'uploaded_by_user_id' =>
+                        $request->user()->id,
+
+                    'uploaded_at' =>
+                        now(),
+
+                    'guard_name' =>
+                        $data['guard_name'],
+
+                    'guard_signed_at' =>
+                        $data['guard_signed_at'],
+
+                    'verified_by_user_id' =>
+                        $request->user()->id,
+
+                    'verified_at' =>
+                        now(),
+
+                    'verification_remarks' =>
+                        $data['remarks'] ?? null,
+
+                    'status' =>
+                        'VERIFIED',
+
+                    /*
+                     * Legacy digital-signature fields remain null in the
+                     * active wet-signature workflow.
+                     */
+                    'prepared_verified_by_user_id' =>
+                        null,
+
+                    'prepared_verifier_signature_snapshot_id' =>
+                        null,
+
+                    'prepared_verified_at' =>
+                        null,
+
+                    'approved_by_user_id' =>
+                        null,
+
+                    'approver_signature_snapshot_id' =>
+                        null,
+
+                    'temporary_delegation_id' =>
+                        null,
+
+                    'approved_at' =>
+                        null,
+                ]);
+
+                $gatePass
+                    ->custody
+                    ->lines()
+                    ->whereHas(
+                        'requestItem',
+                        fn ($query) =>
+                            $query->where(
+                                'use_location',
+                                'OFF_CAMPUS'
+                            )
+                    )
+                    ->update([
+                        'compliance_status' =>
+                            'GATE_PASS_COMPLETED',
+                    ]);
+
+                $audit->record(
+                    'GATE_PASS_ACCOMPLISHED_VERIFIED',
+                    $gatePass,
+                    reason:
+                        $data['remarks'] ?? null,
+                    after: [
+                        'stored_file_id' =>
+                            $file->id,
+
+                        'guard_name' =>
+                            $data['guard_name'],
+
+                        'guard_signed_at' =>
+                            $data['guard_signed_at'],
+
+                        'verification_method' =>
+                            'SCANNED_WET_SIGNED_FORM',
+                    ]
+                );
+
+                return true;
+            },
+            3
+        );
+
+        return back()->with(
+            'status',
+            $verified
+                ? 'Accomplished Gate Pass recorded and verified.'
+                : 'This Gate Pass is already verified. No duplicate scan or verification was recorded.'
+        );
     }
 
     public function laundry(Request $request, LaundryRecord $laundry, AuditService $audit, DocumentService $documents): RedirectResponse
@@ -248,10 +317,10 @@ class ConditionalProcessingController extends Controller
                     $documents->rslddp($incident->fresh());
                 }
             }
-            $openLaundry = LaundryRecord::query()->whereHas('returnLine.custodyLine', fn ($query) => $query->where('custody_transaction_id', $custody->id))->whereNot('status', 'VERIFIED')->exists();
+            $openLaundry = LaundryRecord::query()->whereHas('returnLine.custodyLine', fn ($query) => $query->where('custody_transaction_id', $custody->id))->where('status', '!=', 'VERIFIED')->exists();
             $openIncident = DB::table('incidents')->where('custody_transaction_id', $custody->id)->whereNotIn('status', ['RESOLVED', 'CLOSED'])->exists();
-            $openOverdue = OverdueCase::query()->where('custody_transaction_id', $custody->id)->whereNot('status', 'RESOLVED')->exists();
-            $openGatePass = $custody->gatePass()->whereNot('status', 'VERIFIED')->exists();
+            $openOverdue = OverdueCase::query()->where('custody_transaction_id', $custody->id)->where('status', '!=', 'RESOLVED')->exists();
+            $openGatePass = $custody->gatePass()->where('status', '!=', 'VERIFIED')->exists();
             $allReturned = $custody->lines()->get()->every(fn ($line) => (float) $line->returned_quantity >= (float) $line->actual_released_quantity);
             if (! $openLaundry && ! $openIncident && ! $openOverdue && ! $openGatePass && $allReturned) {
                 $custody->update(['status' => 'CLOSED', 'closed_at' => now()]);

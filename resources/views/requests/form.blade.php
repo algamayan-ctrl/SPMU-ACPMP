@@ -1,113 +1,182 @@
-@extends('layouts.app', ['title' => $borrowingRequest->exists ? 'Edit Request' : 'Create Request'])
+@extends('layouts.app', ['title' => $borrowingRequest->exists ? 'Edit Borrowing Request' : 'Create Borrowing Request'])
 @section('content')
 @php
-    $selected = $version->exists ? $version->items->keyBy('inventory_item_id') : collect();
-    $isReturned = $borrowingRequest->exists && $borrowingRequest->status === App\Enums\RequestStatus::ReturnedForRevision;
-    $returnRemarks = $isReturned ? $version->approvalSteps->where('decision', 'RETURNED')->pluck('remarks')->filter() : collect();
+    $editing = $borrowingRequest->exists;
+    $currentItems = $version->exists ? $version->items->keyBy('inventory_item_id') : collect();
+    $supporting = $version->exists ? $version->supportingDocuments->where('is_current', true) : collect();
+    $requestLetter = $supporting->firstWhere('document_type', App\Models\RequestSupportingDocument::TYPE_REQUEST_LETTER);
+    $ptc = $supporting->firstWhere('document_type', App\Models\RequestSupportingDocument::TYPE_PERMISSION_TO_CONDUCT);
 @endphp
 
-<section class="page-heading request-form-heading">
+<section class="page-heading">
     <div>
         <p class="eyebrow">Borrowing request</p>
-        <h1>{{ $isReturned ? 'Revise your borrowing request' : ($borrowingRequest->exists ? 'Edit request draft' : 'Create a borrowing request') }}</h1>
-        <p>Complete the borrowing details, schedule, and item quantities below. Availability applies to the entire selected period.</p>
-    </div>
-    <div class="step-chip">Draft details</div>
-</section>
-
-@if($isReturned)
-<section class="content-area">
-    <div class="action-panel action-warning" role="status">
-        <div><p class="eyebrow">Action required</p><h2>Returned for Revision</h2><p>Update the request using the review remarks below. Saving creates the next request version without removing the previous record.</p></div>
-        @if($returnRemarks->isNotEmpty())<ul>@foreach($returnRemarks as $remark)<li>{{ $remark }}</li>@endforeach</ul>@else<p>No specific reviewer remark was recorded. Review the request details carefully before saving.</p>@endif
+        <h1>{{ $editing ? 'Edit request' : 'Create request' }}</h1>
+        <p>Saving a request does not reserve inventory. Reservation happens only after SPMU verifies and approves the submitted request.</p>
     </div>
 </section>
-@endif
 
-<section class="content-area request-form-shell">
-<form method="post" action="{{ $borrowingRequest->exists ? route('requests.update', $borrowingRequest) : route('requests.store') }}" class="form-grid" id="request-form">
+<form method="post" action="{{ $editing ? route('requests.update', $borrowingRequest) : route('requests.store') }}" enctype="multipart/form-data" class="content-area form-grid">
     @csrf
-    @if($borrowingRequest->exists)@method('PUT')@endif
+    @if($editing) @method('PUT') @endif
 
-    <section class="card form-section" aria-labelledby="borrowing-details-heading">
-        <div class="section-number" aria-hidden="true">01</div>
-        <div><h2 id="borrowing-details-heading">Borrowing details</h2><p class="meta">Describe the activity and where the property will be used.</p></div>
-        <div class="form-columns full-span">
-            <label>Purpose of borrowing<input name="purpose_event" value="{{ old('purpose_event', $version->purpose_event) }}" required>@error('purpose_event')<small class="field-error">{{ $message }}</small>@enderror</label>
-            <label>Event or activity location<input name="location" value="{{ old('location', $version->location) }}" required>@error('location')<small class="field-error">{{ $message }}</small>@enderror</label>
-        </div>
-        <label class="full-span">Event or activity details<textarea name="event_details" required>{{ old('event_details', $version->event_details) }}</textarea><small>Include enough information for reviewers to understand the institutional use.</small>@error('event_details')<small class="field-error">{{ $message }}</small>@enderror</label>
-        <label class="full-span">Additional note to reviewers <small>(optional)</small><textarea name="remarks">{{ old('remarks', $version->remarks) }}</textarea>@error('remarks')<small class="field-error">{{ $message }}</small>@enderror</label>
+    <section class="card form-grid">
+        <div class="card-header"><div><p class="eyebrow">1. Request details</p><h2>Event and purpose</h2></div></div>
+        <label>Purpose / Event
+            <input name="purpose_event" value="{{ old('purpose_event', $version->purpose_event) }}" required maxlength="255">
+            @error('purpose_event')<small class="field-error">{{ $message }}</small>@enderror
+        </label>
+        <label>Event Details
+            <textarea name="event_details" required>{{ old('event_details', $version->event_details) }}</textarea>
+            @error('event_details')<small class="field-error">{{ $message }}</small>@enderror
+        </label>
+        <label>Location
+            <input name="location" value="{{ old('location', $version->location) }}" required maxlength="255">
+            @error('location')<small class="field-error">{{ $message }}</small>@enderror
+        </label>
     </section>
 
-    <section class="card form-section" aria-labelledby="schedule-heading">
-        <div class="section-number" aria-hidden="true">02</div>
-        <div><h2 id="schedule-heading">Borrowing schedule</h2><p class="meta">Dates cannot be extended after approval. Choose the complete use period.</p></div>
-        <div class="form-columns full-span">
-            <label>Items needed from<input id="needed_from" type="datetime-local" name="needed_from" value="{{ old('needed_from', optional($version->needed_from)->format('Y-m-d\TH:i')) }}" required>@error('needed_from')<small class="field-error">{{ $message }}</small>@enderror</label>
-            <label>Expected return date<input id="return_due_at" type="datetime-local" name="return_due_at" value="{{ old('return_due_at', optional($version->return_due_at)->format('Y-m-d\TH:i')) }}" required>@error('return_due_at')<small class="field-error">{{ $message }}</small>@enderror</label>
+    <section class="card form-grid">
+        <div class="card-header"><div><p class="eyebrow">2. Borrowing period</p><h2>Calendar dates only</h2></div></div>
+        <p class="meta">Borrowers choose dates only. SPMU assigns the exact pickup time after approval.</p>
+        <div class="form-columns">
+            <label>Schedule Date
+                <input id="schedule_date" type="date" name="schedule_date" value="{{ old('schedule_date', optional($version->schedule_date ?: $version->needed_from)->format('Y-m-d')) }}" required>
+                @error('schedule_date')<small class="field-error">{{ $message }}</small>@enderror
+            </label>
+            <label>Expected Return Date
+                <input id="return_date" type="date" name="return_date" value="{{ old('return_date', optional($version->return_date ?: $version->return_due_at)->format('Y-m-d')) }}" required>
+                @error('return_date')<small class="field-error">{{ $message }}</small>@enderror
+            </label>
         </div>
     </section>
 
-    <section class="card form-section" aria-labelledby="represented-activity-heading">
-        <div class="section-number" aria-hidden="true">03</div>
-        <div><h2 id="represented-activity-heading">Represented organization or program</h2><p class="meta">Complete this only when borrowing on behalf of a student activity. You remain the accountable borrower.</p></div>
-        <label class="checkbox full-span"><input id="represents_students" type="checkbox" name="represents_student_activity" value="1" @checked(old('represents_student_activity', $version->represents_student_activity))> This request represents a student activity</label>
-        <div id="student-fields" class="form-columns full-span">
-            <label>Student organization <small>(optional)</small><input name="student_organization" value="{{ old('student_organization', $version->student_organization) }}"></label>
-            <label>Program or department<input name="represented_program_department" value="{{ old('represented_program_department', $version->represented_program_department) }}">@error('represented_program_department')<small class="field-error">{{ $message }}</small>@enderror</label>
-            <label>Year level<input name="represented_year_level" value="{{ old('represented_year_level', $version->represented_year_level) }}">@error('represented_year_level')<small class="field-error">{{ $message }}</small>@enderror</label>
+    <section class="card form-grid">
+        <div class="card-header"><div><p class="eyebrow">3. Student activity</p><h2>Supporting activity information</h2></div></div>
+        <label class="checkbox">
+            <input id="student-activity" type="checkbox" name="represents_student_activity" value="1" @checked(old('represents_student_activity', $version->represents_student_activity))>
+            This request represents a student activity / organization
+        </label>
+        <div id="student-fields" class="form-columns">
+            <label>Student Organization
+                <input name="student_organization" value="{{ old('student_organization', $version->student_organization) }}">
+            </label>
+            <label>Program / Department
+                <input name="represented_program_department" value="{{ old('represented_program_department', $version->represented_program_department) }}">
+            </label>
+            <label>Year Level
+                <input name="represented_year_level" value="{{ old('represented_year_level', $version->represented_year_level) }}">
+            </label>
         </div>
     </section>
 
-    <section class="card form-section item-selection-section" aria-labelledby="items-heading">
-        <div class="section-number" aria-hidden="true">04</div>
-        <div><h2 id="items-heading">Requested items</h2><p class="meta" id="availability-message">Choose valid dates to calculate real-time availability.</p></div>
-        @error('item_ids')<p class="field-error full-span">{{ $message }}</p>@enderror
-        @error('items')<p class="field-error full-span">{{ $message }}</p>@enderror
-        @error('quantities')<p class="field-error full-span">{{ $message }}</p>@enderror
-        @error('locations')<p class="field-error full-span">{{ $message }}</p>@enderror
-        <div class="table-wrap full-span request-items-table">
+    <section class="card form-grid">
+        <div class="card-header"><div><p class="eyebrow">4. Inventory</p><h2>Select serviceable available items</h2></div></div>
+        <p id="availability-message" class="meta">Availability is informational while drafting and will be rechecked by SPMU before reservation.</p>
+        <div class="table-wrap">
             <table>
-                <thead><tr><th scope="col">Select</th><th scope="col">Item</th><th scope="col">Unit</th><th scope="col">Available for dates</th><th scope="col">Requested quantity</th><th scope="col">Use location</th></tr></thead>
+                <thead><tr><th>Select</th><th>Item</th><th>Available</th><th>Quantity</th><th>Use location</th></tr></thead>
                 <tbody>
                 @foreach($items as $item)
                     @php
-                        $requestItem = $selected->get($item->id);
+                        $selected = $currentItems->get($item->id);
                     @endphp
                     <tr>
-                        <td data-label="Select"><input type="checkbox" name="item_ids[]" value="{{ $item->id }}" aria-label="Select {{ $item->unique_description }}" @checked(old("quantities.$item->id", $requestItem?->requested_quantity ?? 0) > 0)></td>
-                        <td data-label="Item"><strong>{{ $item->unique_description }}</strong>@if($item->specification)<small>{{ $item->specification }}</small>@endif @if($item->laundry_required)<span class="badge">Laundry Form required</span>@endif @if($item->off_campus_allowed)<span class="badge">Off-campus allowed</span>@endif</td>
-                        <td data-label="Unit">{{ $item->unit->unit_name }}</td>
-                        <td data-label="Available for dates"><strong class="availability-value" data-item="{{ $item->id }}">Select dates</strong><small>Total stock: {{ $item->total_quantity + 0 }}</small></td>
-                        <td data-label="Requested quantity"><input class="quantity-input" type="number" step="0.001" min="0" max="{{ $item->total_quantity }}" name="quantities[{{ $item->id }}]" aria-label="Requested quantity for {{ $item->unique_description }}" value="{{ old("quantities.$item->id", $requestItem?->requested_quantity ?? 0) }}"></td>
-                        <td data-label="Use location">@if($item->off_campus_allowed)<select name="locations[{{ $item->id }}]" aria-label="Use location for {{ $item->unique_description }}"><option value="ON_CAMPUS" @selected(old("locations.$item->id", $requestItem?->use_location) === 'ON_CAMPUS')>On-campus</option><option value="OFF_CAMPUS" @selected(old("locations.$item->id", $requestItem?->use_location) === 'OFF_CAMPUS')>Off-campus</option></select>@else<input type="hidden" name="locations[{{ $item->id }}]" value="ON_CAMPUS"><span class="locked-value">On-campus only</span>@endif</td>
+                        <td><input type="checkbox" name="item_ids[]" value="{{ $item->id }}" @checked($selected || in_array($item->id, old('item_ids', [])))></td>
+                        <td><strong>{{ $item->unique_description }}</strong><small>{{ $item->unit?->unit_name }}</small></td>
+                        <td><span class="availability-value" data-item="{{ $item->id }}">—</span></td>
+                        <td><input type="number" step="0.001" min="0" name="quantities[{{ $item->id }}]" value="{{ old('quantities.'.$item->id, $selected?->requested_quantity ?? 0) }}"></td>
+                        <td>
+                            <select name="locations[{{ $item->id }}]">
+                                <option value="ON_CAMPUS" @selected(old('locations.'.$item->id, $selected?->use_location ?? 'ON_CAMPUS') === 'ON_CAMPUS')>On Campus</option>
+                                @if($item->off_campus_allowed)
+                                    <option value="OFF_CAMPUS" @selected(old('locations.'.$item->id, $selected?->use_location) === 'OFF_CAMPUS')>Off Campus</option>
+                                @endif
+                            </select>
+                        </td>
                     </tr>
                 @endforeach
                 </tbody>
             </table>
         </div>
+        @error('items')<small class="field-error">{{ $message }}</small>@enderror
+        @error('quantities')<small class="field-error">{{ $message }}</small>@enderror
     </section>
 
-    <section class="card form-section review-section" aria-labelledby="review-heading">
-        <div class="section-number" aria-hidden="true">05</div>
-        <div><h2 id="review-heading">Review and save your draft</h2><p class="meta">Saving does not submit the request for approval.</p></div>
-        <div class="full-span review-note">
-            <p>The system will save your request and generate an official preview. Review that document on the next screen before using your profile e-signature to certify and submit it to SPMU.</p>
-            <ul><li>Availability will be checked again.</li><li>Only selected items with a quantity greater than zero are saved.</li><li>Submission creates an immutable certification and signature snapshot.</li></ul>
-        </div>
+    <section class="card form-grid">
+        <div class="card-header"><div><p class="eyebrow">5. Required scanned documents</p><h2>Approved physical documents</h2></div></div>
+        <p class="meta">
+            Save the draft first to generate the printable Borrowing Request Letter. Print it,
+            obtain the required handwritten/wet signatures from the institutional signatories,
+            scan the fully accomplished letter, then upload that scan here. The system does not
+            apply electronic signatures.
+        </p>
+        @if($requestLetter)
+            <p>Current Borrowing Request Letter: <a href="{{ route('files.show', $requestLetter->file, false) }}" target="_blank" rel="noopener">View uploaded file</a></p>
+        @endif
+        <label>Fully Signed Borrowing Request Letter
+            <input type="file" name="approved_request_letter" accept="application/pdf,image/png,image/jpeg,image/webp">
+            <small>{{ $requestLetter ? 'Upload only if replacing the current document.' : 'Required before submission; draft may be saved first.' }}</small>
+        </label>
+        @if($ptc)
+            <p>Current Permission to Conduct Letter: <a href="{{ route('files.show', $ptc->file, false) }}" target="_blank" rel="noopener">View uploaded file</a></p>
+        @endif
+        <label>Permission to Conduct Letter
+            <input type="file" name="permission_to_conduct_letter" accept="application/pdf,image/png,image/jpeg,image/webp">
+            <small>Required when the request represents a student activity / organization.</small>
+        </label>
+        <label>Remarks <textarea name="remarks">{{ old('remarks', $version->remarks) }}</textarea></label>
     </section>
 
-    <div class="actions sticky-actions"><button class="button primary ui-pressable">Save draft and generate preview</button><a class="button secondary" href="{{ route('requests.index') }}">Cancel</a></div>
+    <div class="form-actions">
+        <button class="button primary ui-pressable" type="submit">{{ $editing ? 'Save Draft Changes' : 'Save Draft Request' }}</button>
+        <a class="button secondary ui-pressable" href="{{ route('requests.index') }}">Cancel</a>
+    </div>
 </form>
-</section>
 
 <script>
-const studentToggle=document.getElementById('represents_students'); const studentFields=document.getElementById('student-fields');
-function toggleStudentFields(){studentFields.classList.toggle('is-hidden',!studentToggle.checked); studentFields.querySelectorAll('input').forEach((el)=>{if(el.name!=='student_organization')el.required=studentToggle.checked;});}
-studentToggle.addEventListener('change',toggleStudentFields); toggleStudentFields();
-let availabilityTimer;
-async function refreshAvailability(){const from=document.getElementById('needed_from').value;const to=document.getElementById('return_due_at').value;if(!from||!to)return;clearTimeout(availabilityTimer);availabilityTimer=setTimeout(async()=>{const message=document.getElementById('availability-message');message.textContent='Checking real-time availability…';try{const response=await fetch(`{{ route('inventory.availability') }}?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`,{headers:{Accept:'application/json'}});if(!response.ok)throw new Error();const data=await response.json();document.querySelectorAll('.availability-value').forEach((node)=>{const balance=data[node.dataset.item];if(!balance)return;node.textContent=balance.available;const quantity=document.querySelector(`[name="quantities[${node.dataset.item}]"]`);quantity.max=balance.available;});message.textContent='Availability is calculated for the complete selected period and will be rechecked at submission and final approval.';}catch(e){message.textContent='Enter a valid borrowing period to calculate availability.';}},250);}
-document.getElementById('needed_from').addEventListener('change',refreshAvailability);document.getElementById('return_due_at').addEventListener('change',refreshAvailability);refreshAvailability();
+(() => {
+    const studentToggle = document.getElementById('student-activity');
+    const studentFields = document.getElementById('student-fields');
+    const toggleStudentFields = () => {
+        const enabled = !!studentToggle?.checked;
+        studentFields?.querySelectorAll('input').forEach((input) => {
+            if (input.name === 'represented_program_department' || input.name === 'represented_year_level') {
+                input.required = enabled;
+            }
+        });
+    };
+    studentToggle?.addEventListener('change', toggleStudentFields);
+    toggleStudentFields();
+
+    let timer;
+    const refreshAvailability = () => {
+        const from = document.getElementById('schedule_date')?.value;
+        const to = document.getElementById('return_date')?.value;
+        if (!from || !to) return;
+        clearTimeout(timer);
+        timer = setTimeout(async () => {
+            const message = document.getElementById('availability-message');
+            try {
+                const response = await fetch(`{{ route('inventory.availability') }}?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`, {headers:{Accept:'application/json'}});
+                if (!response.ok) throw new Error();
+                const data = await response.json();
+                document.querySelectorAll('.availability-value').forEach((node) => {
+                    const balance = data[node.dataset.item];
+                    if (!balance) return;
+                    node.textContent = balance.available;
+                    const quantity = document.querySelector(`[name="quantities[${node.dataset.item}]"]`);
+                    if (quantity) quantity.max = balance.available;
+                });
+                message.textContent = 'Availability shown for the complete selected calendar period. Submission still creates no reservation.';
+            } catch (error) {
+                message.textContent = 'Enter a valid Schedule Date and Return Date to calculate availability.';
+            }
+        }, 250);
+    };
+    document.getElementById('schedule_date')?.addEventListener('change', refreshAvailability);
+    document.getElementById('return_date')?.addEventListener('change', refreshAvailability);
+    refreshAvailability();
+})();
 </script>
 @endsection

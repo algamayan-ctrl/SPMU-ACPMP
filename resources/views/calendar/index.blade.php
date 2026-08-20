@@ -1,6 +1,8 @@
 @extends('layouts.app', ['title' => 'Borrowing Calendar'])
 @section('content')
-@php($isBorrower = $workspace === 'BORROWER')
+@php
+    $isBorrower = $workspace === 'BORROWER';
+@endphp
 <section class="page-heading calendar-page-heading">
     <div>
         <p class="eyebrow">Schedule overview</p>

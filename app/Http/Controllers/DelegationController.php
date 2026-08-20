@@ -18,15 +18,15 @@ class DelegationController extends Controller
     {
         return view('administration.delegations', [
             'delegations' => TemporaryDelegation::with(['absentHead', 'delegate', 'recorder'])->latest('effective_from')->get(),
-            'heads' => User::whereIn('access_classification', [AccessClassification::SpmuHead->value, AccessClassification::GsuHead->value, AccessClassification::VpafHead->value])->orderBy('full_name')->get(),
-            'officers' => User::where('account_status', 'ACTIVE')->whereNotIn('access_classification', [AccessClassification::SpmuHead->value, AccessClassification::GsuHead->value, AccessClassification::VpafHead->value])->orderBy('full_name')->get(),
+            'heads' => User::where('access_classification', AccessClassification::SpmuHead->value)->orderBy('full_name')->get(),
+            'officers' => User::where('account_status', 'ACTIVE')->where('access_classification', AccessClassification::SpmuOfficer->value)->orderBy('full_name')->get(),
         ]);
     }
 
     public function store(Request $request, AuditService $audit): RedirectResponse
     {
         $data = $request->validate([
-            'office_role' => ['required', Rule::in(['SPMU', 'GSU', 'VPAF'])],
+            'office_role' => ['required', Rule::in(['SPMU'])],
             'absent_head_user_id' => ['required', 'exists:users,id'],
             'delegate_user_id' => ['required', 'different:absent_head_user_id', 'exists:users,id'],
             'authority_reference' => ['required', 'string', 'max:255'],
@@ -36,11 +36,7 @@ class DelegationController extends Controller
         ]);
         $head = User::findOrFail($data['absent_head_user_id']);
         $delegate = User::findOrFail($data['delegate_user_id']);
-        $expected = match ($data['office_role']) {
-            'SPMU' => AccessClassification::SpmuHead,
-            'GSU' => AccessClassification::GsuHead,
-            default => AccessClassification::VpafHead,
-        };
+        $expected = AccessClassification::SpmuHead;
         if ($head->access_classification !== $expected) {
             throw ValidationException::withMessages(['absent_head_user_id' => 'The selected Head does not match the delegated office.']);
         }
@@ -55,7 +51,7 @@ class DelegationController extends Controller
         $delegation = TemporaryDelegation::create($data + ['recorded_by_user_id' => $request->user()->id, 'status' => 'ACTIVE']);
         $audit->record('TEMPORARY_DELEGATION_CREATED', $delegation, reason: $data['reason'], after: $delegation->toArray());
 
-        return back()->with('status', 'Temporary delegated approver recorded. The officer must use their own account and e-signature.');
+        return back()->with('status', 'Temporary SPMU approval delegation recorded. The acting officer must use their own account; all delegated decisions remain attributable and audited.');
     }
 
     public function revoke(Request $request, TemporaryDelegation $delegation, AuditService $audit): RedirectResponse

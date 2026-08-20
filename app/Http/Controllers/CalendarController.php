@@ -236,20 +236,11 @@ class CalendarController extends Controller
 
     private function canViewRequest(BorrowingRequest $request, string $workspace, int $userId): bool
     {
-        if ($workspace === 'BORROWER') {
-            return $request->borrower_user_id === $userId;
-        }
-        if ($workspace === 'SPMU') {
-            return true;
-        }
-        if (! in_array($workspace, ['GSU', 'VPAF'], true)) {
-            return false;
-        }
-
-        return $request->status->value === 'UNDER_'.$workspace
-            || $request->currentVersion?->approvalSteps->contains(
-                fn ($step) => $step->stage_code->value === $workspace && $step->approver_user_id === $userId,
-            );
+        return match ($workspace) {
+            'BORROWER' => $request->borrower_user_id === $userId,
+            'SPMU' => true,
+            default => false,
+        };
     }
 
     private function nextAction(string $status, bool $own, bool $detailsVisible, bool $isDueSoon, CarbonImmutable $dueAt): string
@@ -275,8 +266,8 @@ class CalendarController extends Controller
             RequestStatus::FinalApprovedAwaitingDownload->value => 'Action required — download the approved letter before the deadline.',
             RequestStatus::ApprovedReadyForRelease->value, 'PREPARING_RELEASE' => 'Ready for release processing with SPMU.',
             RequestStatus::UnderSpmu->value => 'No action required — waiting for SPMU review.',
-            RequestStatus::UnderGsu->value => 'No action required — waiting for GSU review.',
-            RequestStatus::UnderVpaf->value => 'No action required — waiting for VPAF review.',
+            RequestStatus::UnderGsu->value,
+            RequestStatus::UnderVpaf->value => 'Legacy request — borrower resubmission is required under the current SPMU-only workflow.',
             'ACTIVE', 'PARTIALLY_RETURNED', 'EARLY_RETURN', 'INCIDENT_OPEN' => 'Return due '.$dueAt->format('d F Y, g:i A').'.',
             default => 'Review the request record for its latest status and instructions.',
         };

@@ -6,6 +6,7 @@ use App\Enums\RequestStatus;
 use App\Models\BorrowingRequest;
 use App\Models\CustodyTransaction;
 use App\Models\InventoryItem;
+use App\Models\LaundryJob;
 use App\Models\NotificationDelivery;
 use App\Models\TemporaryDelegation;
 use App\Models\User;
@@ -26,7 +27,14 @@ class DashboardController extends Controller
         $allowed = $user->allowedWorkspaces();
 
         if (! in_array($workspace, $allowed, true)) {
-            $workspace = $user->access_classification?->primaryWorkspace()
+            /*
+             * User::primaryWorkspace() already returns the canonical STRING
+             * workspace code (for example "SPMU"). Do not use the enum
+             * AccessClassification::primaryWorkspace() here because that
+             * returns a UserRole enum object and would make the string-based
+             * dashboard match fall through to the wrong portal.
+             */
+            $workspace = $user->primaryWorkspace()
                 ?? $allowed[0]
                 ?? null;
 
@@ -40,6 +48,25 @@ class DashboardController extends Controller
                 'active_workspace',
                 $workspace
             );
+        }
+
+        /*
+         * Laundry Worker accounts intentionally use a single-purpose workspace.
+         * The dashboard itself renders the same minimal queue so login stays on
+         * a normal 200 response while avoiding a second, complicated dashboard.
+         */
+        if ($workspace === 'LAUNDRY') {
+            return view('laundry.index', [
+                'jobs' => LaundryJob::query()
+                    ->with([
+                        'custody.borrower',
+                        'custody.request',
+                        'lines.custodyLine.requestItem.inventoryItem.unit',
+                    ])
+                    ->where('status', '!=', 'LAUNDRY_COMPLETED')
+                    ->latest('updated_at')
+                    ->paginate(20),
+            ]);
         }
 
         /*
@@ -203,103 +230,11 @@ class DashboardController extends Controller
 
             /*
             |--------------------------------------------------------------------------
-            | GSU DASHBOARD
-            |--------------------------------------------------------------------------
-            */
-
-            'GSU' => [
-                [
-                    'GSU review queue' => BorrowingRequest::query()
-                        ->where(
-                            'status',
-                            RequestStatus::UnderGsu
-                        )
-                        ->count(),
-
-                    'Forwarded approvals' => BorrowingRequest::query()
-                        ->whereIn(
-                            'status',
-                            [
-                                RequestStatus::UnderVpaf,
-                                RequestStatus::FinalApprovedAwaitingDownload,
-                                RequestStatus::ApprovedReadyForRelease,
-                            ]
-                        )
-                        ->count(),
-
-                    'Active inventory' => InventoryItem::query()
-                        ->where('active', true)
-                        ->count(),
-                ],
-
-                BorrowingRequest::query()
-                    ->with([
-                        'borrower',
-                        'currentVersion',
-                        'custody',
-                    ])
-                    ->where(
-                        'status',
-                        RequestStatus::UnderGsu
-                    )
-                    ->oldest()
-                    ->limit(6)
-                    ->get(),
-            ],
-
-
-            /*
-            |--------------------------------------------------------------------------
-            | VPAF DASHBOARD
-            |--------------------------------------------------------------------------
-            */
-
-            'VPAF' => [
-                [
-                    'VPAF review queue' => BorrowingRequest::query()
-                        ->where(
-                            'status',
-                            RequestStatus::UnderVpaf
-                        )
-                        ->count(),
-
-                    'Final approvals' => BorrowingRequest::query()
-                        ->whereNotNull(
-                            'final_approved_at'
-                        )
-                        ->count(),
-
-                    'Active custody' => CustodyTransaction::query()
-                        ->whereNotIn(
-                            'status',
-                            ['CLOSED']
-                        )
-                        ->count(),
-                ],
-
-                BorrowingRequest::query()
-                    ->with([
-                        'borrower',
-                        'currentVersion',
-                        'custody',
-                    ])
-                    ->where(
-                        'status',
-                        RequestStatus::UnderVpaf
-                    )
-                    ->oldest()
-                    ->limit(6)
-                    ->get(),
-            ],
-
-
-            /*
-            |--------------------------------------------------------------------------
             | ICTU DASHBOARD
             |--------------------------------------------------------------------------
             */
 
-            default => [
+            'ICTU' => [
                 [
                     'Active accounts' => User::query()
                         ->where(
@@ -343,6 +278,11 @@ class DashboardController extends Controller
                     ->latest()
                     ->limit(6)
                     ->get(),
+            ],
+
+            default => [
+                [],
+                collect(),
             ],
         };
 

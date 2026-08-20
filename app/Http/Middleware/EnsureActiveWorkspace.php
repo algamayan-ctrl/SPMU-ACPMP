@@ -42,8 +42,6 @@ class EnsureActiveWorkspace
             'approvals.index',
             'approvals.decide',
             'requests.show',
-            'gate-passes.sign-approved',
-            'laundry.approve-form',
         ], true)) {
             return null;
         }
@@ -53,15 +51,13 @@ class EnsureActiveWorkspace
             ->values();
         $borrowingRequest = $request->route('borrowingRequest');
 
-        if (in_array($routeName, ['gate-passes.sign-approved', 'laundry.approve-form'], true)) {
-            return $delegated->contains('SPMU') ? 'SPMU' : null;
-        }
-
         if ($borrowingRequest instanceof BorrowingRequest) {
             $stage = match ($borrowingRequest->status) {
                 RequestStatus::UnderSpmu => 'SPMU',
-                RequestStatus::UnderGsu => 'GSU',
-                RequestStatus::UnderVpaf => 'VPAF',
+
+                /*
+                 * Only SPMU is an active delegation target in the current workflow.
+                 */
                 default => null,
             };
 

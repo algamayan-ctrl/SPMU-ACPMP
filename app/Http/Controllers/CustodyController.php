@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Enums\AccessClassification;
 use App\Models\CustodyTransaction;
 use App\Services\CustodyService;
 use App\Services\ProtectedFileService;
@@ -40,6 +41,13 @@ class CustodyController extends Controller
         * Prevent /custody/{id} from crashing when the Early Return
         * database tables have not yet been created.
         */
+        if (Schema::hasTable('laundry_jobs')) {
+            $relations[] = 'laundryJob.document.file';
+            $relations[] = 'laundryJob.latestEvidence.file';
+            $relations[] = 'laundryJob.lines.custodyLine.requestItem.inventoryItem.unit';
+            $relations[] = 'laundryJob.formVerifier';
+        }
+
         if (Schema::hasTable('early_return_requests')) {
             if (Schema::hasTable('early_return_request_lines')) {
                 $relations[] = 'earlyReturnRequests.lines';
@@ -77,6 +85,38 @@ class CustodyController extends Controller
         ]);
     }
 
+    public function schedulePickup(
+        Request $request,
+        CustodyTransaction $custody,
+        CustodyService $service
+    ): RedirectResponse {
+        $this->authorizeCustody($request, $custody);
+
+        abort_unless(
+            strtoupper((string) $request->session()->get('active_workspace')) === 'SPMU'
+                && $request->user()?->access_classification === AccessClassification::SpmuOfficer
+                && $custody->borrower_user_id !== $request->user()->id,
+            403
+        );
+
+        $data = $request->validate([
+            'pickup_at' => ['required', 'date'],
+            'pickup_expires_at' => ['required', 'date', 'after:pickup_at'],
+        ]);
+
+        $service->schedulePickup(
+            $custody,
+            $request->user(),
+            $data['pickup_at'],
+            $data['pickup_expires_at']
+        );
+
+        return back()->with(
+            'status',
+            'Pickup schedule saved. Inventory remains reserved until physical issuance.'
+        );
+    }
+
     public function quantities(Request $request, CustodyTransaction $custody, CustodyService $service): RedirectResponse
     {
         $data = $request->validate(['quantities' => ['required', 'array'], 'reasons' => ['nullable', 'array']]);
@@ -96,14 +136,26 @@ class CustodyController extends Controller
     {
         $service->acknowledge($custody, $request->user());
 
-        return back()->with('status', 'Borrower acknowledgement and e-signature snapshot recorded.');
+        return back()->with('status', 'Borrower acknowledgement recorded. This is a system confirmation only; no electronic signature was created.');
     }
 
     public function release(Request $request, CustodyTransaction $custody, CustodyService $service): RedirectResponse
     {
-        $service->release($custody, $request->user());
+        $data = $request->validate([
+            'physical_signatures_confirmed' => ['required', 'accepted'],
+            'remarks' => ['nullable', 'string', 'max:2000'],
+        ]);
 
-        return back()->with('status', 'Physical release completed. Actual quantities are now Borrowed.');
+        $service->release(
+            $custody,
+            $request->user(),
+            $data['remarks'] ?? null
+        );
+
+        return back()->with(
+            'status',
+            'Physical release completed. Actual quantities are now Borrowed.'
+        );
     }
 
     public function receiveReturn(Request $request, CustodyTransaction $custody, CustodyService $service, ProtectedFileService $files): RedirectResponse

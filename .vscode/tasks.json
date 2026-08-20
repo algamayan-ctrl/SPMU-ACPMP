@@ -2,47 +2,6 @@
     "version": "2.0.0",
     "tasks": [
         {
-            "label": "SPMU: Prepare local database",
-            "type": "shell",
-            "command": ".\\tools\\artisan.cmd",
-            "args": ["migrate", "--seed"],
-            "options": {"cwd": "${workspaceFolder}"},
-            "problemMatcher": []
-        },
-        {
-            "label": "SPMU: Start local Laravel server",
-            "type": "shell",
-            "command": ".\\tools\\artisan.cmd",
-            "args": ["serve", "--host=127.0.0.1", "--port=8001"],
-            "options": {"cwd": "${workspaceFolder}"},
-            "isBackground": true,
-            "problemMatcher": {
-                "owner": "spmu",
-                "pattern": {"regexp": "^(.*)$", "message": 1},
-                "background": {
-                    "activeOnStart": true,
-                    "beginsPattern": "Starting Laravel development server",
-                    "endsPattern": "Server running on"
-                }
-            },
-            "presentation": {"reveal": "always", "panel": "dedicated", "clear": true}
-        },
-        {
-            "label": "SPMU: Open local site",
-            "type": "shell",
-            "command": "Start-Process 'http://127.0.0.1:8001'",
-            "options": {"cwd": "${workspaceFolder}"},
-            "problemMatcher": []
-        },
-        {
-            "label": "SPMU: Run automated tests",
-            "type": "shell",
-            "command": ".\\tools\\artisan.cmd",
-            "args": ["test"],
-            "options": {"cwd": "${workspaceFolder}"},
-            "problemMatcher": []
-        },
-        {
             "label": "SPMU: Prepare Docker environment",
             "type": "shell",
             "command": "powershell",
@@ -54,15 +13,37 @@
             "label": "SPMU: Start Docker + MariaDB",
             "type": "shell",
             "command": "docker",
-            "args": ["compose", "--env-file", ".env.docker", "up", "--build", "-d"],
+            "args": ["compose", "up", "-d", "--build"],
             "options": {"cwd": "${workspaceFolder}"},
+            "problemMatcher": []
+        },
+        {
+            "label": "SPMU: Apply migrations + seed",
+            "type": "shell",
+            "command": "docker",
+            "args": ["compose", "exec", "-T", "app", "php", "artisan", "migrate", "--force", "&&", "docker", "compose", "exec", "-T", "app", "php", "artisan", "db:seed", "--force"],
+            "options": {"cwd": "${workspaceFolder}", "shell": {"executable": "powershell.exe", "args": ["-NoProfile", "-Command"]}},
+            "problemMatcher": []
+        },
+        {
+            "label": "SPMU: Open Docker site",
+            "type": "shell",
+            "command": "Start-Process 'http://127.0.0.1:8080'",
+            "options": {"cwd": "${workspaceFolder}"},
+            "problemMatcher": []
+        },
+        {
+            "label": "SPMU: Run Docker PHPUnit",
+            "type": "shell",
+            "command": "docker compose -p spmu-acpmp-test -f .\\docker-compose.test.yml build --no-cache test; if ($LASTEXITCODE -eq 0) { docker compose -p spmu-acpmp-test -f .\\docker-compose.test.yml run --rm test php vendor/bin/phpunit --testdox }",
+            "options": {"cwd": "${workspaceFolder}", "shell": {"executable": "powershell.exe", "args": ["-NoProfile", "-Command"]}},
             "problemMatcher": []
         },
         {
             "label": "SPMU: Stop Docker",
             "type": "shell",
             "command": "docker",
-            "args": ["compose", "--env-file", ".env.docker", "down"],
+            "args": ["compose", "down"],
             "options": {"cwd": "${workspaceFolder}"},
             "problemMatcher": []
         }

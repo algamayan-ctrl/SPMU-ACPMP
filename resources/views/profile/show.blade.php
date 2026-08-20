@@ -1,6 +1,8 @@
 @extends('layouts.app', ['title' => 'Account Settings'])
 @section('content')
-@php($isBorrower = $user->access_classification === App\Enums\AccessClassification::BorrowerOnly)
+@php
+    $isBorrower = $user->access_classification === App\Enums\AccessClassification::BorrowerOnly;
+@endphp
 <section class="page-heading">
     <div>
         <p class="eyebrow">Personal account</p>
@@ -91,29 +93,15 @@
         </article>
 
         <article class="card signature-card" aria-labelledby="signature-heading">
-        <div class="card-header">
-            <div><p class="eyebrow">Authenticated signing</p><h2 id="signature-heading">E-Signature</h2></div>
-            <x-status-badge :status="$user->currentSignature ? 'ACTIVE' : 'MISSING'" :label="$user->currentSignature ? 'Signature ready' : 'Signature required'" />
-        </div>
-        <p>Your active e-signature is used only for future signing actions. Controlled records that were already signed retain their original immutable signature snapshots.</p>
-        @if($user->currentSignature)
-            <div class="signature-preview"><img src="{{ route('files.show', $user->currentSignature->file) }}" alt="Current e-signature preview"></div>
-            <p class="meta">Current e-signature active since {{ $user->currentSignature->effective_from->format('d M Y, g:i A') }}</p>
-        @else
-            <div class="empty-state"><strong>No e-signature uploaded.</strong><span>Signing actions remain unavailable until you add one.</span></div>
-        @endif
-        <div class="callout account-information-callout">
-            <x-icon name="information" />
-            <div><strong>Before uploading</strong><p>Use a clear PNG, JPG, or WebP image of your signature. Replacing it affects future actions only.</p></div>
-        </div>
-        <form method="post" action="{{ route('profile.signature') }}" enctype="multipart/form-data" class="form-grid">
-            @csrf
-            <label>{{ $user->currentSignature ? 'Upload new signature' : 'Choose signature image' }}
-                <input type="file" name="signature" accept="image/png,image/jpeg,image/webp" required>
-                @error('signature')<small class="field-error">{{ $message }}</small>@enderror
-            </label>
-            <button class="button primary ui-pressable" type="submit">{{ $user->currentSignature ? 'Replace E-Signature' : 'Upload E-Signature' }}</button>
-        </form>
+            <div class="card-header">
+                <div><p class="eyebrow">Document policy</p><h2 id="signature-heading">Physical Signatures</h2></div>
+                <x-status-badge status="ACTIVE" label="Wet signatures" />
+            </div>
+            <p>Borrowing Request Letters, Borrower Slips, Gate Passes, Laundry Forms, and other required operational documents use handwritten/wet signatures on printed copies. No e-signature upload is required for the active borrowing workflow.</p>
+            <div class="callout account-information-callout">
+                <x-icon name="information" />
+                <div><strong>Document evidence</strong><p>Where required, the fully accomplished physical document is scanned and uploaded to the related transaction for SPMU verification and audit history.</p></div>
+            </div>
         </article>
     </div>
 </section>
