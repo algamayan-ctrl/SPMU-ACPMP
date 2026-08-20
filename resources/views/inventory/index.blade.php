@@ -87,6 +87,16 @@
     @endif
 
     @if($isBorrower)
+        <div class="inventory-reference-note" role="note">
+            <x-icon name="information" size="18" />
+            <div>
+                <strong>Availability is for reference only.</strong>
+                <p>
+                    Submission of a borrowing request does not reserve an item. Availability can change while SPMU reviews the request; only an approved allocation reduces the quantity shown as available.
+                </p>
+            </div>
+        </div>
+
         <div class="table-wrap borrower-inventory-table inventory-reference-table">
             <table>
                 <thead>

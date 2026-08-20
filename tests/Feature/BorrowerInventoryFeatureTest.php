@@ -114,7 +114,7 @@ class BorrowerInventoryFeatureTest extends TestCase
 
         $this->assertSame(2.0, (float) $afterApproval['reserved']);
         $this->assertSame(
-            max(0, (float) $item->total_quantity - 2),
+            max(0.0, (float) $item->total_quantity - 2),
             (float) $afterApproval['borrower_available']
         );
     }

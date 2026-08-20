@@ -103,6 +103,60 @@ class InventoryService
             )
             ->value('quantity');
 
+        /*
+        |--------------------------------------------------------------------------
+        | CURRENT ACTIVE RESERVATIONS
+        |--------------------------------------------------------------------------
+        |
+        | Borrower-facing availability is a current stock reference, not a
+        | selected-period forecast. Count every remaining approved allocation,
+        | regardless of its borrowing dates. Pending requests have no allocation
+        | and therefore do not reduce this balance.
+        |
+        */
+
+        $reserved = (float) DB::table('allocations')
+            ->join(
+                'request_items',
+                'request_items.id',
+                '=',
+                'allocations.request_item_id'
+            )
+            ->where(
+                'request_items.inventory_item_id',
+                $item->id
+            )
+            ->whereIn(
+                'allocations.status',
+                [
+                    'ACTIVE',
+                    'PARTIALLY_RELEASED',
+                ]
+            )
+            ->selectRaw(
+                '
+                COALESCE(
+                    SUM(
+                        CASE
+                            WHEN (
+                                COALESCE(allocations.allocated_quantity, 0)
+                                - COALESCE(allocations.released_quantity, 0)
+                                - COALESCE(allocations.restored_quantity, 0)
+                            ) > 0
+                            THEN (
+                                COALESCE(allocations.allocated_quantity, 0)
+                                - COALESCE(allocations.released_quantity, 0)
+                                - COALESCE(allocations.restored_quantity, 0)
+                            )
+                            ELSE 0
+                        END
+                    ),
+                    0
+                ) AS quantity
+                '
+            )
+            ->value('quantity');
+
 
         /*
         |--------------------------------------------------------------------------
@@ -430,6 +484,15 @@ class InventoryService
             - $incident
         );
 
+        $borrowerAvailable = max(
+            0,
+            $serviceableTotal
+            - $reserved
+            - $borrowed
+            - $laundry
+            - $incident
+        );
+
         $available = max(
             0,
             $serviceableTotal
@@ -453,6 +516,11 @@ class InventoryService
              * Reserved but not yet physically released.
              */
             'allocated' => $allocated,
+
+            /*
+             * All current approved reservations, regardless of period.
+             */
+            'reserved' => $reserved,
 
             /*
              * Current actual physical custody.
@@ -516,6 +584,12 @@ class InventoryService
              * Quantity available for the selected borrowing period.
              */
             'current_available' => $currentAvailable,
+
+            /*
+             * Informational current quantity shown to borrowers.
+             */
+            'borrower_available' => $borrowerAvailable,
+
             'available' => $available,
         ];
     }
