@@ -103,6 +103,9 @@ Route::middleware(['auth', 'active'])->group(function (): void {
 
         Route::get('/inventory-availability', [InventoryController::class, 'availabilityData'])
             ->name('inventory.availability');
+        Route::get('/inventory/{inventory}', [InventoryController::class, 'show'])
+            ->whereNumber('inventory')
+            ->name('inventory.show');
     });
 
 

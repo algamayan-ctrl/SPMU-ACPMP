@@ -61,10 +61,66 @@ class InventoryController extends Controller
             'balances',
             'from',
             'to',
-            'borrowerMode'
+            'borrowerMode',
+            'search',
+            'categoryId',
+            'categories',
+            'workspace'
         ));
     }
 
+    public function show(
+        Request $request,
+        InventoryItem $inventory,
+        InventoryService $service
+    ): View {
+        $workspace = strtoupper(
+            (string) $request->user()->primaryWorkspace()
+        );
+
+        if (! in_array($workspace, ['BORROWER', 'SPMU'], true)) {
+            abort(403);
+        }
+
+        if (! $inventory->active) {
+            abort(404);
+        }
+
+        $inventory->loadMissing(['category', 'unit']);
+
+        $balance = $service->availability(
+            $inventory,
+            now(),
+            now()->addSecond()
+        );
+
+        /*
+         * Borrowers may open details only for inventory that is actually
+         * visible in the Borrower Inventory list.
+         */
+        if ($workspace === 'BORROWER') {
+            $available = (float) (
+                $balance['borrower_available']
+                ?? $balance['available']
+                ?? 0
+            );
+
+            if (
+                ! $inventory->borrowable
+                || $inventory->condition_code !== 'SERVICEABLE'
+                || $available <= 0
+            ) {
+                abort(404);
+            }
+        }
+
+        return view('inventory.show', [
+            'item' => $inventory,
+            'balance' => $balance,
+            'isBorrower' => $workspace === 'BORROWER',
+            'isSpmu' => $workspace === 'SPMU',
+        ]);
+    }
     public function create(): View
     {
         return view('inventory.form', [
