@@ -512,6 +512,16 @@
             >
                 System follows this device's light or dark preference.
             </p>
+        <article class="card signature-card" aria-labelledby="signature-heading">
+            <div class="card-header">
+                <div><p class="eyebrow">Document policy</p><h2 id="signature-heading">Physical Signatures</h2></div>
+                <x-status-badge status="ACTIVE" label="Wet signatures" />
+            </div>
+            <p>Borrowing Request Letters, Borrower Slips, Gate Passes, Laundry Forms, and other required operational documents use handwritten/wet signatures on printed copies. No e-signature upload is required for the active borrowing workflow.</p>
+            <div class="callout account-information-callout">
+                <x-icon name="information" />
+                <div><strong>Document evidence</strong><p>Where required, the fully accomplished physical document is scanned and uploaded to the related transaction for SPMU verification and audit history.</p></div>
+            </div>
         </article>
 
     </div>

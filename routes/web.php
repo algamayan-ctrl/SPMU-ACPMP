@@ -17,7 +17,9 @@ use App\Http\Controllers\LaundryController;
 use App\Http\Controllers\NotificationController;
 use App\Http\Controllers\ProfileController;
 use App\Http\Controllers\ProfilePictureController;
+use App\Http\Controllers\PolicyController;
 use App\Http\Controllers\ReportController;
+use App\Http\Controllers\SanctionController;
 use App\Http\Controllers\SettingController;
 use App\Http\Controllers\TechnicalOperationController;
 use App\Http\Controllers\UserAdministrationController;
@@ -86,9 +88,6 @@ Route::middleware(['auth', 'active'])->group(function (): void {
     Route::delete('/profile/picture', [ProfilePictureController::class, 'destroy'])
         ->name('profile.picture.destroy');
 
-    Route::post('/profile/signature', [ProfileController::class, 'signature'])
-        ->name('profile.signature');
-
     Route::get('/protected-files/{file}', [DocumentController::class, 'protectedFile'])
         ->name('files.show');
 
@@ -115,10 +114,6 @@ Route::middleware(['auth', 'active'])->group(function (): void {
 
         Route::get('/inventory-availability', [InventoryController::class, 'availabilityData'])
             ->name('inventory.availability');
-
-        Route::get('/inventory/{inventory}', [InventoryController::class, 'show'])
-            ->whereNumber('inventory')
-            ->name('inventory.show');
     });
 
 
@@ -230,6 +225,13 @@ Route::middleware(['auth', 'active'])->group(function (): void {
         ->middleware('workspace:BORROWER,SPMU')
         ->name('requests.cancel');
 
+    Route::post(
+        '/requests/{borrowingRequest}/cancellation/review',
+        [BorrowingRequestController::class, 'reviewCancellation']
+    )
+        ->middleware('workspace:SPMU')
+        ->name('requests.cancellation.review');
+
 
     /*
     |--------------------------------------------------------------------------
@@ -326,20 +328,6 @@ Route::middleware(['auth', 'active'])->group(function (): void {
     */
 
     Route::post(
-        '/gate-passes/{gatePass}/sign-verified',
-        [ConditionalProcessingController::class, 'signGatePassVerified']
-    )
-        ->middleware('workspace:SPMU')
-        ->name('gate-passes.sign-verified');
-
-    Route::post(
-        '/gate-passes/{gatePass}/sign-approved',
-        [ConditionalProcessingController::class, 'signGatePassApproved']
-    )
-        ->middleware('workspace:SPMU')
-        ->name('gate-passes.sign-approved');
-
-    Route::post(
         '/gate-passes/{gatePass}/verify',
         [ConditionalProcessingController::class, 'gatePass']
     )
@@ -414,7 +402,7 @@ Route::middleware(['auth', 'active'])->group(function (): void {
         ->name('overdue.bill');
 
     Route::post('/billings/{billing}/payments', [AccountabilityController::class, 'recordPayment'])
-        ->middleware('workspace:BORROWER')
+        ->middleware('workspace:SPMU')
         ->name('payments.store');
 
     Route::post('/payments/{payment}/verify', [AccountabilityController::class, 'verifyPayment'])
@@ -424,6 +412,46 @@ Route::middleware(['auth', 'active'])->group(function (): void {
     Route::post('/billings/{billing}/waive', [AccountabilityController::class, 'waive'])
         ->middleware('workspace:SPMU')
         ->name('billings.waive');
+
+
+    /*
+    |--------------------------------------------------------------------------
+    | Sanctions / Policy Configuration
+    |--------------------------------------------------------------------------
+    */
+
+    Route::get('/sanctions', [SanctionController::class, 'index'])
+        ->middleware('workspace:BORROWER,SPMU')
+        ->name('sanctions.index');
+
+    Route::post('/sanctions/{violation}/review', [SanctionController::class, 'review'])
+        ->middleware('workspace:SPMU')
+        ->name('sanctions.review');
+
+    Route::middleware('workspace:SPMU')->group(function (): void {
+        Route::get('/administration/policies', [PolicyController::class, 'index'])
+            ->name('policies.index');
+
+        Route::post(
+            '/administration/policies/academic-periods',
+            [PolicyController::class, 'storeAcademicPeriod']
+        )->name('policies.academic-periods.store');
+
+        Route::put(
+            '/administration/policies/academic-periods/{period}',
+            [PolicyController::class, 'updateAcademicPeriod']
+        )->name('policies.academic-periods.update');
+
+        Route::post(
+            '/administration/policies/sanction-rules',
+            [PolicyController::class, 'storeSanctionRule']
+        )->name('policies.sanction-rules.store');
+
+        Route::put(
+            '/administration/policies/sanction-rules/{rule}',
+            [PolicyController::class, 'updateSanctionRule']
+        )->name('policies.sanction-rules.update');
+    });
 
 
     /*

@@ -8,429 +8,173 @@ use App\Models\NotificationEvent;
 use App\Models\OverdueCase;
 use App\Models\SystemSetting;
 use App\Services\AuditService;
+use App\Services\CustodyService;
 use App\Services\NotificationService;
-use App\Services\RequestWorkflowService;
 use Illuminate\Console\Command;
 
 class ProcessOperationalDeadlines extends Command
 {
     protected $signature = 'spmu:process-deadlines';
 
-    protected $description = 'Expire undownloaded approvals and process due-soon/overdue custody records';
+    protected $description = 'Expire pickup reservations, lock prior-day issuance records, and process date-based due/overdue custody records';
 
     public function handle(
-        RequestWorkflowService $requests,
+        CustodyService $custodyService,
         NotificationService $notifications,
         AuditService $audit
     ): int {
-        $expired = $requests->expireUndownloaded();
-
-        $markedOverdue = 0;
-        $overdue = 0;
+        $pickupExpired = $custodyService->expirePickupWindows();
+        $issuanceLocked = 0;
         $dueSoon = 0;
+        $markedOverdue = 0;
+        $overdueProcessed = 0;
+
+        $rate = SystemSetting::value('daily_overdue_tariff');
+        $today = now()->startOfDay();
+        $tomorrow = now()->addDay()->startOfDay();
 
         /*
-        |--------------------------------------------------------------------------
-        | SYSTEM SETTINGS
-        |--------------------------------------------------------------------------
-        |
-        | overdue_grace_hours:
-        |   Grace period BEFORE penalties/restrictions are applied.
-        |
-        | IMPORTANT:
-        |   This does NOT control when the custody becomes OVERDUE.
-        |   A custody becomes OVERDUE immediately after due_at passes.
-        |
-        */
-
-        $graceHours = (int) SystemSetting::value(
-            'overdue_grace_hours',
-            24
-        );
-
-        $dueSoonHours = (int) SystemSetting::value(
-            'due_soon_hours',
-            24
-        );
-
-        $rate = SystemSetting::value(
-            'daily_overdue_tariff'
-        );
-
-        /*
-        |--------------------------------------------------------------------------
-        | 1. DUE-SOON REMINDERS
-        |--------------------------------------------------------------------------
-        |
-        | Notify borrowers whose custody return deadline is approaching.
-        |
-        */
-
+         * Issuance may be corrected on the actual pickup/release day. After
+         * that calendar day it becomes read-only automatically.
+         */
         CustodyTransaction::query()
-            ->with('borrower')
+            ->whereNotNull('released_at')
+            ->whereNull('issuance_locked_at')
+            ->whereDate('released_at', '<', $today->toDateString())
+            ->each(function (CustodyTransaction $custody) use (&$issuanceLocked, $audit): void {
+                $custody->update(['issuance_locked_at' => now()]);
+                $audit->record(
+                    'ISSUANCE_AUTO_LOCKED',
+                    $custody,
+                    after: ['issuance_locked_at' => now()->toIso8601String()]
+                );
+                $issuanceLocked++;
+            });
+
+        $openCustodies = CustodyTransaction::query()
+            ->with(['borrower', 'lines'])
             ->whereIn('status', [
                 'ACTIVE',
                 'PARTIALLY_RETURNED',
                 'EARLY_RETURN',
+                'OVERDUE',
+                'INCIDENT_OPEN',
+                'OBLIGATION_OPEN',
             ])
-            ->whereBetween(
-                'due_at',
-                [
-                    now(),
-                    now()->addHours($dueSoonHours),
-                ]
-            )
-            ->each(function (
-                CustodyTransaction $custody
-            ) use (
-                &$dueSoon,
-                $notifications
-            ): void {
+            ->whereNotNull('due_at')
+            ->get();
+
+        foreach ($openCustodies as $custody) {
+            $hasOutstanding = $custody->lines->contains(
+                fn ($line) => (float) $line->returned_quantity < (float) $line->actual_released_quantity
+            );
+
+            if (! $hasOutstanding) {
+                continue;
+            }
+
+            $dueDate = $custody->due_at->copy()->startOfDay();
+
+            /* Due today / due tomorrow reminder. */
+            if ($dueDate->isSameDay($today) || $dueDate->isSameDay($tomorrow)) {
+                $eventCode = $dueDate->isSameDay($today)
+                    ? 'RETURN_DUE_TODAY'
+                    : 'RETURN_DUE_TOMORROW';
+
                 $alreadySent = NotificationEvent::query()
-                    ->where(
-                        'event_code',
-                        'RETURN_DUE_SOON'
-                    )
-                    ->where(
-                        'source_type',
-                        $custody->getMorphClass()
-                    )
-                    ->where(
-                        'source_id',
-                        $custody->id
-                    )
+                    ->where('event_code', $eventCode)
+                    ->where('source_type', $custody->getMorphClass())
+                    ->where('source_id', $custody->id)
                     ->exists();
 
-                if ($alreadySent) {
-                    return;
+                if (! $alreadySent) {
+                    $label = $dueDate->isSameDay($today) ? 'today' : 'tomorrow';
+                    $notifications->send(
+                        $eventCode,
+                        collect([$custody->borrower]),
+                        "Custody {$custody->custody_no} is due {$label}, {$custody->due_at->format('F j, Y')}. The return rule is based on the calendar date, not a clock time.",
+                        $custody
+                    );
+                    $dueSoon++;
                 }
+            }
 
+            /*
+             * DATE-ONLY late rule:
+             * Expected Aug 18 + still outstanding on Aug 19 = late.
+             */
+            if (! $today->gt($dueDate)) {
+                continue;
+            }
+
+            if ($custody->status !== 'OVERDUE') {
+                $custody->update(['status' => 'OVERDUE']);
+                $markedOverdue++;
+            }
+
+            $daysLate = (int) $dueDate->diffInDays($today);
+            $case = OverdueCase::query()->firstOrNew([
+                'custody_transaction_id' => $custody->id,
+            ]);
+            $isNew = ! $case->exists;
+
+            $case->fill([
+                'borrower_user_id' => $custody->borrower_user_id,
+                /* Legacy non-null field retained; no grace changes late status. */
+                'grace_expires_at' => $custody->due_at,
+                'overdue_started_at' => $custody->due_at->copy()->addDay()->startOfDay(),
+                'offense_level' => $case->offense_level ?: 1,
+                'rate_snapshot' => is_numeric($rate) ? (float) $rate : null,
+                'accrued_amount' => is_numeric($rate)
+                    ? round($daysLate * (float) $rate, 2)
+                    : 0,
+                'sanction_type' => null,
+                'status' => 'OVERDUE',
+            ])->save();
+
+            BorrowerRestriction::query()->updateOrCreate(
+                [
+                    'borrower_user_id' => $custody->borrower_user_id,
+                    'restriction_type' => 'PENDING_RETURN',
+                    'status' => 'ACTIVE',
+                ],
+                [
+                    'reason' => "Issued property under {$custody->custody_no} remains outstanding after the Expected Return Date.",
+                    'effective_from' => $custody->due_at->copy()->addDay()->startOfDay(),
+                    'imposed_by_user_id' => null,
+                ]
+            );
+
+            if ($isNew) {
                 $notifications->send(
-                    'RETURN_DUE_SOON',
-                    collect([
-                        $custody->borrower,
-                    ]),
-                    "Custody {$custody->custody_no} is due on {$custody->due_at->format('F j, Y g:i A')}.",
+                    'BORROWING_OVERDUE',
+                    collect([$custody->borrower]),
+                    "Custody {$custody->custody_no} is late by {$daysLate} calendar day(s). Please return the outstanding property to SPMU.",
                     $custody
                 );
 
-                $dueSoon++;
-            });
-
-        /*
-        |--------------------------------------------------------------------------
-        | 2. MARK CUSTODY OVERDUE IMMEDIATELY
-        |--------------------------------------------------------------------------
-        |
-        | Once the return deadline has passed, the custody is already overdue.
-        |
-        | Example:
-        |
-        | Return deadline:
-        |   August 16, 2026 - 7:29 PM
-        |
-        | Current time:
-        |   August 16, 2026 - 7:30 PM
-        |
-        | Status:
-        |   OVERDUE
-        |
-        | The borrower can still be inside the configured grace period.
-        | Penalties/restrictions are processed separately below.
-        |
-        */
-
-        CustodyTransaction::query()
-            ->whereIn('status', [
-                'ACTIVE',
-                'PARTIALLY_RETURNED',
-                'EARLY_RETURN',
-            ])
-            ->whereNotNull('due_at')
-            ->where(
-                'due_at',
-                '<',
-                now()
-            )
-            ->each(function (
-                CustodyTransaction $custody
-            ) use (
-                &$markedOverdue
-            ): void {
-                $custody->update([
-                    'status' => 'OVERDUE',
-                ]);
-
-                $markedOverdue++;
-            });
-
-        /*
-        |--------------------------------------------------------------------------
-        | 3. PROCESS OVERDUE AFTER GRACE PERIOD
-        |--------------------------------------------------------------------------
-        |
-        | The custody is already OVERDUE at this point.
-        |
-        | However:
-        |
-        | - Overdue case
-        | - Borrower restriction
-        | - Penalty/tariff
-        | - Offense escalation
-        |
-        | only take effect once the configured grace period has expired.
-        |
-        */
-
-        CustodyTransaction::query()
-            ->with('borrower')
-            ->where(
-                'status',
-                'OVERDUE'
-            )
-            ->whereNotNull('due_at')
-            ->where(
-                'due_at',
-                '<=',
-                now()->subHours($graceHours)
-            )
-            ->each(function (
-                CustodyTransaction $custody
-            ) use (
-                &$overdue,
-                $graceHours,
-                $rate,
-                $notifications,
-                $audit
-            ): void {
-                /*
-                |--------------------------------------------------------------------------
-                | PRIOR OFFENSES
-                |--------------------------------------------------------------------------
-                */
-
-                $priorOffenses = OverdueCase::query()
-                    ->where(
-                        'borrower_user_id',
-                        $custody->borrower_user_id
-                    )
-                    ->whereNot(
-                        'custody_transaction_id',
-                        $custody->id
-                    )
-                    ->count();
-
-                $offense = min(
-                    3,
-                    $priorOffenses + 1
+                $audit->record(
+                    'CUSTODY_MARKED_OVERDUE',
+                    $case,
+                    after: [
+                        'expected_return_date' => $dueDate->toDateString(),
+                        'current_date' => $today->toDateString(),
+                        'days_late' => $daysLate,
+                        'rate_snapshot' => is_numeric($rate) ? (float) $rate : null,
+                        'sanction_auto_imposed' => false,
+                    ]
                 );
+            }
 
-                /*
-                |--------------------------------------------------------------------------
-                | GRACE PERIOD EXPIRATION
-                |--------------------------------------------------------------------------
-                */
-
-                $graceExpires = $custody
-                    ->due_at
-                    ->copy()
-                    ->addHours($graceHours);
-
-                /*
-                |--------------------------------------------------------------------------
-                | NUMBER OF PENALTY DAYS
-                |--------------------------------------------------------------------------
-                |
-                | Penalty starts AFTER the grace period.
-                |
-                */
-
-                $days = max(
-                    1,
-                    (int) ceil(
-                        $graceExpires->diffInMinutes(now()) / 1440
-                    )
-                );
-
-                /*
-                |--------------------------------------------------------------------------
-                | CREATE / UPDATE OVERDUE CASE
-                |--------------------------------------------------------------------------
-                */
-
-                $case = OverdueCase::query()
-                    ->firstOrNew([
-                        'custody_transaction_id' => $custody->id,
-                    ]);
-
-                $isNew = ! $case->exists;
-
-                $case->fill([
-                    'borrower_user_id' =>
-                        $custody->borrower_user_id,
-
-                    'grace_expires_at' =>
-                        $graceExpires,
-
-                    /*
-                    | Actual overdue started exactly at
-                    | the return deadline.
-                    */
-                    'overdue_started_at' =>
-                        $case->overdue_started_at
-                            ?: $custody->due_at,
-
-                    'offense_level' =>
-                        $case->offense_level
-                            ?: $offense,
-
-                    'rate_snapshot' =>
-                        is_numeric($rate)
-                            ? $rate
-                            : null,
-
-                    'accrued_amount' =>
-                        is_numeric($rate)
-                            ? round(
-                                $days * (float) $rate,
-                                2
-                            )
-                            : 0,
-
-                    'sanction_type' =>
-                        $case->sanction_type
-                            ?: match ($offense) {
-                                1 => 'NOTICE',
-                                2 => 'REPRIMAND',
-                                default => 'SEMESTER_SUSPENSION',
-                            },
-
-                    'status' => 'OVERDUE',
-                ])->save();
-
-                /*
-                |--------------------------------------------------------------------------
-                | OVERDUE RETURN RESTRICTION
-                |--------------------------------------------------------------------------
-                */
-
-                BorrowerRestriction::query()
-                    ->firstOrCreate(
-                        [
-                            'borrower_user_id' =>
-                                $custody->borrower_user_id,
-
-                            'restriction_type' =>
-                                'OVERDUE_RETURN',
-
-                            'status' =>
-                                'ACTIVE',
-                        ],
-                        [
-                            'reason' =>
-                                "Unresolved overdue custody {$custody->custody_no}.",
-
-                            'effective_from' =>
-                                now(),
-                        ]
-                    );
-
-                /*
-                |--------------------------------------------------------------------------
-                | THIRD OFFENSE RESTRICTION
-                |--------------------------------------------------------------------------
-                */
-
-                if ($offense >= 3) {
-                    BorrowerRestriction::query()
-                        ->firstOrCreate(
-                            [
-                                'borrower_user_id' =>
-                                    $custody->borrower_user_id,
-
-                                'restriction_type' =>
-                                    'THIRD_OFFENSE_SUSPENSION',
-
-                                'status' =>
-                                    'ACTIVE',
-                            ],
-                            [
-                                'reason' =>
-                                    'Third overdue offense; semester end remains configurable.',
-
-                                'effective_from' =>
-                                    now(),
-                            ]
-                        );
-                }
-
-                /*
-                |--------------------------------------------------------------------------
-                | KEEP CUSTODY STATUS OVERDUE
-                |--------------------------------------------------------------------------
-                */
-
-                if ($custody->status !== 'OVERDUE') {
-                    $custody->update([
-                        'status' => 'OVERDUE',
-                    ]);
-                }
-
-                /*
-                |--------------------------------------------------------------------------
-                | FIRST-TIME OVERDUE ESCALATION
-                |--------------------------------------------------------------------------
-                |
-                | Send notification and create audit trail once the
-                | grace period has expired and an overdue case is created.
-                |
-                */
-
-                if ($isNew) {
-                    $notifications->send(
-                        'BORROWING_OVERDUE',
-                        collect([
-                            $custody->borrower,
-                        ]),
-                        "Custody {$custody->custody_no} remains overdue after the {$graceHours}-hour grace period. Offense level: {$offense}.",
-                        $custody
-                    );
-
-                    $audit->record(
-                        'CUSTODY_MARKED_OVERDUE',
-                        $case,
-                        after: [
-                            'offense_level' =>
-                                $offense,
-
-                            'rate_snapshot' =>
-                                $rate,
-
-                            'due_at' =>
-                                $custody->due_at
-                                    ->toIso8601String(),
-
-                            'grace_expires_at' =>
-                                $graceExpires
-                                    ->toIso8601String(),
-                        ]
-                    );
-                }
-
-                $overdue++;
-            });
-
-        /*
-        |--------------------------------------------------------------------------
-        | COMMAND OUTPUT
-        |--------------------------------------------------------------------------
-        */
+            $overdueProcessed++;
+        }
 
         $this->info(
-            "Processed {$expired} expired approval(s), "
-            ."{$dueSoon} due-soon reminder(s), "
+            "Processed {$pickupExpired} pickup expiration(s), "
+            ."{$issuanceLocked} issuance auto-lock(s), "
+            ."{$dueSoon} due reminder(s), "
             ."{$markedOverdue} newly overdue custody record(s), "
-            ."and {$overdue} overdue record(s) beyond the grace period."
+            ."and {$overdueProcessed} open overdue record(s)."
         );
 
         return self::SUCCESS;

@@ -10,7 +10,6 @@ use App\Models\CustodyTransaction;
 use App\Models\GeneratedDocument;
 use App\Models\Incident;
 use App\Models\RequestVersion;
-use App\Models\SignatureSnapshot;
 use App\Models\User;
 use Carbon\CarbonImmutable;
 use Carbon\CarbonInterface;
@@ -46,9 +45,7 @@ class DocumentService
             'borrower.organizationalUnit',
             'accountableUnit',
             'currentVersion.items.inventoryItem.unit',
-            'currentVersion.borrowerSignature.file',
             'currentVersion.approvalSteps.approver',
-            'currentVersion.approvalSteps.signatureSnapshot.file',
         ]);
         $version = $request->currentVersion;
         if (! $version) {
@@ -61,22 +58,15 @@ class DocumentService
         }
 
         $approvals = $final
-            ? $version->approvalSteps->sortBy('sequence_no')->map(fn ($step): array => [
-                'stage' => $step->stage_code->value,
-                'role' => match ($step->stage_code->value) {
-                    'SPMU' => UserRole::Spmu->label(),
-                    'GSU' => UserRole::Gsu->label(),
-                    'VPAF' => UserRole::Vpaf->label(),
-                },
-                'delegated' => (bool) $step->temporary_delegation_id,
-                'name' => $step->approver?->full_name,
-                'received_at_formal' => $this->formalDateTime($step->received_at),
-                'decided_at_formal' => $this->formalDateTime($step->decided_at),
-                'signature' => $step->signatureSnapshot,
-                'signature_data_uri' => $step->signatureSnapshot
-                    ? $this->requestLetterSignatureDataUri($step->signatureSnapshot)
-                    : null,
-            ])->values()
+            ? $version->approvalSteps
+                ->filter(fn ($step) => $step->stage_code->value === 'SPMU')
+                ->sortBy('sequence_no')
+                ->map(fn ($step): array => [
+                    'stage' => 'SPMU',
+                    'name' => $step->approver?->full_name,
+                    'decided_at_formal' => $this->formalDateTime($step->decided_at),
+                    'decision' => $step->decision,
+                ])->values()
             : collect();
 
         $generatedAt = ($generatedAt ?? now())->setTimezone('Asia/Manila');
@@ -97,9 +87,6 @@ class DocumentService
             'visibleDownloadDeadline' => $this->formalDateTime($request->download_deadline_at),
             'logoDataUri' => 'data:image/jpeg;base64,'.base64_encode((string) file_get_contents($logoPath)),
             'borrowerDesignation' => $borrowerDesignation,
-            'borrowerSignatureDataUri' => $version->borrowerSignature
-                ? $this->requestLetterSignatureDataUri($version->borrowerSignature)
-                : null,
             'approvals' => $approvals,
         ])->render();
     }
@@ -142,8 +129,13 @@ class DocumentService
             'request.borrower',
             'request.currentVersion',
             'lines.requestItem.inventoryItem',
-            'acknowledgementSignature.file',
         ]);
+
+        $this->supersede(
+            $custody,
+            'BORROWER_SLIP',
+            'Replaced by the latest physical preparation copy.'
+        );
 
         return $this->saveHtml(
             'BORROWER_SLIP',
@@ -160,7 +152,6 @@ class DocumentService
     {
         $version = $custody->request->currentVersion;
         $borrower = $custody->request->borrower;
-        $acknowledgementSignature = $custody->acknowledgementSignature;
         $releasedBy = $custody->released_by_user_id
             ? User::find($custody->released_by_user_id)
             : null;
@@ -189,15 +180,7 @@ class DocumentService
             $itemRows = '<tr><td colspan="7" class="empty-cell">No prepared custody item is recorded for this transaction.</td></tr>';
         }
 
-        $signatureVisual = '<div class="signature-placeholder">Digital acknowledgement pending</div>';
-        $signatureIntegrity = null;
-        if ($acknowledgementSignature instanceof SignatureSnapshot) {
-            $data = $this->requestLetterSignatureDataUri($acknowledgementSignature);
-            $signatureVisual = $data
-                ? '<img class="formal-signature-image" src="'.e($data).'" alt="E-signature of '.e($acknowledgementSignature->signer_name).'">'
-                : '<div class="typed-signature">/s/ '.e($borrower->full_name).'</div>';
-            $signatureIntegrity = substr($acknowledgementSignature->sha256, 0, 12).'...'.substr($acknowledgementSignature->sha256, -8);
-        }
+        $signatureVisual = '<div class="signature-placeholder">Handwritten signature on printed copy</div>';
 
         $slipStatus = $custody->released_at
             ? 'Released'
@@ -279,7 +262,7 @@ class DocumentService
                     .'<div class="signature-role">Accountable Borrower</div>'
                     .'<div class="signature-subrole">Borrower</div>'
                     .'<div class="signature-date">'.($custody->acknowledged_at ? 'Acknowledged on '.e($this->formalDateTime($custody->acknowledged_at) ?? '') : 'Acknowledgement pending').'</div>'
-                    .($signatureIntegrity ? '<div class="signature-integrity">Digitally signed in SPMU-ACPMP | Ref: '.e($signatureIntegrity).'</div>' : '')
+                    .'<div class="signature-integrity">System acknowledgement is recorded by authenticated user and timestamp; no electronic signature is applied.</div>'
                 .'</td>'
             .'</tr></table>'
 
@@ -291,7 +274,7 @@ class DocumentService
                 .'</tr>'
             .'</table>'
 
-            .'<footer class="borrower-footer"><span>Controlled digital document | SPMU-ACPMP | Official operational time: Asia/Manila</span><span>Page '.e((string) $pageNumber).' of '.e((string) $pageCount).'</span></footer>'
+            .'<footer class="borrower-footer"><span>Controlled document | SPMU-ACPMP | Official operational time: Asia/Manila</span><span>Page '.e((string) $pageNumber).' of '.e((string) $pageCount).'</span></footer>'
         .'</section>';
 
         return $documentShell
@@ -301,11 +284,53 @@ class DocumentService
 
     public function conditionalForm(CustodyTransaction $custody, string $type): GeneratedDocument
     {
+        $type = strtoupper(trim($type));
+
         $custody->loadMissing([
-            'request.borrower', 'request.currentVersion', 'lines.requestItem.inventoryItem',
-            'gatePass.preparedVerifier', 'gatePass.approver', 'gatePass.delegation', 'gatePass.preparedVerifierSignature.file', 'gatePass.approverSignature.file',
-            'borrower', 'laundryBorrowerSignature.file', 'laundryApproverSignature.file',
+            'request.borrower',
+            'request.currentVersion',
+            'lines.requestItem.inventoryItem',
+            'gatePass.preparedVerifier',
+            'gatePass.approver',
+            'gatePass.delegation',
+            'borrower',
         ]);
+
+        $hasOffCampusProperty = $custody->lines->contains(
+            fn ($line) =>
+                $line->requestItem?->use_location === 'OFF_CAMPUS'
+                && (float) $line->quantity_to_receive > 0
+        );
+
+        $hasLaundryProperty = $custody->lines->contains(
+            fn ($line) =>
+                (bool) $line->requestItem?->inventoryItem?->laundry_required
+                && (float) $line->quantity_to_receive > 0
+        );
+
+        if ($type === 'GATE_PASS' && ! $hasOffCampusProperty) {
+            throw ValidationException::withMessages([
+                'document' => 'A Gate Pass is generated only when the custody includes off-campus property.',
+            ]);
+        }
+
+        if ($type === 'LAUNDRY_FORM' && ! $hasLaundryProperty) {
+            throw ValidationException::withMessages([
+                'document' => 'A Laundry Form is generated only when the custody includes laundry-required property.',
+            ]);
+        }
+
+        if (! in_array($type, ['GATE_PASS', 'LAUNDRY_FORM'], true)) {
+            throw ValidationException::withMessages([
+                'document' => 'Unsupported physical custody form type.',
+            ]);
+        }
+
+        $this->supersede(
+            $custody,
+            $type,
+            'Replaced by the latest generated physical form.'
+        );
 
         if ($type === 'LAUNDRY_FORM') {
             return $this->saveHtml(
@@ -336,30 +361,35 @@ class DocumentService
         $borrower = $custody->request->borrower;
         $gatePass = $custody->gatePass;
 
-        $verifier = $gatePass?->preparedVerifier;
-        $approver = $gatePass?->approver;
-        $verifierSignature = $gatePass?->preparedVerifierSignature;
-        $approverSignature = $gatePass?->approverSignature;
-
+        /*
+         * Gate Pass presentation data.
+         *
+         * Keep this document fully physical/wet-signature based.
+         * The logo is embedded only for PDF rendering and the item rows
+         * contain the approved off-campus custody lines.
+         */
         $logoPath = resource_path('images/cspc-logo-print.jpg');
         $logo = is_file($logoPath)
             ? '<img class="gate-logo" src="data:image/jpeg;base64,'.base64_encode((string) file_get_contents($logoPath)).'" alt="CSPC logo">'
             : '<div class="seal">CSPC</div>';
 
         $offCampusLines = $custody->lines->filter(
-            fn ($line) => $line->requestItem->use_location === 'OFF_CAMPUS'
+            fn ($line) =>
+                $line->requestItem?->use_location === 'OFF_CAMPUS'
         );
 
         $itemRows = '';
         $itemNo = 1;
+
         foreach ($offCampusLines as $line) {
             $itemRows .= '<tr>'
                 .'<td class="item-number">'.e((string) $itemNo).'</td>'
-                .'<td>'.e($line->requestItem->description_snapshot).'</td>'
+                .'<td>'.e((string) $line->requestItem?->description_snapshot).'</td>'
                 .'<td class="numeric">'.e((string) ($line->quantity_to_receive + 0)).'</td>'
-                .'<td class="unit-cell">'.e($line->requestItem->unit_snapshot).'</td>'
+                .'<td class="unit-cell">'.e((string) $line->requestItem?->unit_snapshot).'</td>'
                 .'<td class="use-cell">OFF-CAMPUS</td>'
                 .'</tr>';
+
             $itemNo++;
         }
 
@@ -367,33 +397,14 @@ class DocumentService
             $itemRows = '<tr><td colspan="5" class="empty-cell">No off-campus custody item is recorded for this transaction.</td></tr>';
         }
 
-        $verifierVisual = '<div class="signature-placeholder">SPMU verification pending</div>';
-        $verifierIntegrity = null;
-        if ($verifierSignature instanceof SignatureSnapshot) {
-            $data = $this->requestLetterSignatureDataUri($verifierSignature);
-            $verifierVisual = $data
-                ? '<img class="formal-signature-image" src="'.e($data).'" alt="E-signature of '.e($verifierSignature->signer_name).'">'
-                : '<div class="typed-signature">/s/ '.e((string) $verifier?->full_name).'</div>';
-            $verifierIntegrity = substr($verifierSignature->sha256, 0, 12).'...'.substr($verifierSignature->sha256, -8);
-        }
+        $gateStatus = $gatePass?->status === 'VERIFIED'
+            ? 'Accomplished and Verified'
+            : ($custody->released_at
+                ? 'For Accomplished Scan'
+                : 'For Physical Signatures');
 
-        $approverVisual = '<div class="signature-placeholder">SPMU Head approval pending</div>';
-        $approverIntegrity = null;
-        if ($approverSignature instanceof SignatureSnapshot) {
-            $data = $this->requestLetterSignatureDataUri($approverSignature);
-            $approverVisual = $data
-                ? '<img class="formal-signature-image" src="'.e($data).'" alt="E-signature of '.e($approverSignature->signer_name).'">'
-                : '<div class="typed-signature">/s/ '.e((string) $approver?->full_name).'</div>';
-            $approverIntegrity = substr($approverSignature->sha256, 0, 12).'...'.substr($approverSignature->sha256, -8);
-        }
-
-        $gateStatus = $gatePass?->approved_at
-            ? 'Approved'
-            : ($gatePass?->prepared_verified_at ? 'Verified - Awaiting Approval' : 'Verification Pending');
-
-        $delegationNote = $gatePass?->delegation
-            ? '<div class="signature-note">Approved through an authorized temporary delegation recorded in SPMU-ACPMP.</div>'
-            : '';
+        $physicalSignatureLine =
+            '<div class="signature-placeholder">Handwritten signature</div>';
 
         $body = '<section class="official gate-pass">'
             .'<table class="gate-header" role="presentation">'
@@ -436,7 +447,7 @@ class DocumentService
                 .'</tr>'
             .'</table>'
 
-            .'<p class="gate-intro">This Gate Pass covers only the approved property listed below for authorized off-campus movement. Release remains subject to the required SPMU verification and approval recorded in this controlled custody document.</p>'
+            .'<p class="gate-intro">This Gate Pass covers only the approved property listed below for authorized off-campus movement. Required signatures are completed by hand on the printed form.</p>'
 
             .'<div class="gate-section-title">Approved Items for Off-Campus Movement</div>'
             .'<table class="gate-items-table">'
@@ -451,25 +462,22 @@ class DocumentService
             .'</table>'
 
             .'<div class="gate-section-title">SPMU Verification and Approval</div>'
-            .'<p class="gate-certification">The signatures below confirm the required internal verification and approval for the listed off-campus property movement. A pending signature means the Gate Pass has not yet completed that authorization step.</p>'
+            .'<p class="gate-certification">Complete the signatures below by hand on the printed Gate Pass. The accomplished scan is returned to SPMU for recording and verification.</p>'
 
             .'<table class="gate-signatures" role="presentation"><tr>'
                 .'<td>'
                     .'<div class="signature-label">Verified By - SPMU Action Officer</div>'
-                    .'<div class="signature-space">'.$verifierVisual.'</div>'
-                    .'<div class="signature-name">'.e(strtoupper((string) ($verifier?->full_name ?: 'SPMU Action Officer'))).'</div>'
+                    .'<div class="signature-space">'.$physicalSignatureLine.'</div>'
+                    .'<div class="signature-name">SPMU ACTION OFFICER</div>'
                     .'<div class="signature-role">Supply and Property Management Unit</div>'
-                    .'<div class="signature-date">'.($gatePass?->prepared_verified_at ? 'Verified on '.e($this->formalDateTime($gatePass->prepared_verified_at) ?? '') : 'Verification pending').'</div>'
-                    .($verifierIntegrity ? '<div class="signature-integrity">Digital integrity ref: '.e($verifierIntegrity).'</div>' : '')
+                    .'<div class="signature-date">Sign and date on the printed form</div>'
                 .'</td>'
                 .'<td>'
                     .'<div class="signature-label">Approved By - SPMU Head</div>'
-                    .'<div class="signature-space">'.$approverVisual.'</div>'
-                    .'<div class="signature-name">'.e(strtoupper((string) ($approver?->full_name ?: 'SPMU Head'))).'</div>'
+                    .'<div class="signature-space">'.$physicalSignatureLine.'</div>'
+                    .'<div class="signature-name">SPMU HEAD</div>'
                     .'<div class="signature-role">Supply and Property Management Unit</div>'
-                    .'<div class="signature-date">'.($gatePass?->approved_at ? 'Approved on '.e($this->formalDateTime($gatePass->approved_at) ?? '') : 'Approval pending').'</div>'
-                    .($approverIntegrity ? '<div class="signature-integrity">Digital integrity ref: '.e($approverIntegrity).'</div>' : '')
-                    .$delegationNote
+                    .'<div class="signature-date">Sign and date on the printed form</div>'
                 .'</td>'
             .'</tr></table>'
 
@@ -488,7 +496,7 @@ class DocumentService
 
             .'<p class="gate-note"><strong>Document handling:</strong> Return the signed original to SPMU for recording. The borrower may upload the signed scan; any authorized SPMU fallback upload remains auditable.</p>'
 
-            .'<footer class="gate-footer"><span>Controlled digital document | SPMU-ACPMP | Official operational time: Asia/Manila</span><span>Page '.e((string) $pageNumber).' of '.e((string) $pageCount).'</span></footer>'
+            .'<footer class="gate-footer"><span>Controlled document | SPMU-ACPMP | Official operational time: Asia/Manila</span><span>Page '.e((string) $pageNumber).' of '.e((string) $pageCount).'</span></footer>'
         .'</section>';
 
         return $documentShell
@@ -496,16 +504,14 @@ class DocumentService
             : $body;
     }
 
-    private function laundryFormHtml(CustodyTransaction $custody, bool $documentShell = true, int $pageNumber = 1, int $pageCount = 1): string
-    {
+    private function laundryFormHtml(
+        CustodyTransaction $custody,
+        bool $documentShell = true,
+        int $pageNumber = 1,
+        int $pageCount = 1
+    ): string {
         $version = $custody->request->currentVersion;
         $borrower = $custody->borrower;
-        $approver = $custody->laundry_approved_by_user_id
-            ? User::find($custody->laundry_approved_by_user_id)
-            : null;
-
-        $borrowerSignature = $custody->laundryBorrowerSignature;
-        $approverSignature = $custody->laundryApproverSignature;
 
         $logoPath = resource_path('images/cspc-logo-print.jpg');
         $logo = is_file($logoPath)
@@ -513,52 +519,32 @@ class DocumentService
             : '<div class="seal">CSPC</div>';
 
         $laundryLines = $custody->lines->filter(
-            fn ($line) => (bool) $line->requestItem->inventoryItem?->laundry_required
+            fn ($line) =>
+                (bool) $line->requestItem->inventoryItem?->laundry_required
+                && (float) $line->quantity_to_receive > 0
         );
 
         $itemRows = '';
         $itemNo = 1;
+
         foreach ($laundryLines as $line) {
             $itemRows .= '<tr>'
                 .'<td class="item-number">'.e((string) $itemNo).'</td>'
                 .'<td>'.e($line->requestItem->description_snapshot).'</td>'
                 .'<td class="numeric">'.e((string) ($line->quantity_to_receive + 0)).'</td>'
                 .'<td class="unit-cell">'.e($line->requestItem->unit_snapshot).'</td>'
+                .'<td class="write-line"></td>'
+                .'<td class="write-line"></td>'
+                .'<td class="write-line"></td>'
+                .'<td class="write-line"></td>'
                 .'</tr>';
+
             $itemNo++;
         }
 
         if ($itemRows === '') {
-            $itemRows = '<tr><td colspan="4" class="empty-cell">No laundry-required item is recorded for this custody transaction.</td></tr>';
+            $itemRows = '<tr><td colspan="8" class="empty-cell">No laundry-required item is recorded for this custody transaction.</td></tr>';
         }
-
-        $borrowerVisual = '<div class="signature-placeholder">Digital acknowledgement pending</div>';
-        $borrowerIntegrity = null;
-        if ($borrowerSignature instanceof SignatureSnapshot) {
-            $data = $this->requestLetterSignatureDataUri($borrowerSignature);
-            $borrowerVisual = $data
-                ? '<img class="formal-signature-image" src="'.e($data).'" alt="E-signature of '.e($borrowerSignature->signer_name).'">'
-                : '<div class="typed-signature">/s/ '.e($borrower->full_name).'</div>';
-            $borrowerIntegrity = substr($borrowerSignature->sha256, 0, 12).'...'.substr($borrowerSignature->sha256, -8);
-        }
-
-        $approverVisual = '<div class="signature-placeholder">SPMU Head approval pending</div>';
-        $approverIntegrity = null;
-        if ($approverSignature instanceof SignatureSnapshot) {
-            $data = $this->requestLetterSignatureDataUri($approverSignature);
-            $approverVisual = $data
-                ? '<img class="formal-signature-image" src="'.e($data).'" alt="E-signature of '.e($approverSignature->signer_name).'">'
-                : '<div class="typed-signature">/s/ '.e((string) $approver?->full_name).'</div>';
-            $approverIntegrity = substr($approverSignature->sha256, 0, 12).'...'.substr($approverSignature->sha256, -8);
-        }
-
-        $formStatus = $custody->laundry_approved_at
-            ? 'Approved'
-            : ($custody->laundry_borrower_signature_snapshot_id ? 'Awaiting SPMU Approval' : 'Awaiting Signatures');
-
-        $delegationNote = $custody->laundry_temporary_delegation_id
-            ? '<div class="signature-note">Temporary delegated approver</div>'
-            : '';
 
         $body = '<section class="official laundry-form">'
             .'<table class="laundry-header" role="presentation">'
@@ -579,9 +565,7 @@ class DocumentService
                     .'<span class="meta-separator">|</span>'
                     .'<span><b>Request No.</b> '.e((string) $custody->request->request_no).'</span>'
                     .'<span class="meta-separator">|</span>'
-                    .'<span><b>Status</b> '.e($formStatus).'</span>'
-                    .'<span class="meta-separator">|</span>'
-                    .'<span><b>Issued</b> '.e($this->formalDateTime(now()) ?? '').'</span>'
+                    .'<span><b>Document</b> Physical Working Form</span>'
                 .'</div>'
             .'</div>'
 
@@ -596,54 +580,40 @@ class DocumentService
                     .'<td><span class="field-label">Location</span><span class="field-value">'.e((string) $version?->location).'</span></td>'
                 .'</tr>'
                 .'<tr>'
-                    .'<td><span class="field-label">Needed From</span><span class="field-value">'.e($this->formalDateTime($version?->needed_from) ?? 'Not recorded').'</span></td>'
+                    .'<td><span class="field-label">Issued / Approved Linen</span><span class="field-value">Use the item table below</span></td>'
                     .'<td><span class="field-label">Return Deadline</span><span class="field-value">'.e($this->formalDateTime($custody->due_at) ?? 'Not recorded').'</span></td>'
                 .'</tr>'
             .'</table>'
 
-            .'<p class="laundry-intro">This form records the laundry/service requirement for the listed custodial items and documents the borrower acknowledgement, SPMU approval, and physical service handover.</p>'
+            .'<p class="laundry-intro"><strong>Borrower instruction:</strong> After use, bring the used linen and this physical form to the Laundry Area. After Laundry releases the cleaned linen, bring the cleaned linen back to SPMU for final physical inspection.</p>'
 
-            .'<div class="laundry-section-title">Items for Laundry Service</div>'
+            .'<div class="laundry-section-title">Laundry Worker - Receive, Inspect, and Complete</div>'
             .'<table class="laundry-items-table">'
-                .'<thead><tr><th class="item-number">No.</th><th>Item / Description</th><th class="numeric">Quantity</th><th class="unit-cell">Unit</th></tr></thead>'
+                .'<thead><tr>'
+                    .'<th class="item-number">No.</th>'
+                    .'<th>Item / Description</th>'
+                    .'<th class="numeric">Issued Qty</th>'
+                    .'<th class="unit-cell">Unit</th>'
+                    .'<th>Received Qty</th>'
+                    .'<th>Condition / Issue</th>'
+                    .'<th>Completed Qty</th>'
+                    .'<th>Remarks</th>'
+                .'</tr></thead>'
                 .'<tbody>'.$itemRows.'</tbody>'
             .'</table>'
 
-            .'<div class="laundry-section-title">Borrower Acknowledgement and SPMU Approval</div>'
-            .'<p class="laundry-certification">I acknowledge that the items listed above are subject to the required laundry/service procedure after use and must be returned in accordance with SPMU custody requirements.</p>'
-
-            .'<table class="laundry-signatures"><tr>'
-                .'<td>'
-                    .'<div class="signature-label">Borrower Acknowledgement</div>'
-                    .'<div class="signature-space">'.$borrowerVisual.'</div>'
-                    .'<div class="signature-name">'.e($borrower->full_name).'</div>'
-                    .'<div class="signature-role">Accountable Borrower</div>'
-                    .'<div class="signature-subrole">Borrower</div>'
-                    .'<div class="signature-date">'.($custody->acknowledged_at ? 'Signed on '.e($this->formalDateTime($custody->acknowledged_at) ?? '') : 'Date pending').'</div>'
-                    .($borrowerIntegrity ? '<div class="signature-integrity">Digitally signed in SPMU-ACPMP | Ref: '.e($borrowerIntegrity).'</div>' : '')
-                .'</td>'
-                .'<td>'
-                    .'<div class="signature-label">Approved By - SPMU</div>'
-                    .'<div class="signature-space">'.$approverVisual.'</div>'
-                    .'<div class="signature-name">'.e((string) ($approver?->full_name ?: 'SPMU Head')).'</div>'
-                    .'<div class="signature-role">Supply and Property Management Unit</div>'
-                    .'<div class="signature-subrole">SPMU Head</div>'
-                    .'<div class="signature-date">'.($custody->laundry_approved_at ? 'Approved on '.e($this->formalDateTime($custody->laundry_approved_at) ?? '') : 'Date pending').'</div>'
-                    .($approverIntegrity ? '<div class="signature-integrity">Digital integrity ref: '.e($approverIntegrity).'</div>' : '')
-                    .$delegationNote
-                .'</td>'
-            .'</tr></table>'
-
-            .'<div class="laundry-section-title">Laundry Service Provider / Worker</div>'
+            .'<div class="laundry-section-title">Laundry Worker Certification</div>'
             .'<table class="laundry-worker-table">'
-                .'<tr><th>Received By</th><td class="write-line"></td><th>Date Received</th><td class="write-line"></td></tr>'
-                .'<tr><th>Date Completed</th><td class="write-line"></td><th>Signature</th><td class="write-line"></td></tr>'
-                .'<tr><th>Condition Upon Completion</th><td colspan="3" class="condition-cell"><span class="check-box">□</span> Satisfactory <span class="condition-gap"></span><span class="check-box">□</span> Requires further service</td></tr>'
+                .'<tr><th>Laundry Worker</th><td class="write-line"></td><th>Signature</th><td class="write-line"></td></tr>'
+                .'<tr><th>Received Date / Time</th><td class="write-line"></td><th>Completed Date / Time</th><td class="write-line"></td></tr>'
+                .'<tr><th>General Remarks</th><td colspan="3" class="write-line"></td></tr>'
             .'</table>'
 
-            .'<p class="laundry-note"><strong>Document handling:</strong> Return the signed original to SPMU for recording and custody documentation. The borrower may upload the signed scan; any authorized SPMU fallback upload remains auditable.</p>'
+            .'<p class="laundry-note"><strong>Simple digital step:</strong> Laundry Worker scans/uploads this accomplished form in the Laundry portal. Uploading the accomplished form marks the linen Ready for Pickup and notifies the borrower. The Laundry Worker does not encode the detailed fields in the system. SPMU reads and encodes the signed form during verification.</p>'
 
-            .'<footer class="laundry-footer"><span>Controlled digital document | SPMU-ACPMP | Official operational time: Asia/Manila</span><span>Page '.e((string) $pageNumber).' of '.e((string) $pageCount).'</span></footer>'
+            .'<p class="laundry-note"><strong>Physical custody:</strong> Laundry releases the cleaned linen back to the borrower. The borrower then returns the cleaned linen to SPMU. Only SPMU final inspection can mark serviceable linen Available or route damaged/missing linen to assessment/accountability.</p>'
+
+            .'<footer class="laundry-footer"><span>Controlled physical working form | SPMU-ACPMP | Official operational time: Asia/Manila</span><span>Page '.e((string) $pageNumber).' of '.e((string) $pageCount).'</span></footer>'
         .'</section>';
 
         return $documentShell
@@ -662,54 +632,26 @@ class DocumentService
             ? '<img class="packet-logo" src="data:image/jpeg;base64,'.base64_encode((string) file_get_contents($logoPath)).'" alt="CSPC logo">'
             : '<div class="seal">CSPC</div>';
 
-        $signatureCells = [];
-
-        $borrowerSignature = $version?->borrowerSignature;
-        $borrowerVisual = '<div class="signature-placeholder">Borrower signature unavailable</div>';
-        $borrowerIntegrity = null;
-        if ($borrowerSignature instanceof SignatureSnapshot) {
-            $data = $this->requestLetterSignatureDataUri($borrowerSignature);
-            $borrowerVisual = $data
-                ? '<img class="formal-signature-image" src="'.e($data).'" alt="E-signature of '.e($borrowerSignature->signer_name).'">'
-                : '<div class="typed-signature">/s/ '.e($borrower->full_name).'</div>';
-            $borrowerIntegrity = substr($borrowerSignature->sha256, 0, 12).'...'.substr($borrowerSignature->sha256, -8);
-        }
-
-        $signatureCells[] = [
+        $signatureCells = [[
             'label' => 'Accountable Borrower',
             'name' => $borrower->full_name,
             'role' => 'Borrower',
-            'time' => $version?->signed_at,
-            'visual' => $borrowerVisual,
-            'integrity' => $borrowerIntegrity,
-        ];
+            'time' => $version?->submitted_at,
+            'visual' => '<div class="signature-placeholder">See uploaded wet-signed request letter</div>',
+        ]];
 
-        foreach ($version?->approvalSteps?->sortBy('sequence_no') ?? collect() as $step) {
-            $snapshot = $step->signatureSnapshot;
-            $visual = '<div class="signature-placeholder">Approval signature unavailable</div>';
-            $integrity = null;
-            if ($snapshot instanceof SignatureSnapshot) {
-                $data = $this->requestLetterSignatureDataUri($snapshot);
-                $visual = $data
-                    ? '<img class="formal-signature-image" src="'.e($data).'" alt="E-signature of '.e($snapshot->signer_name).'">'
-                    : '<div class="typed-signature">/s/ '.e((string) $step->approver?->full_name).'</div>';
-                $integrity = substr($snapshot->sha256, 0, 12).'...'.substr($snapshot->sha256, -8);
-            }
-
-            $role = match ($step->stage_code->value) {
-                'SPMU' => UserRole::Spmu->label(),
-                'GSU' => UserRole::Gsu->label(),
-                'VPAF' => UserRole::Vpaf->label(),
-                default => $step->stage_code->value,
-            };
-
+        foreach (
+            ($version?->approvalSteps ?? collect())
+                ->filter(fn ($step) => $step->stage_code->value === 'SPMU')
+                ->sortBy('sequence_no')
+            as $step
+        ) {
             $signatureCells[] = [
-                'label' => 'Approved By - '.$step->stage_code->value,
-                'name' => $step->approver?->full_name ?: 'Approver',
-                'role' => $role,
+                'label' => 'SPMU Verification',
+                'name' => $step->approver?->full_name ?: 'Authorized SPMU reviewer',
+                'role' => UserRole::Spmu->label(),
                 'time' => $step->decided_at,
-                'visual' => $visual,
-                'integrity' => $integrity,
+                'visual' => '<div class="signature-placeholder">System verification record</div>',
             ];
         }
 
@@ -723,7 +665,6 @@ class DocumentService
                     .'<div class="packet-signature-name">'.e(strtoupper((string) $signature['name'])).'</div>'
                     .'<div class="packet-signature-role">'.e((string) $signature['role']).'</div>'
                     .'<div class="packet-signature-date">'.e($this->formalDateTime($signature['time']) ?? 'Date unavailable').'</div>'
-                    .($signature['integrity'] ? '<div class="packet-signature-integrity">Digital integrity ref: '.e($signature['integrity']).'</div>' : '')
                 .'</td>';
             }
             if (count($row) === 1) {
@@ -771,18 +712,18 @@ class DocumentService
                 .'</tr>'
             .'</table>'
 
-            .'<p class="packet-note">This page forms part of the official custody packet. The fully approved request, borrower certification, and digital approval trail are preserved in SPMU-ACPMP and are summarized below for custody reference.</p>'
+            .'<p class="packet-note">This page forms part of the official custody packet. The approved request, borrower record, and SPMU verification history are preserved in SPMU-ACPMP and summarized below for custody reference.</p>'
 
             .'<div class="packet-section-title">Approval Record</div>'
             .'<table class="packet-signature-grid" role="presentation">'.$signatureRows.'</table>'
 
-            .'<footer class="packet-footer"><span>Controlled digital document | SPMU-ACPMP | Official operational time: Asia/Manila</span><span>Page '.e((string) $pageNumber).' of '.e((string) $pageCount).'</span></footer>'
+            .'<footer class="packet-footer"><span>Controlled document | SPMU-ACPMP | Official operational time: Asia/Manila</span><span>Page '.e((string) $pageNumber).' of '.e((string) $pageCount).'</span></footer>'
         .'</section>';
     }
 
     public function replaceConditionalForm(CustodyTransaction $custody, string $type): GeneratedDocument
     {
-        $this->supersede($custody, $type, 'Replaced after a required digital signature or custody-field update.');
+        $this->supersede($custody, $type, 'Replaced after a controlled custody or document update.');
         $document = $this->conditionalForm($custody->fresh(), $type);
         if ($type === 'GATE_PASS' && $custody->gatePass) {
             $custody->gatePass->update(['pass_document_id' => $document->id]);
@@ -795,18 +736,14 @@ class DocumentService
     public function refreshPacketIfReady(CustodyTransaction $custody): ?GeneratedDocument
     {
         $custody->loadMissing([
-            'request.borrower', 'request.currentVersion.borrowerSignature.file', 'request.currentVersion.approvalSteps.approver', 'request.currentVersion.approvalSteps.signatureSnapshot.file',
-            'lines.requestItem.inventoryItem', 'acknowledgementSignature.file', 'gatePass.preparedVerifier', 'gatePass.approver',
-            'gatePass.preparedVerifierSignature.file', 'gatePass.approverSignature.file', 'laundryBorrowerSignature.file', 'laundryApproverSignature.file',
+            'request.borrower', 'request.currentVersion.approvalSteps.approver',
+            'lines.requestItem.inventoryItem', 'gatePass.preparedVerifier', 'gatePass.approver',
         ]);
         if (! $custody->acknowledged_at) {
             return null;
         }
         $hasGatePass = $custody->lines->contains(fn ($line) => $line->requestItem->use_location === 'OFF_CAMPUS');
         $hasLaundry = $custody->lines->contains(fn ($line) => (bool) $line->requestItem->inventoryItem?->laundry_required);
-        if (($hasGatePass && (! $custody->gatePass?->prepared_verified_at || ! $custody->gatePass?->approved_at)) || ($hasLaundry && ! $custody->laundry_approved_at)) {
-            return null;
-        }
 
         $this->supersede($custody, 'OFFICIAL_FORM_PACKET', 'Replaced by the latest approved packet.');
         $totalPages = 2 + ($hasGatePass ? 1 : 0) + ($hasLaundry ? 1 : 0);
@@ -819,36 +756,9 @@ class DocumentService
             $pages[] = ['__html' => $this->gatePassHtml($custody, false, $nextPageNumber++, $totalPages)];
         }
         if ($hasLaundry) {
-            $approver = User::find($custody->laundry_approved_by_user_id);
             $pages[] = ['__html' => $this->laundryFormHtml($custody, false, $nextPageNumber++, $totalPages)];
         }
 
-        $requestSignatures = [[
-            'label' => 'Accountable Borrower', 'snapshot' => $custody->request->currentVersion->borrowerSignature,
-            'name' => $custody->borrower->full_name, 'time' => $custody->request->currentVersion->signed_at,
-        ]];
-        foreach ($custody->request->currentVersion->approvalSteps->sortBy('sequence_no') as $step) {
-            $requestSignatures[] = [
-                'label' => $step->stage_code->value.' Approval'.($step->temporary_delegation_id ? ' - Temporary Delegate' : ''),
-                'snapshot' => $step->signatureSnapshot, 'name' => $step->approver?->full_name, 'time' => $step->decided_at,
-            ];
-        }
-        $pageSignatures = [$requestSignatures, [[
-            'label' => 'Borrower Acknowledgement', 'snapshot' => $custody->acknowledgementSignature,
-            'name' => $custody->borrower->full_name, 'time' => $custody->acknowledged_at,
-        ]]];
-        if ($hasGatePass) {
-            $pageSignatures[] = [
-                ['label' => 'Verified By - SPMU Action Officer', 'snapshot' => $custody->gatePass->preparedVerifierSignature, 'name' => $custody->gatePass->preparedVerifier->full_name, 'time' => $custody->gatePass->prepared_verified_at],
-                ['label' => 'Approved By - SPMU Head', 'snapshot' => $custody->gatePass->approverSignature, 'name' => $custody->gatePass->approver->full_name, 'time' => $custody->gatePass->approved_at],
-            ];
-        }
-        if ($hasLaundry) {
-            $pageSignatures[] = [
-                ['label' => 'Borrower Acknowledgement', 'snapshot' => $custody->laundryBorrowerSignature, 'name' => $custody->borrower->full_name, 'time' => $custody->acknowledged_at],
-                ['label' => 'Approved By - SPMU Head', 'snapshot' => $custody->laundryApproverSignature, 'name' => $approver?->full_name, 'time' => $custody->laundry_approved_at],
-            ];
-        }
         $htmlPages = [];
         foreach ($pages as $index => $page) {
             if (isset($page['__html'])) {
@@ -857,7 +767,7 @@ class DocumentService
                 continue;
             }
 
-            $htmlPages[] = $this->officialHtml((string) ($page[3] ?? $page[1] ?? 'Official Form'), $page, $pageSignatures[$index] ?? [], false);
+            $htmlPages[] = $this->officialHtml((string) ($page[3] ?? $page[1] ?? 'Official Form'), $page, false);
         }
 
         return $this->saveHtml('OFFICIAL_FORM_PACKET', '<!doctype html><html><head>'.$this->officialCss().'</head><body>'.implode('<div class="page-break"></div>', $htmlPages).'</body></html>', $custody->request->currentVersion, $custody::class, $custody->id, 'FINAL', $custody->custody_no.'-OFFICIAL-PACKET.pdf');
@@ -972,62 +882,24 @@ class DocumentService
         ]);
     }
 
-    /** @param list<array{label:string,snapshot:?SignatureSnapshot,name:?string,time:mixed}> $signatures */
-    private function officialHtml(string $title, array $lines, array $signatures = [], bool $documentShell = true): string
-    {
+    private function officialHtml(
+        string $title,
+        array $lines,
+        bool $documentShell = true
+    ): string {
         $body = '<section class="official"><header><div class="seal">CSPC</div><div><strong>CAMARINES SUR POLYTECHNIC COLLEGES</strong><span>Supply and Property Management Unit</span></div></header><h1>'.e($title).'</h1><div class="lines">';
+
         foreach ($lines as $line) {
-            $body .= $line === '' ? '<div class="spacer"></div>' : '<p>'.e($line).'</p>';
-        }
-        $body .= '</div>';
-        $available = array_filter($signatures, fn ($signature) => $signature['snapshot'] instanceof SignatureSnapshot);
-        if ($available) {
-            $body .= '<div class="signature-grid">';
-            foreach ($signatures as $signature) {
-                if (! $signature['snapshot'] instanceof SignatureSnapshot) {
-                    continue;
-                }
-                $body .= '<div class="signature-block"><small>'.e($signature['label']).'</small>'.$this->signatureImage($signature['snapshot']).'<strong>'.e((string) $signature['name']).'</strong><span>'.e(optional($signature['time'])->format('F j, Y g:i A') ?? '').'</span><code>'.e(substr($signature['snapshot']->sha256, 0, 20)).'…</code></div>';
-            }
-            $body .= '</div>';
-        }
-        $body .= '<footer>Controlled digital document · Asia/Manila · Integrity is recorded in SPMU-ACPMP</footer></section>';
-
-        return $documentShell ? '<!doctype html><html><head>'.$this->officialCss().'</head><body>'.$body.'</body></html>' : $body;
-    }
-
-    private function signatureImage(SignatureSnapshot $snapshot): string
-    {
-        $data = $this->signatureDataUri($snapshot);
-        if (! $data) {
-            return '<div class="signature-missing">Signature file unavailable</div>';
+            $body .= $line === ''
+                ? '<div class="spacer"></div>'
+                : '<p>'.e($line).'</p>';
         }
 
-        return '<img class="signature-image" src="'.e($data).'" alt="E-signature of '.e($snapshot->signer_name).'">';
-    }
+        $body .= '</div><footer>Controlled document · Asia/Manila · Operational records are maintained in SPMU-ACPMP</footer></section>';
 
-    private function signatureDataUri(SignatureSnapshot $snapshot): ?string
-    {
-        $snapshot->loadMissing('file');
-        if (! $snapshot->file) {
-            return null;
-        }
-
-        return 'data:'.$snapshot->file->mime_type.';base64,'.base64_encode($this->files->bytes($snapshot->file));
-    }
-
-    private function requestLetterSignatureDataUri(SignatureSnapshot $snapshot): ?string
-    {
-        $snapshot->loadMissing('file');
-        $mimeType = strtolower((string) $snapshot->file?->mime_type);
-        $nativelyRenderable = in_array($mimeType, ['image/jpeg', 'image/jpg'], true);
-        $renderableWithGd = extension_loaded('gd') && in_array($mimeType, ['image/png', 'image/webp'], true);
-
-        if (! $snapshot->file || (! $nativelyRenderable && ! $renderableWithGd)) {
-            return null;
-        }
-
-        return $this->signatureDataUri($snapshot);
+        return $documentShell
+            ? '<!doctype html><html><head>'.$this->officialCss().'</head><body>'.$body.'</body></html>'
+            : $body;
     }
 
     private function formalDateTime(?CarbonInterface $date): ?string
@@ -1212,7 +1084,6 @@ class DocumentService
             .signature-label{font-size:8px;font-weight:bold;text-transform:uppercase;color:#0b3156;letter-spacing:.18px}
             .signature-space{height:58px;padding-top:5px}
             .formal-signature-image{display:block;max-width:175px;max-height:52px;margin:0 auto}
-            .typed-signature{padding-top:20px;font-family:DejaVu Serif,serif;font-size:12px;font-style:italic;color:#173c60}
             .signature-placeholder{padding-top:22px;font-size:8.5px;color:#7f8e9b}
             .signature-name{padding-top:3px;border-top:1px solid #7e8d9a;font-size:10px;font-weight:bold;text-transform:uppercase;color:#24384b}
             .signature-role{margin-top:2px;font-size:8.4px;color:#45586b}

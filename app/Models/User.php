@@ -84,7 +84,13 @@ class User extends Authenticatable
 
     public function primaryWorkspace(): ?string
     {
-        return $this->resolvedAccessClassification()?->primaryWorkspace()->value;
+        $classification = $this->resolvedAccessClassification();
+
+        if (! $classification?->isPortalEnabled()) {
+            return null;
+        }
+
+        return $classification->primaryWorkspace()->value;
     }
 
     public function mayBorrow(): bool
@@ -115,7 +121,11 @@ class User extends Authenticatable
     {
         return TemporaryDelegation::query()
             ->where('delegate_user_id', $this->id)
-            ->whereIn('office_role', [UserRole::Spmu->value, UserRole::Gsu->value, UserRole::Vpaf->value])
+            /*
+             * The active workflow permits temporary delegation only for SPMU
+             * approval/signatory authority. GSU/VPAF approval stages are retired.
+             */
+            ->where('office_role', UserRole::Spmu->value)
             ->where('status', 'ACTIVE')
             ->whereNull('revoked_at')
             ->where('effective_from', '<=', now())

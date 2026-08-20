@@ -6,8 +6,8 @@
     $labels = [
         'DRAFT' => 'Draft',
         'UNDER_SPMU' => 'Under SPMU Review',
-        'UNDER_GSU' => 'Under GSU Review',
-        'UNDER_VPAF' => 'Under VPAF Review',
+        'UNDER_GSU' => 'Legacy Review',
+        'UNDER_VPAF' => 'Legacy Review',
         'PENDING' => 'Pending',
         'RECEIVED' => 'Pending Review',
         'RETURNED_FOR_REVISION' => 'Returned for Revision',
@@ -48,9 +48,15 @@
         'BORROWER_ONLY' => 'Borrower',
         'SPMU_HEAD' => 'SPMU Head',
         'SPMU_OFFICER' => 'SPMU Action Officer',
-        'GSU_HEAD' => 'GSU Head',
-        'VPAF_HEAD' => 'VPAF Head',
+        'GSU_HEAD' => 'Retired Signatory Record',
+        'VPAF_HEAD' => 'Retired Signatory Record',
         'ICTU_MAINTAINER' => 'ICTU Maintainer',
+        'LAUNDRY_WORKER' => 'Laundry Worker',
+        'FOR_LAUNDRY' => 'For Laundry',
+        'READY_FOR_PICKUP' => 'Ready for Pickup',
+        'FORM_REPLACEMENT_REQUIRED' => 'Replacement Form Required',
+        'FOR_SPMU_FINAL_CHECK' => 'For SPMU Final Check',
+        'LAUNDRY_COMPLETED' => 'Laundry Completed',
     ];
     $display = $label ?: ($labels[$key] ?? str($value)->replace('_', ' ')->lower()->title());
     $tone = match (true) {

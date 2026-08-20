@@ -20,47 +20,49 @@ class InventoryController extends Controller
 {
     public function index(Request $request, InventoryService $inventory): View
     {
-        $workspace = strtoupper((string) $request->user()->primaryWorkspace());
-        $isBorrower = $workspace === 'BORROWER';
+        $workspace = strtoupper(
+            (string) $request->session()->get('active_workspace')
+        );
+
+        $borrowerMode = $workspace === 'BORROWER';
+
+        $search = trim((string) $request->input('q', ''));
+        $categoryId = $request->integer('category');
 
         /*
-         * Borrower Inventory is a current, informational availability view only.
-         * It must not imply or create a reservation.
+         * Borrower Inventory is informational only.
+         * Show current availability and do not imply a reservation period.
          *
-         * Current database mapping:
-         * SERVICEABLE = Good / suitable for borrowing.
+         * SPMU retains date-only period checking for operational monitoring.
          */
-        if ($isBorrower) {
+        if ($borrowerMode) {
             $from = now();
-            $to = now()->addSecond();
+            $to = now()->copy()->addSecond();
         } else {
             $from = Carbon::parse(
                 $request->input(
                     'from',
-                    now()->addDay()->format('Y-m-d').' 08:00'
+                    now()->addDay()->toDateString()
                 )
-            );
+            )->startOfDay();
 
             $to = Carbon::parse(
                 $request->input(
                     'to',
-                    now()->addDays(7)->format('Y-m-d').' 17:00'
+                    now()->addDays(7)->toDateString()
                 )
-            );
+            )->endOfDay();
 
-            if ($to->lte($from)) {
-                $to = $from->copy()->addDay();
+            if ($to->toDateString() < $from->toDateString()) {
+                $to = $from->copy()->endOfDay();
             }
         }
-
-        $search = trim((string) $request->input('q', ''));
-        $categoryId = $request->integer('category');
 
         $itemsQuery = InventoryItem::query()
             ->with(['category', 'unit'])
             ->where('active', true)
             ->when(
-                $isBorrower,
+                $borrowerMode,
                 fn (Builder $query) => $query
                     ->where('borrowable', true)
                     ->where('condition_code', 'SERVICEABLE')
@@ -87,8 +89,10 @@ class InventoryController extends Controller
             )
             ->when(
                 $categoryId > 0,
-                fn (Builder $query) => $query
-                    ->where('category_id', $categoryId)
+                fn (Builder $query) => $query->where(
+                    'category_id',
+                    $categoryId
+                )
             )
             ->orderBy('unique_description');
 
@@ -105,151 +109,70 @@ class InventoryController extends Controller
         );
 
         /*
-         * Borrowers must see only assets that are:
-         * - active
-         * - borrowable
-         * - in Good/SERVICEABLE condition
-         * - currently available in a positive quantity
-         *
-         * This is display filtering only. No reservation is created here.
+         * Borrowers should not see stock with no currently available quantity.
          */
-        if ($isBorrower) {
+        if ($borrowerMode) {
             $items = $items
-                ->filter(
-                    function (InventoryItem $item) use ($balances): bool {
-                        $balance = $balances->get($item->id, []);
+                ->filter(function (InventoryItem $item) use ($balances): bool {
+                    $balance = $balances[$item->id] ?? [];
 
-                        return (float) (
-                            $balance['borrower_available']
-                            ?? $balance['available']
-                            ?? 0
-                        ) > 0;
-                    }
-                )
+                    $available = (float) (
+                        $balance['borrower_available']
+                        ?? $balance['available']
+                        ?? 0
+                    );
+
+                    return $available > 0;
+                })
                 ->values();
-
-            $visibleItemIds = $items
-                ->pluck('id')
-                ->all();
-
-            $balances = $balances
-                ->only($visibleItemIds);
         }
 
         $categories = InventoryCategory::query()
             ->where('active', true)
-            ->when(
-                $isBorrower,
-                fn (Builder $query) => $query->whereHas(
-                    'items',
-                    fn (Builder $items) => $items
-                        ->where('active', true)
-                        ->where('borrowable', true)
-                        ->where('condition_code', 'SERVICEABLE')
-                )
-            )
             ->orderBy('category_name')
             ->get();
 
-        return view(
-            'inventory.index',
-            compact(
-                'items',
-                'balances',
-                'from',
-                'to',
-                'categories',
-                'search',
-                'categoryId',
-                'workspace'
-            )
-        );
-    }
-
-    public function show(
-        Request $request,
-        InventoryItem $inventory,
-        InventoryService $service
-    ): View {
-        $workspace = strtoupper(
-            (string) $request->user()->primaryWorkspace()
-        );
-
-        if (! in_array($workspace, ['BORROWER', 'SPMU'], true)) {
-            abort(403);
-        }
-
-        if (! $inventory->active) {
-            abort(404);
-        }
-
-        $inventory->loadMissing(['category', 'unit']);
-
-        $balance = $service->availability(
-            $inventory,
-            now(),
-            now()->addSecond()
-        );
-
-        /*
-         * Borrowers may open details only for inventory that is actually
-         * visible in the Borrower Inventory list.
-         */
-        if ($workspace === 'BORROWER') {
-            $available = (float) (
-                $balance['borrower_available']
-                ?? $balance['available']
-                ?? 0
-            );
-
-            if (
-                ! $inventory->borrowable
-                || $inventory->condition_code !== 'SERVICEABLE'
-                || $available <= 0
-            ) {
-                abort(404);
-            }
-        }
-
-        return view('inventory.show', [
-            'item' => $inventory,
-            'balance' => $balance,
-            'isBorrower' => $workspace === 'BORROWER',
-            'isSpmu' => $workspace === 'SPMU',
-        ]);
+        return view('inventory.index', compact(
+            'items',
+            'balances',
+            'from',
+            'to',
+            'borrowerMode',
+            'search',
+            'categoryId',
+            'categories'
+        ));
     }
 
     public function create(): View
     {
         return view('inventory.form', [
             'item' => new InventoryItem,
-            'categories' => InventoryCategory::where(
-                'active',
-                true
-            )->get(),
-            'units' => UnitOfMeasure::where(
-                'active',
-                true
-            )->get(),
+            'categories' => InventoryCategory::query()->where('active', true)->get(),
+            'units' => UnitOfMeasure::query()->where('active', true)->get(),
         ]);
     }
 
-    public function availabilityData(
-        Request $request,
-        InventoryService $inventory
-    ): JsonResponse {
+    /**
+     * Date-only availability API. Any time portion sent by an older UI is
+     * intentionally discarded.
+     */
+    public function availabilityData(Request $request, InventoryService $inventory): JsonResponse
+    {
         $data = $request->validate([
             'from' => ['required', 'date'],
-            'to' => ['required', 'date', 'after:from'],
+            'to' => ['required', 'date'],
         ]);
 
-        $from = Carbon::parse($data['from']);
-        $to = Carbon::parse($data['to']);
+        $from = Carbon::parse($data['from'])->startOfDay();
+        $to = Carbon::parse($data['to'])->endOfDay();
 
-        /*
-         * The borrowing-request availability lookup should expose only
-         * active, borrowable, serviceable inventory.
-         */
+        if ($to->toDateString() < $from->toDateString()) {
+            throw ValidationException::withMessages([
+                'to' => 'Return Date cannot be earlier than the Schedule Date.',
+            ]);
+        }
+
         $items = InventoryItem::query()
             ->where('active', true)
             ->where('borrowable', true)
@@ -259,22 +182,15 @@ class InventoryController extends Controller
         return response()->json(
             $items->mapWithKeys(
                 fn (InventoryItem $item) => [
-                    $item->id => $inventory->availability(
-                        $item,
-                        $from,
-                        $to
-                    ),
+                    $item->id => $inventory->availability($item, $from, $to),
                 ]
             )
         );
     }
 
-    public function store(
-        Request $request,
-        AuditService $audit
-    ): RedirectResponse {
+    public function store(Request $request, AuditService $audit): RedirectResponse
+    {
         $data = $this->validated($request);
-
         $item = InventoryItem::query()->create($data);
 
         $audit->record(
@@ -284,27 +200,15 @@ class InventoryController extends Controller
             after: $item->toArray()
         );
 
-        return redirect()
-            ->route('inventory.index')
-            ->with(
-                'status',
-                'Inventory item created.'
-            );
+        return redirect()->route('inventory.index')->with('status', 'Inventory item created.');
     }
 
-    public function edit(
-        InventoryItem $inventory
-    ): View {
+    public function edit(InventoryItem $inventory): View
+    {
         return view('inventory.form', [
             'item' => $inventory,
-            'categories' => InventoryCategory::where(
-                'active',
-                true
-            )->get(),
-            'units' => UnitOfMeasure::where(
-                'active',
-                true
-            )->get(),
+            'categories' => InventoryCategory::query()->where('active', true)->get(),
+            'units' => UnitOfMeasure::query()->where('active', true)->get(),
         ]);
     }
 
@@ -314,32 +218,26 @@ class InventoryController extends Controller
         InventoryService $service,
         AuditService $audit
     ): RedirectResponse {
-        $data = $this->validated(
-            $request,
-            $inventory
-        );
+        $data = $this->validated($request, $inventory);
 
         $balance = $service->availability(
             $inventory,
-            now()->subYears(10),
-            now()->addYears(10)
+            now()->subYears(10)->startOfDay(),
+            now()->addYears(10)->endOfDay()
         );
 
-        $committed =
-            $balance['allocated']
+        $committed = $balance['allocated']
             + $balance['borrowed']
             + $balance['laundry']
             + $balance['incident'];
 
         if ((float) $data['total_quantity'] < $committed) {
             throw ValidationException::withMessages([
-                'total_quantity' =>
-                    "Total quantity cannot be reduced below the active commitment of {$committed}.",
+                'total_quantity' => "Total quantity cannot be reduced below the active commitment of {$committed}.",
             ]);
         }
 
         $before = $inventory->toArray();
-
         $inventory->update($data);
 
         $audit->record(
@@ -350,97 +248,38 @@ class InventoryController extends Controller
             after: $inventory->fresh()->toArray()
         );
 
-        return redirect()
-            ->route('inventory.index')
-            ->with(
-                'status',
-                'Inventory item updated with an audit record.'
-            );
+        return redirect()->route('inventory.index')->with('status', 'Inventory item updated with an audit record.');
     }
 
-    private function validated(
-        Request $request,
-        ?InventoryItem $item = null
-    ): array {
+    private function validated(Request $request, ?InventoryItem $item = null): array
+    {
         $data = $request->validate([
-            'category_id' => [
-                'required',
-                'exists:inventory_categories,id',
-            ],
-            'unit_id' => [
-                'required',
-                'exists:units_of_measure,id',
-            ],
+            'category_id' => ['required', 'exists:inventory_categories,id'],
+            'unit_id' => ['required', 'exists:units_of_measure,id'],
             'unique_description' => [
                 'required',
                 'string',
                 'max:255',
                 Rule::unique('inventory_items')
-                    ->where(
-                        fn ($query) => $query->where(
-                            'category_id',
-                            $request->integer('category_id')
-                        )
-                    )
+                    ->where(fn ($query) => $query->where('category_id', $request->integer('category_id')))
                     ->ignore($item?->id),
             ],
-            'specification' => [
-                'nullable',
-                'string',
-            ],
-            'total_quantity' => [
-                'required',
-                'numeric',
-                'min:0',
-            ],
-            'condition_code' => [
-                'required',
-                Rule::in([
-                    'SERVICEABLE',
-                    'DAMAGED_MAINTENANCE',
-                    'CONDEMNED',
-                ]),
-            ],
-            'change_reason' => [
-                'required',
-                'string',
-                'max:1000',
-            ],
+            'specification' => ['nullable', 'string'],
+            'total_quantity' => ['required', 'numeric', 'min:0'],
+            'condition_code' => ['required', Rule::in(['SERVICEABLE', 'DAMAGED_MAINTENANCE', 'CONDEMNED'])],
+            'change_reason' => ['required', 'string', 'max:1000'],
         ]);
 
-        $data['borrowable'] = $request->boolean(
-            'borrowable'
-        );
-
-        $data['off_campus_allowed'] = $request->boolean(
-            'off_campus_allowed'
-        );
-
-        $data['laundry_required'] = $request->boolean(
-            'laundry_required'
-        );
-
-        $data['provisional'] = $request->boolean(
-            'provisional'
-        );
-
-        $data['active'] = $request->boolean(
-            'active',
-            true
-        );
-
+        $data['borrowable'] = $request->boolean('borrowable');
+        $data['off_campus_allowed'] = $request->boolean('off_campus_allowed');
+        $data['laundry_required'] = $request->boolean('laundry_required');
+        $data['provisional'] = $request->boolean('provisional');
+        $data['active'] = $request->boolean('active', true);
         unset($data['change_reason']);
 
-        if (
-            $data['off_campus_allowed']
-            && strcasecmp(
-                $data['unique_description'],
-                'Barricade'
-            ) !== 0
-        ) {
+        if ($data['off_campus_allowed'] && strcasecmp($data['unique_description'], 'Barricade') !== 0) {
             throw ValidationException::withMessages([
-                'off_campus_allowed' =>
-                    'Current policy permits off-campus use only for Barricade.',
+                'off_campus_allowed' => 'Current policy permits off-campus use only for Barricade.',
             ]);
         }
 

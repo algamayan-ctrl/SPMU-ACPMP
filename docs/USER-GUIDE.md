@@ -1,66 +1,73 @@
 # SPMU-ACPMP User Guide
 
-## Access and portal rules
+## Access rules
 
-- Only CSPC employees, faculty, and staff may hold accounts. A student or external person cannot be the accountable borrower.
-- Only `BORROWER_ONLY` accounts may borrow. SPMU Heads, SPMU Action Officers, GSU Heads, VPAF Heads, and ICTU Maintainers use only their assigned operational portal.
-- A formal temporary delegation grants only the applicable approval authority; it does not change the delegate's normal portal classification.
-- Nobody may approve, verify, release, or receive their own borrowing transaction.
-- A temporary delegate uses their own account and e-signature. ICTU records the written authority, office, period, reason, Head, and delegate before the limited approval authority becomes available.
+- Only Borrower accounts may create borrowing requests.
+- Active staff classifications are SPMU Admin / Head, SPMU Action Officer, Laundry Worker and ICTU Maintainer.
+- SPMU, Laundry and ICTU accounts cannot borrow.
+- GSU and VPAF are not system accounts/portals/approvers. They are physical institutional signatories on the printed Borrowing Request Letter when required.
+- No electronic signature is used. Required signatures are handwritten/wet signatures on printed documents; accomplished scans/evidence are uploaded and verified.
+- A formal SPMU delegation gives only the recorded decision authority and uses the delegate's own account.
+- Nobody may approve/release/receive their own borrowing transaction.
 
 ## Borrower
 
-1. Complete the Profile and upload a PNG/JPG/WebP e-signature.
-2. Use Inventory to choose a complete date range and see real-time availability.
-3. Use Calendar to see approved commitments, active borrowing periods, and deadlines. Other borrowers are shown anonymously.
-4. Create a request with event, location, needed-from, and fixed return deadline. When representing a student activity, record organization, program/department, year, and event details.
-5. Select available quantities. Ordinary equipment and linens are locked to On-Campus. Only Barricade can be marked Off-Campus.
-6. Save, review, and certify the official request letter. Submission captures the current profile e-signature.
-7. Monitor SPMU Head → GSU Head → VPAF Head approval. A formal temporary delegate may act only within their recorded period.
-8. Download the fully approved letter by the displayed same-day deadline. If missed, the request expires and the allocation returns to availability.
-9. Downloading unlocks the read-only Borrower’s Slip. SPMU—not the borrower—records any lower final issued quantities after physical counting.
-10. After SPMU preparation, e-sign the Borrower’s Slip acknowledgement. If linen is present, the same action also signs the borrower section of the Laundry Form.
-11. View and download the official packet. It contains the approved letter, Borrower’s Slip, and only the required Gate Pass and/or Laundry Form, each on its own page.
-12. Upload guard- or laundry-worker-signed evidence after the applicable physical step. SPMU may upload on the borrower’s behalf only with a recorded fallback reason.
-13. Use Early Return to notify SPMU of an earlier handover. Inventory changes only after SPMU receives and inspects the items.
-14. For a Billing Statement, upload the receipt copy and bring the original to SPMU. SPMU encodes the Official Receipt details after inspection.
+1. Keep account/contact details current.
+2. Check Available Items and Borrowing Calendar for the required dates.
+3. Create a request and select quantities/use location.
+4. Save the Draft. The system generates a printable Borrowing Request Letter.
+5. Print the letter and obtain the required handwritten/wet signatures from the physical institutional signatories, including GSU/VPAF where shown on the form.
+6. Scan and upload the fully signed Borrowing Request Letter. Upload Permission to Conduct when the request represents a student activity/organization.
+7. Submit to SPMU and monitor status.
+8. If SPMU returns the request, correct the request/document and resubmit. If SPMU approves, the exact approved quantity is reserved.
+9. Follow the scheduled pickup. Required Borrower Slip/Gate Pass/Laundry Form signatures are completed physically.
+10. Track custody, return deadlines, Early Return and accountability records from the borrower portal.
+
+## SPMU Admin / Head
+
+- Review submitted Borrowing Request Letter scans side-by-side with the SPMU checklist.
+- Confirm request/document consistency, inventory availability and approved quantity.
+- Choose Verify & Approve, Return for Revision, or Reject.
+- Approval reserves the exact approved quantity; there is no downstream GSU/VPAF system approval.
+- Oversee cancellation, accountability, reports and other Head-authorized controls.
+- A formally delegated SPMU Action Officer may make the recorded SPMU decision under their own identity.
 
 ## SPMU Action Officer
 
-1. Use the SPMU Operations portal for verification, inventory, release, return, forms, evidence, accountability, and reports.
-2. Maintain descriptive inventory, quantities, units, linen flags, provisional values, and Barricade off-campus eligibility with an audit reason.
-3. Review routed requests but do not apply the SPMU Head approval signature.
-4. For release, encode final issued quantities, record reasons for reductions, physically count/prepare items, and unlock borrower acknowledgement.
-5. Digitally sign the Gate Pass “Verified By” section. A different authorized SPMU Head/delegate signs “Approved By.”
-6. Release items only after required acknowledgements and digital form signatures. Guard evidence is recorded after campus exit and does not block the SPMU handover.
-7. Receive each returned line and record Fine, Damaged, Destroyed, Missing, Lost, or Stolen. Non-fine conditions require evidence; Stolen also requires a police-blotter reference.
-8. Fine linens remain In Laundry until the worker-signed form and physical linen condition are verified.
-9. For payment, inspect the original receipt, then encode OR number, receipt date, amount, and verification remarks. Reject mismatches with a reason.
+- Review routed requests operationally but cannot make the SPMU decision unless a valid delegation grants that authority.
+- Schedule the pickup window after approval.
+- Prepare exactly the approved/reserved quantity; do not silently reduce an approved quantity.
+- Generate the Borrower Slip and applicable Gate Pass/Laundry Form.
+- Confirm required handwritten/wet signatures are physically complete before release.
+- Record physical release, returns, conditions, evidence, incidents, billing/accountability and applicable Gate Pass/Laundry evidence.
 
-## SPMU Head
+## Laundry Worker
 
-The SPMU Head receives the first official approval stage and cannot borrow. The Head also digitally signs the Gate Pass “Approved By” section and the Laundry Form approval section. A formally recorded temporary delegate may perform these actions under their own identity.
+The Laundry portal is deliberately simple and linen-specific.
 
-## GSU Head
+1. Open **Laundry Requests** to see active linen jobs.
+2. Open a job to see the custody/request and linen lines.
+3. Process the linen physically.
+4. Upload the accomplished handwritten/wet-signed Laundry Form.
+5. Mark cleaned linen released for the next SPMU verification step.
+6. SPMU performs the final check/return. Linen becomes Available only after that final SPMU completion.
 
-The GSU Head receives only requests approved by SPMU. The Head can Approve, Reject, or Return for Revision and cannot borrow. Other GSU employees are borrowers only. A formal temporary delegate may act under their own identity.
+Laundry Worker cannot access borrowing, SPMU approval, ICTU administration, or unrelated custody functions.
 
-## VPAF Head
+## ICTU Maintainer
 
-The Vice President for Administration and Finance receives only requests approved by SPMU and GSU. Final approval atomically rechecks and allocates inventory. An inventory conflict returns the request for revision without partial allocation. The VPAF Head cannot borrow; a formal temporary delegate may act under their own identity.
-
-## ICTU
-
-ICTU registers CSPC accounts, assigns access classifications, records/revokes temporary delegations, controls deployment, scheduler, backups, monitoring, and technical audit evidence. ICTU cannot perform SPMU custody work or approval decisions unless a separate, valid business-office delegation explicitly grants that limited approval authority.
+- Create/manage active Borrower, SPMU Admin / Head, SPMU Action Officer, Laundry Worker and ICTU accounts.
+- Retired GSU/VPAF records are hidden from the active User Accounts list and cannot be assigned.
+- Manage system configuration, audit trail, delivery records, deployment, scheduler and technical operations.
+- ICTU does not approve borrowing requests or perform SPMU custody work.
 
 ## Status principles
 
-- Draft/under review: no reservation.
-- VPAF final approval: Allocated, not Borrowed.
-- Approved letter downloaded: confirmed claim and Borrower’s Slip, still not Borrowed.
-- Physical release: final issued quantity becomes Borrowed.
-- Each item retains its own return/compliance status, such as Pending Return, In Laundry, Cleared Gate, Returned, or Incident Pending.
-- Fine ordinary/Barricade return: Available after SPMU inspection.
-- Fine linen return: In Laundry until verified completion.
-- Cancellation before release: unreleased allocation restored.
-- Early Return: notice only until physical inspection.
+- Draft: editable; no inventory reservation.
+- Under SPMU: submitted scan is awaiting SPMU verification; no reservation yet.
+- Approved Ready for Release: SPMU approved and exact quantity is reserved.
+- Preparing for Release: pickup/custody record exists; SPMU Action Officer schedules/prepares items.
+- Released/Active: physically issued quantity is in borrower custody.
+- Fine ordinary item return: Available after SPMU inspection.
+- Fine linen return: routes through Laundry and returns to Available only after Laundry + final SPMU completion.
+- Early Return is a notice until SPMU physically receives/inspects the property.

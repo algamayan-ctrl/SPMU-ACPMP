@@ -102,7 +102,7 @@
                 };
 
                 $displayStatusLabel = match($custodyStatus) {
-                    'ACTIVE' => 'Released',
+                    'ACTIVE' => 'On Custody',
                     'PARTIALLY_RETURNED' => 'Partially Returned',
                     'OVERDUE' => 'Overdue',
                     'EARLY_RETURN' => 'Early Return',
@@ -286,8 +286,8 @@
                     )
                 );
 
-                $scheduleStart = optional($version?->needed_from)->format('d M Y');
-                $scheduleEnd = optional($version?->return_due_at)->format('d M Y');
+                $scheduleStart = optional($version?->schedule_date ?: $version?->needed_from)->format('d M Y');
+                $scheduleEnd = optional($version?->return_date ?: $version?->return_due_at)->format('d M Y');
             @endphp
 
             <a
@@ -403,9 +403,9 @@
                         {{ $request->currentVersion?->purpose_event }}
 
                         <small>
-                            {{ optional($request->currentVersion?->needed_from)->format('d M Y, g:i A') }}
+                            {{ optional($request->currentVersion?->schedule_date ?: $request->currentVersion?->needed_from)->format('d M Y') }}
                             to
-                            {{ optional($request->currentVersion?->return_due_at)->format('d M Y, g:i A') }}
+                            {{ optional($request->currentVersion?->return_date ?: $request->currentVersion?->return_due_at)->format('d M Y') }}
                         </small>
                     </td>
 
@@ -429,7 +429,7 @@
                             };
 
                             $tableDisplayLabel = match($custodyStatus) {
-                                'ACTIVE' => 'Released',
+                                'ACTIVE' => 'On Custody',
                                 'PARTIALLY_RETURNED' => 'Partially Returned',
                                 'OVERDUE' => 'Overdue',
                                 'EARLY_RETURN' => 'Early Return',

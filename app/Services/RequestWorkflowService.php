@@ -2,7 +2,6 @@
 
 namespace App\Services;
 
-use App\Enums\AccessClassification;
 use App\Enums\ApprovalStage;
 use App\Enums\RequestStatus;
 use App\Enums\UserRole;
@@ -13,9 +12,9 @@ use App\Models\CustodyTransaction;
 use App\Models\DownloadEvent;
 use App\Models\GatePass;
 use App\Models\GeneratedDocument;
+use App\Models\RequestCancellation;
 use App\Models\RequestStatusHistory;
-use App\Models\SystemSetting;
-use App\Models\TemporaryDelegation;
+use App\Models\RequestSupportingDocument;
 use App\Models\User;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
@@ -24,449 +23,1651 @@ class RequestWorkflowService
 {
     public function __construct(
         private InventoryService $inventory,
-        private SignatureService $signatures,
+        private CustodyService $custody,
         private DocumentService $documents,
         private NotificationService $notifications,
         private AuditService $audit,
     ) {}
 
-    public function submit(BorrowingRequest $request, User $borrower): void
-    {
+    /**
+     * Submit the borrower's request for SPMU verification.
+     *
+     * Submission does not create an inventory reservation.
+     * Inventory is reserved only after SPMU verifies and
+     * approves the submitted request.
+     */
+    public function submit(
+        BorrowingRequest $request,
+        User $borrower
+    ): void {
         if (! $borrower->mayBorrow()) {
-            abort(403, 'This account classification is not permitted to borrow.');
+            abort(
+                403,
+                'This account classification is not permitted to borrow.'
+            );
         }
-        if ($request->borrower_user_id !== $borrower->id || ! in_array($request->status, [RequestStatus::Draft, RequestStatus::ReturnedForRevision], true)) {
+
+        if (
+            $request->borrower_user_id !== $borrower->id
+            || ! in_array(
+                $request->status,
+                [
+                    RequestStatus::Draft,
+                    RequestStatus::ReturnedForRevision,
+                ],
+                true
+            )
+        ) {
             abort(403);
         }
-        if ($borrower->activeRestrictions()->exists()) {
-            throw ValidationException::withMessages(['restriction' => 'An active borrowing restriction prevents a new submission. Resolve the linked obligation with SPMU.']);
+
+        $outstandingCustody = CustodyTransaction::query()
+            ->where('borrower_user_id', $borrower->id)
+            ->whereIn('status', [
+                'ACTIVE',
+                'PARTIALLY_RETURNED',
+                'OVERDUE',
+                'EARLY_RETURN',
+                'INCIDENT_OPEN',
+                'OBLIGATION_OPEN',
+            ])
+            ->latest('id')
+            ->first();
+
+        if ($outstandingCustody) {
+            throw ValidationException::withMessages([
+                'restriction' =>
+                    "You cannot submit a new borrowing request while {$outstandingCustody->custody_no} has an outstanding return or unresolved obligation.",
+            ]);
         }
 
-        DB::transaction(function () use ($request, $borrower): void {
-            $request->loadMissing('currentVersion.items.inventoryItem');
-            $version = $request->currentVersion;
-            if (! $version || $version->items->isEmpty()) {
-                throw ValidationException::withMessages(['items' => 'Add at least one inventory item before submission.']);
-            }
-            if ($version->needed_from->isPast() || $version->return_due_at->lte($version->needed_from)) {
-                throw ValidationException::withMessages(['needed_from' => 'The borrowing period must start in the future and end after it begins.']);
-            }
+        if ($borrower->activeRestrictions()->exists()) {
+            $reason = $borrower->activeRestrictions()->latest('effective_from')->value('reason');
 
-            foreach ($version->items as $requestItem) {
-                $item = $requestItem->inventoryItem;
-                $balance = $this->inventory->availability($item, $version->needed_from, $version->return_due_at);
-                if (! $item->borrowable || (float) $requestItem->requested_quantity > $balance['available']) {
-                    throw ValidationException::withMessages(['items' => "{$item->unique_description} is no longer available in the requested quantity for the complete period."]);
-                }
-                if ($requestItem->use_location === 'OFF_CAMPUS' && ! $item->off_campus_allowed) {
-                    throw ValidationException::withMessages(['locations' => "{$item->unique_description} is restricted to On-Campus use."]);
-                }
-            }
-
-            $snapshot = $this->signatures->snapshot($borrower, 'BORROWER_REQUEST', UserRole::Borrower->value);
-            $version->update([
-                'borrower_signature_snapshot_id' => $snapshot->id,
-                'accuracy_certified' => true,
-                'signed_at' => now(),
-                'submitted_at' => now(),
+            throw ValidationException::withMessages([
+                'restriction' =>
+                    $reason
+                        ? 'Borrowing is currently restricted: '.$reason
+                        : 'You currently have an unresolved borrowing obligation. Resolve it with SPMU before submitting another request.',
             ]);
+        }
 
-            $version->approvalSteps()->delete();
-            foreach (ApprovalStage::cases() as $stage) {
-                ApprovalStep::query()->create([
-                    'request_version_id' => $version->id,
-                    'stage_code' => $stage,
-                    'sequence_no' => $stage->sequence(),
-                    'received_at' => $stage === ApprovalStage::Spmu ? now() : null,
-                    'decision' => $stage === ApprovalStage::Spmu ? 'RECEIVED' : 'PENDING',
-                ]);
-            }
-
-            $this->transition($request, RequestStatus::UnderSpmu, $borrower, 'Borrower certified and submitted request version '.$version->version_no.'.');
-            $this->documents->requestLetter($request->fresh(), false);
-            $this->audit->record('REQUEST_SUBMITTED', $request, reason: 'Certified request routed to SPMU.');
-
-            $this->notifications->send(
-                'REQUEST_SUBMITTED',
-                $this->usersWithRole(UserRole::Spmu),
-                "Request {$request->request_no} is ready for SPMU review.",
+        DB::transaction(
+            function () use (
                 $request,
-                ['SYSTEM', 'EMAIL'],
-            );
-        }, 3);
+                $borrower
+            ): void {
+                $request->loadMissing([
+                    'currentVersion.items.inventoryItem',
+                    'currentVersion.supportingDocuments',
+                ]);
+
+                $version = $request->currentVersion;
+
+                if (
+                    ! $version
+                    || $version->items->isEmpty()
+                ) {
+                    throw ValidationException::withMessages([
+                        'items' =>
+                            'Add at least one inventory item before submission.',
+                    ]);
+                }
+
+                $scheduleDate = ($version->schedule_date ?: $version->needed_from)
+                    ->copy()
+                    ->startOfDay();
+
+                $returnDate = ($version->return_date ?: $version->return_due_at)
+                    ->copy()
+                    ->startOfDay();
+
+                if (
+                    ! $scheduleDate->gt(now()->startOfDay())
+                    || ! $returnDate->gt($scheduleDate)
+                ) {
+                    throw ValidationException::withMessages([
+                        'schedule_date' =>
+                            'Schedule Date must be a future calendar date and Return Date must be after Schedule Date.',
+                    ]);
+                }
+
+                /*
+                 * Make sure the requested inventory items
+                 * are still valid borrowable items.
+                 *
+                 * Do NOT reserve inventory here.
+                 */
+                foreach (
+                    $version->items
+                    as $requestItem
+                ) {
+                    $item = $requestItem->inventoryItem;
+
+                    if (
+                        ! $item
+                        || ! $item->active
+                        || ! $item->borrowable
+                        || $item->condition_code !== 'SERVICEABLE'
+                    ) {
+                        throw ValidationException::withMessages([
+                            'items' =>
+                                "{$requestItem->description_snapshot} is no longer available for borrowing. Revise the request before submitting.",
+                        ]);
+                    }
+
+                    if (
+                        $requestItem->use_location
+                            === 'OFF_CAMPUS'
+                        && ! $item->off_campus_allowed
+                    ) {
+                        throw ValidationException::withMessages([
+                            'locations' =>
+                                "{$item->unique_description} is restricted to On-Campus use.",
+                        ]);
+                    }
+                }
+
+                /*
+                 * The scanned approved Borrowing Request
+                 * Letter is required.
+                 *
+                 * Permission to Conduct is also required
+                 * when the request represents a student
+                 * activity or organization.
+                 */
+                $this->validateRequiredSupportingDocuments(
+                    $version
+                );
+
+                /*
+                 * No electronic signature is created.
+                 *
+                 * Authentication, request version,
+                 * submission timestamp, status history,
+                 * and audit history identify the borrower
+                 * who submitted the transaction.
+                 */
+                $version->update([
+                    'borrower_signature_snapshot_id' =>
+                        null,
+
+                    'accuracy_certified' =>
+                        true,
+
+                    'signed_at' =>
+                        null,
+
+                    'submitted_at' =>
+                        now(),
+                ]);
+
+                /*
+                 * A submitted request has one system
+                 * verification stage: SPMU.
+                 *
+                 * Any institutional approvals/signatures
+                 * that were required before submission are
+                 * represented by the uploaded approved
+                 * scanned documents.
+                 */
+                $version
+                    ->approvalSteps()
+                    ->delete();
+
+                ApprovalStep::query()->create([
+                    'request_version_id' =>
+                        $version->id,
+
+                    'stage_code' =>
+                        ApprovalStage::Spmu,
+
+                    'sequence_no' =>
+                        1,
+
+                    'received_at' =>
+                        now(),
+
+                    'decision' =>
+                        'RECEIVED',
+                ]);
+
+                /*
+                 * Current uploaded supporting documents
+                 * are awaiting SPMU verification.
+                 */
+                $version
+                    ->supportingDocuments()
+                    ->where(
+                        'is_current',
+                        true
+                    )
+                    ->update([
+                        'verification_status' =>
+                            RequestSupportingDocument::STATUS_PENDING,
+
+                        'verified_by_user_id' =>
+                            null,
+
+                        'verified_at' =>
+                            null,
+
+                        'verification_remarks' =>
+                            null,
+                    ]);
+
+                /*
+                 * Submission only routes the request to
+                 * SPMU. No allocation/reservation yet.
+                 */
+                $this->transition(
+                    $request,
+                    RequestStatus::UnderSpmu,
+                    $borrower,
+                    'Borrowing request and approved scanned supporting document(s) submitted to SPMU for verification.'
+                );
+
+                $this->audit->record(
+                    'REQUEST_SUBMITTED',
+                    $request,
+                    reason:
+                        'Request routed to SPMU for document and inventory verification. No reservation was created at submission.'
+                );
+
+                $this->notifications->send(
+                    'REQUEST_SUBMITTED',
+                    $this->usersWithRole(
+                        UserRole::Spmu
+                    ),
+                    "Request {$request->request_no} is ready for SPMU verification.",
+                    $request,
+                    [
+                        'SYSTEM',
+                        'EMAIL',
+                    ],
+                );
+            },
+            3
+        );
     }
 
-    public function decide(BorrowingRequest $request, User $approver, string $decision, ?string $remarks): void
-    {
-        $stage = $this->currentStage($request->status);
-        if (! $stage) {
-            abort(403);
-        }
-        $delegation = $this->delegationForApproval($approver, $stage);
-        if ($approver->primaryWorkspace() !== $stage->value && ! $delegation) {
-            abort(403);
-        }
-        if ($request->borrower_user_id === $approver->id) {
-            throw ValidationException::withMessages(['decision' => 'Self-approval is prohibited. Another authorized officer must act.']);
-        }
-        if (! $this->isHeadForStage($approver, $stage) && ! $delegation) {
-            throw ValidationException::withMessages(['decision' => 'Only the office Head or a currently authorized delegated approver may complete this approval.']);
-        }
-        if (in_array($decision, ['REJECTED', 'RETURNED_FOR_REVISION'], true) && blank($remarks)) {
-            throw ValidationException::withMessages(['remarks' => 'A reason is required when rejecting or returning a request.']);
-        }
+    /**
+     * Record the SPMU verification decision.
+     *
+     * APPROVED
+     * - final inventory availability is checked
+     * - approved quantity becomes RESERVED
+     *
+     * RETURNED_FOR_REVISION
+     * - borrower must correct the request/documents
+     * - no reservation is created
+     *
+     * REJECTED
+     * - request is closed as rejected
+     * - no reservation is created
+     */
+    public function decide(
+        BorrowingRequest $request,
+        User $approver,
+        string $decision,
+        ?string $remarks
+    ): void {
+        $decision = strtoupper($decision);
 
-        DB::transaction(function () use ($request, $approver, $decision, $remarks, $stage, $delegation): void {
-            $request->loadMissing('currentVersion.approvalSteps');
-            $step = $request->currentVersion->approvalSteps->firstWhere('stage_code', $stage);
-            if (! $step || ! in_array($step->decision, ['PENDING', 'RECEIVED'], true)) {
-                throw ValidationException::withMessages(['decision' => 'This approval step has already been completed.']);
-            }
-
-            $snapshot = $this->signatures->snapshot($approver, 'APPROVAL_'.$stage->value, $stage->value);
-            $step->update([
-                'approver_user_id' => $approver->id,
-                'signature_snapshot_id' => $snapshot->id,
-                'received_at' => $step->received_at ?: now(),
-                'decision' => $decision,
-                'decided_at' => now(),
-                'remarks' => $remarks,
-                'temporary_delegation_id' => $delegation?->id,
+        if (
+            $request->status
+            !== RequestStatus::UnderSpmu
+        ) {
+            throw ValidationException::withMessages([
+                'decision' =>
+                    'This request is no longer awaiting SPMU verification.',
             ]);
+        }
 
-            if ($decision === 'REJECTED') {
-                $this->restoreReservationIfPresent($request, 'REJECTED', $remarks ?: 'Request rejected after SPMU reservation.');
-                $this->transition($request, RequestStatus::Rejected, $approver, $remarks);
-            } elseif ($decision === 'RETURNED_FOR_REVISION') {
-                $this->restoreReservationIfPresent($request, 'RETURNED_FOR_REVISION', $remarks ?: 'Request returned for revision after SPMU reservation.');
-                $this->transition($request, RequestStatus::ReturnedForRevision, $approver, $remarks);
-            } elseif ($stage === ApprovalStage::Spmu) {
-                /*
-                 * SPMU is the inventory decision point. A submitted request is
-                 * only a request; it becomes a reservation after SPMU approves
-                 * and this atomic availability check succeeds.
-                 */
-                try {
-                    $this->inventory->allocate($request->currentVersion);
-                } catch (ValidationException $exception) {
-                    $step->update([
-                        'decision' => 'RETURNED_FOR_REVISION',
-                        'remarks' => $exception->getMessage(),
+        if (
+            $approver->primaryWorkspace()
+                !== UserRole::Spmu->value
+            || ! $approver->hasRole(
+                UserRole::Spmu
+            )
+        ) {
+            abort(
+                403,
+                'Only authorized SPMU personnel may verify this request.'
+            );
+        }
+
+        $isSpmuHead =
+            $approver->access_classification
+                === \App\Enums\AccessClassification::SpmuHead;
+
+        $activeSpmuDelegation =
+            $approver->access_classification
+                === \App\Enums\AccessClassification::SpmuOfficer
+                ? $approver->activeDelegationFor(
+                    UserRole::Spmu->value
+                )
+                : null;
+
+        if (
+            ! $isSpmuHead
+            && ! $activeSpmuDelegation
+        ) {
+            abort(
+                403,
+                'SPMU verification decisions are reserved for the SPMU Head or a formally delegated SPMU Action Officer.'
+            );
+        }
+
+        if (
+            $request->borrower_user_id
+                === $approver->id
+        ) {
+            throw ValidationException::withMessages([
+                'decision' =>
+                    'A user cannot verify their own borrowing request.',
+            ]);
+        }
+
+        if (
+            ! in_array(
+                $decision,
+                [
+                    'APPROVED',
+                    'REJECTED',
+                    'RETURNED_FOR_REVISION',
+                ],
+                true
+            )
+        ) {
+            throw ValidationException::withMessages([
+                'decision' =>
+                    'Choose a valid verification decision.',
+            ]);
+        }
+
+        if (
+            in_array(
+                $decision,
+                [
+                    'REJECTED',
+                    'RETURNED_FOR_REVISION',
+                ],
+                true
+            )
+            && blank($remarks)
+        ) {
+            throw ValidationException::withMessages([
+                'remarks' =>
+                    'Remarks are required when rejecting or returning a request for revision.',
+            ]);
+        }
+
+        DB::transaction(
+            function () use (
+                $request,
+                $approver,
+                $decision,
+                $remarks
+            ): void {
+                $request->loadMissing([
+                    'borrower',
+                    'currentVersion.items.inventoryItem',
+                    'currentVersion.approvalSteps',
+                    'currentVersion.supportingDocuments',
+                ]);
+
+                $version = $request->currentVersion;
+
+                if (! $version) {
+                    throw ValidationException::withMessages([
+                        'decision' =>
+                            'The current request version could not be found.',
                     ]);
+                }
+
+                $step = $version
+                    ->approvalSteps
+                    ->firstWhere(
+                        'stage_code',
+                        ApprovalStage::Spmu
+                    );
+
+                /*
+                 * If this SPMU officer is formally acting under an
+                 * active SPMU delegation, keep the actual logged-in
+                 * approver as approver_user_id and attach the formal
+                 * delegation record for audit attribution.
+                 */
+                $temporaryDelegationId =
+                    $approver->access_classification
+                        === \App\Enums\AccessClassification::SpmuOfficer
+                        ? $approver
+                            ->activeDelegationFor(
+                                UserRole::Spmu->value
+                            )
+                            ?->id
+                        : null;
+
+                if (
+                    ! $step
+                    || ! in_array(
+                        $step->decision,
+                        [
+                            'PENDING',
+                            'RECEIVED',
+                        ],
+                        true
+                    )
+                ) {
+                    throw ValidationException::withMessages([
+                        'decision' =>
+                            'This SPMU verification step has already been completed.',
+                    ]);
+                }
+
+                /*
+                 * ===============================
+                 * REJECT
+                 * ===============================
+                 */
+                if (
+                    $decision === 'REJECTED'
+                ) {
+                    $step->update([
+                        'approver_user_id' =>
+                            $approver->id,
+
+                        'signature_snapshot_id' =>
+                            null,
+
+                        'received_at' =>
+                            $step->received_at
+                                ?: now(),
+
+                        'decision' =>
+                            'REJECTED',
+
+                        'decided_at' =>
+                            now(),
+
+                        'remarks' =>
+                            $remarks,
+
+                        'temporary_delegation_id' =>
+                            $temporaryDelegationId,
+                    ]);
+
+                    $this->markSupportingDocuments(
+                        $version,
+                        RequestSupportingDocument::STATUS_REJECTED,
+                        $approver,
+                        $remarks
+                    );
+
                     $this->transition(
                         $request,
-                        RequestStatus::ReturnedForRevision,
+                        RequestStatus::Rejected,
                         $approver,
-                        $exception->getMessage()
+                        $remarks
                     );
+
                     $this->notifications->send(
-                        'REQUEST_RETURNED_FOR_REVISION',
-                        collect([$request->borrower])->merge($this->usersWithRole(UserRole::Spmu))->unique('id'),
-                        "Request {$request->request_no} returned because inventory became insufficient. {$exception->getMessage()}",
+                        'REQUEST_REJECTED',
+                        collect([
+                            $request->borrower,
+                        ]),
+                        "Request {$request->request_no} was rejected by SPMU. Reason: {$remarks}",
                         $request
                     );
+
                     $this->audit->record(
-                        'SPMU_APPROVAL_ALLOCATION_CONFLICT',
+                        'SPMU_REQUEST_DECISION',
                         $step,
-                        reason: $exception->getMessage(),
-                        after: ['decision' => 'RETURNED_FOR_REVISION']
+                        reason:
+                            $remarks,
+                        after: [
+                            'decision' =>
+                                'REJECTED',
+
+                            'reservation_created' =>
+                                false,
+                        ]
                     );
 
                     return;
                 }
 
-                $next = ApprovalStage::Gsu;
-                $request->currentVersion->approvalSteps
-                    ->firstWhere('stage_code', $next)
-                    ?->update(['received_at' => now(), 'decision' => 'RECEIVED']);
+                /*
+                 * ===============================
+                 * RETURN FOR REVISION
+                 * ===============================
+                 */
+                if (
+                    $decision
+                    === 'RETURNED_FOR_REVISION'
+                ) {
+                    $step->update([
+                        'approver_user_id' =>
+                            $approver->id,
+
+                        'signature_snapshot_id' =>
+                            null,
+
+                        'received_at' =>
+                            $step->received_at
+                                ?: now(),
+
+                        'decision' =>
+                            'RETURNED_FOR_REVISION',
+
+                        'decided_at' =>
+                            now(),
+
+                        'remarks' =>
+                            $remarks,
+
+                        'temporary_delegation_id' =>
+                            $temporaryDelegationId,
+                    ]);
+
+                    $this->markSupportingDocuments(
+                        $version,
+                        RequestSupportingDocument::STATUS_RETURNED_FOR_REVISION,
+                        $approver,
+                        $remarks
+                    );
+
+                    $this->transition(
+                        $request,
+                        RequestStatus::ReturnedForRevision,
+                        $approver,
+                        $remarks
+                    );
+
+                    $this->notifications->send(
+                        'REQUEST_RETURNED_FOR_REVISION',
+                        collect([
+                            $request->borrower,
+                        ]),
+                        "Request {$request->request_no} was returned for revision. Reason: {$remarks}",
+                        $request
+                    );
+
+                    $this->audit->record(
+                        'SPMU_REQUEST_DECISION',
+                        $step,
+                        reason:
+                            $remarks,
+                        after: [
+                            'decision' =>
+                                'RETURNED_FOR_REVISION',
+
+                            'reservation_created' =>
+                                false,
+                        ]
+                    );
+
+                    return;
+                }
+
+                /*
+                 * ===============================
+                 * APPROVE
+                 * ===============================
+                 *
+                 * Approval requires the complete current
+                 * supporting-document set.
+                 */
+                $this->validateRequiredSupportingDocuments(
+                    $version
+                );
+
+                /*
+                 * This is the only point in this workflow
+                 * where inventory reservation is created.
+                 *
+                 * InventoryService::allocate() performs
+                 * the final locked availability check.
+                 */
+                try {
+                    $this->inventory->allocate(
+                        $version
+                    );
+                } catch (
+                    ValidationException $exception
+                ) {
+                    /*
+                     * Do not silently reduce an approved
+                     * quantity simply because less stock
+                     * is now available.
+                     *
+                     * Return the request for correction.
+                     */
+                    $reason =
+                        $this->firstValidationMessage(
+                            $exception,
+                            'The approved quantity can no longer be fulfilled using the current inventory and schedule. Corrected approved documentation is required.'
+                        );
+
+                    $step->update([
+                        'approver_user_id' =>
+                            $approver->id,
+
+                        'signature_snapshot_id' =>
+                            null,
+
+                        'received_at' =>
+                            $step->received_at
+                                ?: now(),
+
+                        'decision' =>
+                            'RETURNED_FOR_REVISION',
+
+                        'decided_at' =>
+                            now(),
+
+                        'remarks' =>
+                            $reason,
+
+                        'temporary_delegation_id' =>
+                            $temporaryDelegationId,
+                    ]);
+
+                    $this->markSupportingDocuments(
+                        $version,
+                        RequestSupportingDocument::STATUS_RETURNED_FOR_REVISION,
+                        $approver,
+                        $reason
+                    );
+
+                    $this->transition(
+                        $request,
+                        RequestStatus::ReturnedForRevision,
+                        $approver,
+                        $reason
+                    );
+
+                    $this->notifications->send(
+                        'REQUEST_RETURNED_FOR_REVISION',
+                        collect([
+                            $request->borrower,
+                        ]),
+                        "Request {$request->request_no} was returned because the approved quantity cannot currently be reserved. {$reason}",
+                        $request
+                    );
+
+                    $this->audit->record(
+                        'SPMU_RESERVATION_CONFLICT',
+                        $step,
+                        reason:
+                            $reason,
+                        after: [
+                            'decision' =>
+                                'RETURNED_FOR_REVISION',
+
+                            'reservation_created' =>
+                                false,
+                        ]
+                    );
+
+                    return;
+                }
+
+                /*
+                 * Reservation succeeded.
+                 */
+                $step->update([
+                    'approver_user_id' =>
+                        $approver->id,
+
+                    /*
+                     * No e-signature snapshot.
+                     */
+                    'signature_snapshot_id' =>
+                        null,
+
+                    'received_at' =>
+                        $step->received_at
+                            ?: now(),
+
+                    'decision' =>
+                        'APPROVED',
+
+                    'decided_at' =>
+                        now(),
+
+                    'remarks' =>
+                        $remarks,
+
+                    'temporary_delegation_id' =>
+                        $temporaryDelegationId,
+                ]);
+
+                $this->markSupportingDocuments(
+                    $version,
+                    RequestSupportingDocument::STATUS_VERIFIED,
+                    $approver,
+                    $remarks
+                );
+
+                $request->update([
+                    'final_approved_at' =>
+                        now(),
+
+                    /*
+                     * The current workflow does not
+                     * require a generated approved-letter
+                     * download before keeping reservation.
+                     */
+                    'download_deadline_at' =>
+                        null,
+                ]);
+
+                /*
+                 * Existing status enum retained so we do
+                 * not unnecessarily break downstream
+                 * modules.
+                 *
+                 * At this point:
+                 * request = approved
+                 * inventory = reserved
+                 */
                 $this->transition(
                     $request,
-                    RequestStatus::UnderGsu,
+                    RequestStatus::ApprovedReadyForRelease,
                     $approver,
-                    'SPMU approved the request, reserved the approved quantity, and routed it to GSU.'
+                    'SPMU verified the approved scanned request and reserved the approved quantity.'
                 );
-                $this->notifications->send(
-                    'ROUTED_FOR_APPROVAL',
-                    $this->usersWithRole(UserRole::Gsu),
-                    "Request {$request->request_no} is ready for GSU review.",
+
+                /*
+                 * Create the pickup/custody record immediately
+                 * after SPMU approval and reservation.
+                 *
+                 * No exact pickup time is assigned here.
+                 * SPMU will configure the pickup date/time and
+                 * pickup expiration from the Pickup workflow.
+                 */
+                $custody = $this->custody->ensurePickupRecord(
+                    $request->fresh(),
+                    $approver
+                );
+
+                $this->audit->record(
+                    'REQUEST_READY_FOR_PICKUP_SCHEDULING',
                     $request,
-                    ['SYSTEM', 'EMAIL'],
+                    after: [
+                        'custody_id' =>
+                            $custody?->id,
+
+                        'reservation_created' =>
+                            true,
+
+                        'pickup_schedule_created' =>
+                            false,
+                    ]
                 );
-            } elseif ($stage === ApprovalStage::Vpaf) {
-                $deadlineTime = SystemSetting::value('approved_letter_download_time', '23:59');
-                $deadline = now()->setTimeFromTimeString(is_string($deadlineTime) ? $deadlineTime : '23:59');
-                if ($deadline->lte(now())) {
-                    $deadline = now()->endOfDay();
-                }
-                $request->update(['final_approved_at' => now(), 'download_deadline_at' => $deadline]);
-                $this->transition($request, RequestStatus::FinalApprovedAwaitingDownload, $approver, 'Final approval completed. Existing SPMU inventory reservation remains active.');
-                $document = $this->documents->requestLetter($request->fresh(), true);
-                foreach ($request->currentVersion->approvalSteps as $approval) {
-                    DB::table('document_approvals')->insert([
-                        'generated_document_id' => $document->id,
-                        'approval_step_id' => $approval->id,
-                        'display_order' => $approval->sequence_no,
+
+                $this->notifications->send(
+                    'REQUEST_APPROVED',
+                    collect([
+                        $request->borrower,
+                    ]),
+                    "Request {$request->request_no} was verified and approved by SPMU. The approved quantity is now reserved.",
+                    $request
+                );
+
+                $this->audit->record(
+                    'SPMU_REQUEST_DECISION',
+                    $step,
+                    reason:
+                        $remarks,
+                    after: [
+                        'decision' =>
+                            'APPROVED',
+
+                        'reservation_created' =>
+                            true,
+                    ]
+                );
+            },
+            3
+        );
+    }
+
+    /**
+     * Borrower cancellation rules.
+     *
+     * Before reservation: borrower may cancel directly.
+     * After SPMU approval/reservation: borrower requests cancellation and SPMU
+     * must confirm before the reservation is restored to Available.
+     */
+    public function cancel(
+        BorrowingRequest $request,
+        User $actor,
+        string $reason
+    ): void {
+        if (
+            $request->borrower_user_id !== $actor->id
+            && ! $actor->hasRole(UserRole::Spmu)
+        ) {
+            abort(403);
+        }
+
+        if ($request->custody?->released_at) {
+            throw ValidationException::withMessages([
+                'cancel' =>
+                    'Items have already been issued. Use the Early Return process instead of cancellation.',
+            ]);
+        }
+
+        if (in_array($request->status, [
+            RequestStatus::Cancelled,
+            RequestStatus::Expired,
+            RequestStatus::Rejected,
+        ], true)) {
+            throw ValidationException::withMessages([
+                'cancel' => 'This request is already closed.',
+            ]);
+        }
+
+        $afterReservation = $request->status === RequestStatus::ApprovedReadyForRelease;
+
+        if ($afterReservation && $request->borrower_user_id === $actor->id) {
+            DB::transaction(function () use ($request, $actor, $reason): void {
+                $existing = RequestCancellation::query()
+                    ->where('request_id', $request->id)
+                    ->where('status', 'PENDING_SPMU')
+                    ->exists();
+
+                if ($existing) {
+                    throw ValidationException::withMessages([
+                        'cancel' => 'A cancellation request is already awaiting SPMU review.',
                     ]);
                 }
-                DB::table('kpi_observations')->insert([
+
+                $cancellation = RequestCancellation::query()->create([
                     'request_id' => $request->id,
-                    'recorded_by_user_id' => $approver->id,
-                    'process_code' => 'DIGITAL_APPROVAL_CYCLE',
-                    'started_at' => $request->currentVersion->submitted_at,
-                    'completed_at' => now(),
-                    'duration_seconds' => $request->currentVersion->submitted_at?->diffInSeconds(now()),
-                    'correct_count' => $request->currentVersion->approvalSteps->where('decision', 'APPROVED')->count(),
-                    'total_count' => $request->currentVersion->approvalSteps->count(),
-                    'output_count' => 1,
-                    'input_value' => $request->currentVersion->approvalSteps->count(),
-                    'input_unit' => 'approval steps',
-                    'created_at' => now(),
-                    'updated_at' => now(),
+                    'request_version_id' => $request->currentVersion?->id,
+                    'cancelled_by_user_id' => $actor->id,
+                    'phase' => 'AFTER_APPROVAL_BEFORE_RELEASE',
+                    'reason' => $reason,
+                    'status' => 'PENDING_SPMU',
+                    'requested_at' => now(),
+                    'cancelled_at' => now(),
                 ]);
+
+                $this->audit->record(
+                    'CANCELLATION_REQUESTED',
+                    $cancellation,
+                    reason: $reason,
+                    after: ['reservation_released' => false]
+                );
+
                 $this->notifications->send(
-                    'FINAL_APPROVAL',
-                    collect([$request->borrower])->merge($this->usersWithRole(UserRole::Spmu))->unique('id'),
-                    "Request {$request->request_no} is fully approved. Download the signed letter by {$deadline->format('g:i A')} today to keep the allocation.",
-                    $request,
+                    'CANCELLATION_REQUESTED',
+                    $this->usersWithRole(UserRole::Spmu),
+                    "Cancellation of {$request->request_no} is awaiting SPMU confirmation. The reservation remains active until confirmed.",
+                    $request
                 );
-            } else {
-                $next = ApprovalStage::Vpaf;
-                $request->currentVersion->approvalSteps
-                    ->firstWhere('stage_code', $next)
-                    ?->update(['received_at' => now(), 'decision' => 'RECEIVED']);
-                $this->transition(
-                    $request,
-                    RequestStatus::UnderVpaf,
-                    $approver,
-                    $stage->value.' approved and routed to '.$next->value.'.'
-                );
-                $this->notifications->send(
-                    'ROUTED_FOR_APPROVAL',
-                    $this->usersWithRole(UserRole::Vpaf),
-                    "Request {$request->request_no} is ready for VPAF review.",
-                    $request,
-                    ['SYSTEM', 'EMAIL'],
-                );
-            }
+            }, 3);
 
-            if ($decision !== 'APPROVED') {
-                $this->notifications->send(
-                    'REQUEST_'.$decision,
-                    collect([$request->borrower]),
-                    "Request {$request->request_no} was {$decision}. Reason: {$remarks}",
-                    $request,
-                );
-            }
-
-            $this->audit->record('APPROVAL_DECISION', $step, reason: $remarks, after: ['stage' => $stage->value, 'decision' => $decision]);
-        }, 3);
-    }
-
-    private function hasActiveReservation(BorrowingRequest $request): bool
-    {
-        $version = $request->currentVersion;
-
-        if (! $version) {
-            return false;
+            return;
         }
 
-        return $version->items()
-            ->whereHas('allocation', fn ($query) => $query->whereIn('status', ['ACTIVE', 'PARTIALLY_RELEASED']))
-            ->exists();
+        /*
+         * Pre-reservation cancellation, or an authorized SPMU cancellation,
+         * can be finalized immediately because no borrower can silently release
+         * a reservation on their own.
+         */
+        $this->finalizeCancellation($request, $actor, $reason, $afterReservation);
     }
 
-    private function restoreReservationIfPresent(BorrowingRequest $request, string $status, string $reason): void
-    {
-        if ($this->hasActiveReservation($request)) {
-            $this->inventory->restore($request, $status, $reason);
-        }
-    }
+    public function reviewCancellation(
+        BorrowingRequest $request,
+        User $spmu,
+        string $decision,
+        ?string $remarks = null
+    ): void {
+        abort_unless($spmu->hasRole(UserRole::Spmu), 403);
+        $decision = strtoupper($decision);
 
-    private function isHeadForStage(User $user, ApprovalStage $stage): bool
-    {
-        $required = match ($stage) {
-            ApprovalStage::Spmu => AccessClassification::SpmuHead,
-            ApprovalStage::Gsu => AccessClassification::GsuHead,
-            ApprovalStage::Vpaf => AccessClassification::VpafHead,
-        };
-
-        return $user->access_classification === $required;
-    }
-
-    private function delegationForApproval(User $user, ApprovalStage $stage): ?TemporaryDelegation
-    {
-        return $user->activeDelegationFor($stage->value);
-    }
-
-    public function cancel(BorrowingRequest $request, User $actor, string $reason): void
-    {
-        if ($request->borrower_user_id !== $actor->id && ! $actor->hasRole(UserRole::Spmu)) {
-            abort(403);
-        }
-        if ($request->custody?->released_at) {
-            throw ValidationException::withMessages(['cancel' => 'Items have already been released. Use the Early Return process instead of cancellation.']);
-        }
-        if (in_array($request->status, [RequestStatus::Cancelled, RequestStatus::Expired, RequestStatus::Rejected], true)) {
-            throw ValidationException::withMessages(['cancel' => 'This request is already closed.']);
+        if (! in_array($decision, ['APPROVED', 'REJECTED'], true)) {
+            throw ValidationException::withMessages([
+                'decision' => 'Choose APPROVED or REJECTED.',
+            ]);
         }
 
-        DB::transaction(function () use ($request, $actor, $reason): void {
-            $hasReservation = $this->hasActiveReservation($request);
-            $afterApproval = in_array($request->status, [RequestStatus::FinalApprovedAwaitingDownload, RequestStatus::ApprovedReadyForRelease], true);
+        $cancellation = RequestCancellation::query()
+            ->where('request_id', $request->id)
+            ->where('status', 'PENDING_SPMU')
+            ->latest('id')
+            ->first();
 
-            if ($hasReservation) {
-                $this->inventory->restore($request, 'CANCELLED', $reason);
-            }
-            DB::table('request_cancellations')->insert([
-                'request_id' => $request->id,
-                'request_version_id' => $request->currentVersion?->id,
-                'cancelled_by_user_id' => $actor->id,
-                'phase' => $afterApproval ? 'AFTER_APPROVAL_BEFORE_RELEASE' : 'BEFORE_FINAL_APPROVAL',
-                'reason' => $reason,
+        if (! $cancellation) {
+            throw ValidationException::withMessages([
+                'cancel' => 'There is no pending cancellation request for this borrowing request.',
+            ]);
+        }
+
+        if ($decision === 'REJECTED') {
+            $cancellation->update([
+                'status' => 'REJECTED',
+                'reviewed_by_user_id' => $spmu->id,
+                'reviewed_at' => now(),
+                'decision_remarks' => $remarks,
+            ]);
+
+            $this->audit->record(
+                'CANCELLATION_REJECTED',
+                $cancellation,
+                reason: $remarks
+            );
+
+            $this->notifications->send(
+                'CANCELLATION_REJECTED',
+                collect([$request->borrower]),
+                "Cancellation request for {$request->request_no} was not approved by SPMU.".($remarks ? " {$remarks}" : ''),
+                $request
+            );
+
+            return;
+        }
+
+        DB::transaction(function () use ($request, $spmu, $remarks, $cancellation): void {
+            $cancellation->update([
+                'status' => 'CONFIRMED',
+                'reviewed_by_user_id' => $spmu->id,
+                'reviewed_at' => now(),
+                'decision_remarks' => $remarks,
                 'cancelled_at' => now(),
-                'created_at' => now(),
-                'updated_at' => now(),
             ]);
-            GeneratedDocument::query()->where('request_version_id', $request->currentVersion?->id)->whereIn('status', ['DRAFT', 'FINAL'])->update([
-                'status' => 'INVALIDATED', 'invalidated_at' => now(), 'invalidation_reason' => $reason,
-            ]);
-            $request->custody?->update(['status' => 'CANCELLED', 'closed_at' => now()]);
-            $this->transition($request, RequestStatus::Cancelled, $actor, $reason);
-            $this->audit->record('REQUEST_CANCELLED', $request, reason: $reason);
-            $this->notifications->send('REQUEST_CANCELLED', collect([$request->borrower]), "Request {$request->request_no} was cancelled. {$reason}", $request);
+
+            $this->finalizeCancellation(
+                $request,
+                $spmu,
+                $cancellation->reason,
+                true,
+                false
+            );
         }, 3);
     }
 
-    public function recordApprovedLetterDownload(BorrowingRequest $request, GeneratedDocument $document, User $borrower, string $ip, ?string $userAgent): CustodyTransaction
-    {
-        if ($request->borrower_user_id !== $borrower->id || $document->document_type !== 'APPROVED_REQUEST_LETTER' || $document->status !== 'FINAL') {
+    private function finalizeCancellation(
+        BorrowingRequest $request,
+        User $actor,
+        string $reason,
+        bool $afterReservation,
+        bool $createCancellationRecord = true
+    ): void {
+        DB::transaction(function () use (
+            $request,
+            $actor,
+            $reason,
+            $afterReservation,
+            $createCancellationRecord
+        ): void {
+            if ($afterReservation) {
+                $this->inventory->restore(
+                    $request,
+                    'CANCELLED',
+                    $reason
+                );
+            }
+
+            if ($createCancellationRecord) {
+                RequestCancellation::query()->create([
+                    'request_id' => $request->id,
+                    'request_version_id' => $request->currentVersion?->id,
+                    'cancelled_by_user_id' => $actor->id,
+                    'phase' => $afterReservation
+                        ? 'AFTER_APPROVAL_BEFORE_RELEASE'
+                        : 'BEFORE_FINAL_APPROVAL',
+                    'reason' => $reason,
+                    'status' => 'CONFIRMED',
+                    'requested_at' => now(),
+                    'reviewed_by_user_id' => $afterReservation ? $actor->id : null,
+                    'reviewed_at' => $afterReservation ? now() : null,
+                    'cancelled_at' => now(),
+                ]);
+            }
+
+            GeneratedDocument::query()
+                ->where('request_version_id', $request->currentVersion?->id)
+                ->whereIn('status', ['DRAFT', 'FINAL'])
+                ->update([
+                    'status' => 'INVALIDATED',
+                    'invalidated_at' => now(),
+                    'invalidation_reason' => $reason,
+                ]);
+
+            $request->custody?->update([
+                'status' => 'CANCELLED',
+                'closed_at' => now(),
+            ]);
+
+            $this->transition(
+                $request,
+                RequestStatus::Cancelled,
+                $actor,
+                $reason
+            );
+
+            $this->audit->record(
+                'REQUEST_CANCELLED',
+                $request,
+                reason: $reason,
+                after: ['reservation_released' => $afterReservation]
+            );
+
+            $this->notifications->send(
+                'REQUEST_CANCELLED',
+                collect([$request->borrower]),
+                "Request {$request->request_no} was cancelled. {$reason}",
+                $request
+            );
+        }, 3);
+    }
+
+    /**
+     * Historical compatibility for old generated
+     * approved-letter transactions.
+     *
+     * This method is retained so records created by
+     * the previous implementation remain accessible.
+     *
+     * Current requests do not use this as the
+     * reservation trigger.
+     */
+    public function recordApprovedLetterDownload(
+        BorrowingRequest $request,
+        GeneratedDocument $document,
+        User $borrower,
+        string $ip,
+        ?string $userAgent
+    ): CustodyTransaction {
+        if (
+            $request->borrower_user_id
+                !== $borrower->id
+            || $document->document_type
+                !== 'APPROVED_REQUEST_LETTER'
+            || $document->status
+                !== 'FINAL'
+        ) {
             abort(403);
         }
-        $existingDownload = DownloadEvent::query()
-            ->where('generated_document_id', $document->id)
-            ->where('downloaded_by_user_id', $borrower->id)
-            ->where('integrity_hash', $document->sha256)
-            ->exists();
-        if ($existingDownload && $request->status === RequestStatus::ApprovedReadyForRelease) {
-            return $request->custody()->firstOrFail();
+
+        $existingDownload =
+            DownloadEvent::query()
+                ->where(
+                    'generated_document_id',
+                    $document->id
+                )
+                ->where(
+                    'downloaded_by_user_id',
+                    $borrower->id
+                )
+                ->where(
+                    'integrity_hash',
+                    $document->sha256
+                )
+                ->exists();
+
+        if (
+            $existingDownload
+            && $request->status
+                === RequestStatus::ApprovedReadyForRelease
+            && $request->custody
+        ) {
+            return $request->custody;
         }
-        if ($request->status === RequestStatus::Expired || now()->gt($request->download_deadline_at)) {
-            throw ValidationException::withMessages(['download' => 'The approved-letter download deadline has passed. The allocation can no longer be used.']);
+
+        if (
+            $request->status
+                === RequestStatus::Expired
+            || (
+                $request->download_deadline_at
+                && now()->gt(
+                    $request->download_deadline_at
+                )
+            )
+        ) {
+            throw ValidationException::withMessages([
+                'download' =>
+                    'The approved-letter download deadline has passed. This historical document can no longer be used for release.',
+            ]);
         }
 
-        return DB::transaction(function () use ($request, $document, $borrower, $ip, $userAgent): CustodyTransaction {
-            DownloadEvent::query()->firstOrCreate([
-                'generated_document_id' => $document->id,
-                'downloaded_by_user_id' => $borrower->id,
-                'integrity_hash' => $document->sha256,
-            ], [
-                'downloaded_at' => now(),
-                'origin_ip' => $ip,
-                'user_agent' => $userAgent,
-            ]);
+        return DB::transaction(
+            function () use (
+                $request,
+                $document,
+                $borrower,
+                $ip,
+                $userAgent
+            ): CustodyTransaction {
+                DownloadEvent::query()
+                    ->firstOrCreate(
+                        [
+                            'generated_document_id' =>
+                                $document->id,
 
-            $custody = CustodyTransaction::query()->firstOrCreate([
-                'request_id' => $request->id,
-            ], [
-                'custody_no' => 'CUS-'.now()->format('Ymd').'-'.str_pad((string) $request->id, 5, '0', STR_PAD_LEFT),
-                'request_version_id' => $request->currentVersion->id,
-                'borrower_user_id' => $borrower->id,
-                'status' => 'PREPARING_RELEASE',
-                'scheduled_release_at' => $request->currentVersion->needed_from,
-                'due_at' => $request->currentVersion->return_due_at,
-            ]);
-            $request->loadMissing('currentVersion.items.allocation');
-            foreach ($request->currentVersion->items as $item) {
-                CustodyLine::query()->firstOrCreate([
-                    'custody_transaction_id' => $custody->id,
-                    'request_item_id' => $item->id,
-                ], [
-                    'allocation_id' => $item->allocation->id,
-                    'approved_quantity' => $item->approved_quantity,
-                    'quantity_to_receive' => $item->approved_quantity,
-                ]);
-            }
+                            'downloaded_by_user_id' =>
+                                $borrower->id,
 
-            $this->transition($request, RequestStatus::ApprovedReadyForRelease, $borrower, 'Borrower downloaded the exact fully approved letter.');
-            if (! GeneratedDocument::query()->where('subject_type', CustodyTransaction::class)->where('subject_id', $custody->id)->where('document_type', 'BORROWER_SLIP')->exists()) {
-                $this->documents->borrowerSlip($custody);
-            }
+                            'integrity_hash' =>
+                                $document->sha256,
+                        ],
+                        [
+                            'downloaded_at' =>
+                                now(),
 
-            $offCampusLine = $custody->lines()->whereHas('requestItem', fn ($query) => $query->where('use_location', 'OFF_CAMPUS'))->first();
-            if ($offCampusLine && ! $custody->gatePass) {
-                $passDocument = $this->documents->conditionalForm($custody, 'GATE_PASS');
-                GatePass::query()->create([
-                    'custody_transaction_id' => $custody->id,
-                    'custody_line_id' => $offCampusLine->id,
-                    'pass_document_id' => $passDocument->id,
-                    'bearer_name' => $borrower->full_name,
-                    'destination' => $request->currentVersion->location,
-                    'purpose' => $request->currentVersion->purpose_event,
-                    'status' => 'PENDING',
-                ]);
-            }
-            if ($custody->lines()->whereHas('requestItem.inventoryItem', fn ($query) => $query->where('laundry_required', true))->exists()
-                && ! GeneratedDocument::query()->where('subject_type', CustodyTransaction::class)->where('subject_id', $custody->id)->where('document_type', 'LAUNDRY_FORM')->exists()) {
-                $this->documents->conditionalForm($custody, 'LAUNDRY_FORM');
-            }
+                            'origin_ip' =>
+                                $ip,
 
-            $this->audit->record('APPROVED_LETTER_DOWNLOADED', $document, after: ['custody_id' => $custody->id, 'sha256' => $document->sha256]);
+                            'user_agent' =>
+                                $userAgent,
+                        ]
+                    );
 
-            return $custody;
-        }, 3);
+                $custody =
+                    CustodyTransaction::query()
+                        ->firstOrCreate(
+                            [
+                                'request_id' =>
+                                    $request->id,
+                            ],
+                            [
+                                'custody_no' =>
+                                    'CUS-'
+                                    .now()->format(
+                                        'Ymd'
+                                    )
+                                    .'-'
+                                    .str_pad(
+                                        (string) $request->id,
+                                        5,
+                                        '0',
+                                        STR_PAD_LEFT
+                                    ),
+
+                                'request_version_id' =>
+                                    $request
+                                        ->currentVersion
+                                        ->id,
+
+                                'borrower_user_id' =>
+                                    $borrower->id,
+
+                                'status' =>
+                                    'PREPARING_RELEASE',
+
+                                'scheduled_release_at' =>
+                                    $request
+                                        ->currentVersion
+                                        ->needed_from,
+
+                                'due_at' =>
+                                    $request
+                                        ->currentVersion
+                                        ->return_due_at,
+                            ]
+                        );
+
+                $request->loadMissing(
+                    'currentVersion.items.allocation'
+                );
+
+                foreach (
+                    $request
+                        ->currentVersion
+                        ->items
+                    as $item
+                ) {
+                    /*
+                     * Historical records may not contain
+                     * an allocation row. Do not fail the
+                     * whole request because of it.
+                     */
+                    if (! $item->allocation) {
+                        continue;
+                    }
+
+                    CustodyLine::query()
+                        ->firstOrCreate(
+                            [
+                                'custody_transaction_id' =>
+                                    $custody->id,
+
+                                'request_item_id' =>
+                                    $item->id,
+                            ],
+                            [
+                                'allocation_id' =>
+                                    $item
+                                        ->allocation
+                                        ->id,
+
+                                'approved_quantity' =>
+                                    $item
+                                        ->approved_quantity,
+
+                                'quantity_to_receive' =>
+                                    $item
+                                        ->approved_quantity,
+                            ]
+                        );
+                }
+
+                if (
+                    $request->status
+                    !== RequestStatus::ApprovedReadyForRelease
+                ) {
+                    $this->transition(
+                        $request,
+                        RequestStatus::ApprovedReadyForRelease,
+                        $borrower,
+                        'Historical approved-letter download recorded.'
+                    );
+                }
+
+                /*
+                 * Historical Borrower Slip generation.
+                 */
+                if (
+                    ! GeneratedDocument::query()
+                        ->where(
+                            'subject_type',
+                            CustodyTransaction::class
+                        )
+                        ->where(
+                            'subject_id',
+                            $custody->id
+                        )
+                        ->where(
+                            'document_type',
+                            'BORROWER_SLIP'
+                        )
+                        ->exists()
+                ) {
+                    $this->documents->borrowerSlip(
+                        $custody
+                    );
+                }
+
+                /*
+                 * Historical off-campus Gate Pass
+                 * generation.
+                 */
+                $offCampusLine =
+                    $custody
+                        ->lines()
+                        ->whereHas(
+                            'requestItem',
+                            fn ($query) =>
+                                $query->where(
+                                    'use_location',
+                                    'OFF_CAMPUS'
+                                )
+                        )
+                        ->first();
+
+                if (
+                    $offCampusLine
+                    && ! $custody->gatePass
+                ) {
+                    $passDocument =
+                        $this->documents
+                            ->conditionalForm(
+                                $custody,
+                                'GATE_PASS'
+                            );
+
+                    GatePass::query()->create([
+                        'custody_transaction_id' =>
+                            $custody->id,
+
+                        'custody_line_id' =>
+                            $offCampusLine->id,
+
+                        'pass_document_id' =>
+                            $passDocument->id,
+
+                        'bearer_name' =>
+                            $borrower->full_name,
+
+                        'destination' =>
+                            $request
+                                ->currentVersion
+                                ->location,
+
+                        'purpose' =>
+                            $request
+                                ->currentVersion
+                                ->purpose_event,
+
+                        'status' =>
+                            'PENDING',
+                    ]);
+                }
+
+                /*
+                 * Historical laundry-form generation.
+                 */
+                if (
+                    $custody
+                        ->lines()
+                        ->whereHas(
+                            'requestItem.inventoryItem',
+                            fn ($query) =>
+                                $query->where(
+                                    'laundry_required',
+                                    true
+                                )
+                        )
+                        ->exists()
+
+                    && ! GeneratedDocument::query()
+                        ->where(
+                            'subject_type',
+                            CustodyTransaction::class
+                        )
+                        ->where(
+                            'subject_id',
+                            $custody->id
+                        )
+                        ->where(
+                            'document_type',
+                            'LAUNDRY_FORM'
+                        )
+                        ->exists()
+                ) {
+                    $this->documents
+                        ->conditionalForm(
+                            $custody,
+                            'LAUNDRY_FORM'
+                        );
+                }
+
+                $this->audit->record(
+                    'APPROVED_LETTER_DOWNLOADED',
+                    $document,
+                    after: [
+                        'custody_id' =>
+                            $custody->id,
+
+                        'sha256' =>
+                            $document->sha256,
+                    ]
+                );
+
+                return $custody;
+            },
+            3
+        );
     }
 
+    /**
+     * Historical compatibility for old requests that
+     * used an approved-letter download deadline.
+     */
     public function expireUndownloaded(): int
     {
         $count = 0;
+
         BorrowingRequest::query()
-            ->where('status', RequestStatus::FinalApprovedAwaitingDownload->value)
-            ->where('download_deadline_at', '<', now())
-            ->each(function (BorrowingRequest $request) use (&$count): void {
-                DB::transaction(function () use ($request, &$count): void {
-                    $this->inventory->restore($request, 'EXPIRED', 'Approved letter was not downloaded by the configured deadline.');
-                    GeneratedDocument::query()->where('request_version_id', $request->currentVersion?->id)->where('status', 'FINAL')->update([
-                        'status' => 'EXPIRED', 'invalidated_at' => now(), 'invalidation_reason' => 'Download deadline missed.',
-                    ]);
-                    $this->transition($request, RequestStatus::Expired, null, 'Approved letter was not downloaded by the configured deadline.');
-                    $this->notifications->send('REQUEST_EXPIRED', collect([$request->borrower]), "Request {$request->request_no} expired because the approved letter was not downloaded by the deadline.", $request);
-                    $count++;
-                });
-            });
+            ->where(
+                'status',
+                RequestStatus::FinalApprovedAwaitingDownload->value
+            )
+            ->whereNotNull(
+                'download_deadline_at'
+            )
+            ->where(
+                'download_deadline_at',
+                '<',
+                now()
+            )
+            ->each(
+                function (
+                    BorrowingRequest $request
+                ) use (
+                    &$count
+                ): void {
+                    DB::transaction(
+                        function () use (
+                            $request,
+                            &$count
+                        ): void {
+                            $this->inventory->restore(
+                                $request,
+                                'EXPIRED',
+                                'Approved letter was not downloaded by the configured deadline.'
+                            );
+
+                            GeneratedDocument::query()
+                                ->where(
+                                    'request_version_id',
+                                    $request
+                                        ->currentVersion
+                                        ?->id
+                                )
+                                ->where(
+                                    'status',
+                                    'FINAL'
+                                )
+                                ->update([
+                                    'status' =>
+                                        'EXPIRED',
+
+                                    'invalidated_at' =>
+                                        now(),
+
+                                    'invalidation_reason' =>
+                                        'Download deadline missed.',
+                                ]);
+
+                            $this->transition(
+                                $request,
+                                RequestStatus::Expired,
+                                null,
+                                'Approved letter was not downloaded by the configured deadline.'
+                            );
+
+                            $this->notifications->send(
+                                'REQUEST_EXPIRED',
+                                collect([
+                                    $request->borrower,
+                                ]),
+                                "Request {$request->request_no} expired because the approved letter was not downloaded by the deadline.",
+                                $request
+                            );
+
+                            $count++;
+                        },
+                        3
+                    );
+                }
+            );
 
         return $count;
     }
 
-    private function transition(BorrowingRequest $request, RequestStatus $to, ?User $actor, ?string $reason): void
-    {
+    /**
+     * Verify that the current request version contains
+     * all supporting documents required for submission
+     * or approval.
+     */
+    private function validateRequiredSupportingDocuments(
+        $version
+    ): void {
+        $documents =
+            $version
+                ->supportingDocuments()
+                ->where(
+                    'is_current',
+                    true
+                )
+                ->get();
+
+        $hasRequestLetter =
+            $documents->contains(
+                fn (
+                    RequestSupportingDocument $document
+                ) =>
+                    $document->document_type
+                        === RequestSupportingDocument::TYPE_REQUEST_LETTER
+            );
+
+        if (! $hasRequestLetter) {
+            throw ValidationException::withMessages([
+                'approved_request_letter' =>
+                    'Upload the scanned approved Borrowing Request Letter before submitting.',
+            ]);
+        }
+
+        if (
+            $version->represents_student_activity
+        ) {
+            $hasPermission =
+                $documents->contains(
+                    fn (
+                        RequestSupportingDocument $document
+                    ) =>
+                        $document->document_type
+                            === RequestSupportingDocument::TYPE_PERMISSION_TO_CONDUCT
+                );
+
+            if (! $hasPermission) {
+                throw ValidationException::withMessages([
+                    'permission_to_conduct_letter' =>
+                        'The Permission to Conduct Letter is required for a student activity or organization request.',
+                ]);
+            }
+        }
+    }
+
+    /**
+     * Update the SPMU verification result for the
+     * currently active uploaded supporting documents.
+     */
+    private function markSupportingDocuments(
+        $version,
+        string $status,
+        User $verifier,
+        ?string $remarks
+    ): void {
+        $version
+            ->supportingDocuments()
+            ->where(
+                'is_current',
+                true
+            )
+            ->update([
+                'verification_status' =>
+                    $status,
+
+                'verified_by_user_id' =>
+                    $verifier->id,
+
+                'verified_at' =>
+                    now(),
+
+                'verification_remarks' =>
+                    $remarks,
+            ]);
+    }
+
+    /**
+     * Extract the first useful validation message
+     * generated by InventoryService.
+     */
+    private function firstValidationMessage(
+        ValidationException $exception,
+        string $fallback
+    ): string {
+        foreach (
+            $exception->errors()
+            as $messages
+        ) {
+            if (
+                is_array($messages)
+                && isset($messages[0])
+            ) {
+                return (string) $messages[0];
+            }
+        }
+
+        return $fallback;
+    }
+
+    /**
+     * Change request status and retain complete
+     * status-history information.
+     */
+    private function transition(
+        BorrowingRequest $request,
+        RequestStatus $to,
+        ?User $actor,
+        ?string $reason
+    ): void {
         $from = $request->status;
-        $request->update(['status' => $to]);
-        RequestStatusHistory::query()->create([
-            'request_id' => $request->id,
-            'request_version_id' => $request->currentVersion?->id,
-            'actor_user_id' => $actor?->id,
-            'from_status' => $from?->value,
-            'to_status' => $to->value,
-            'reason' => $reason,
-            'changed_at' => now(),
+
+        $request->update([
+            'status' =>
+                $to,
         ]);
+
+        RequestStatusHistory::query()
+            ->create([
+                'request_id' =>
+                    $request->id,
+
+                'request_version_id' =>
+                    $request
+                        ->currentVersion
+                        ?->id,
+
+                'actor_user_id' =>
+                    $actor?->id,
+
+                'from_status' =>
+                    $from?->value,
+
+                'to_status' =>
+                    $to->value,
+
+                'reason' =>
+                    $reason,
+
+                'changed_at' =>
+                    now(),
+            ]);
     }
 
-    private function currentStage(RequestStatus $status): ?ApprovalStage
-    {
-        return match ($status) {
-            RequestStatus::UnderSpmu => ApprovalStage::Spmu,
-            RequestStatus::UnderGsu => ApprovalStage::Gsu,
-            RequestStatus::UnderVpaf => ApprovalStage::Vpaf,
-            default => null,
-        };
-    }
-
-    private function usersWithRole(UserRole $role)
-    {
+    /**
+     * Return active users having the requested role.
+     */
+    private function usersWithRole(
+        UserRole $role
+    ) {
         return User::query()
-            ->where('account_status', 'ACTIVE')
-            ->whereHas('roles', fn ($query) => $query->where('role_code', $role->value)->whereNull('user_roles.revoked_at'))
+            ->where(
+                'account_status',
+                'ACTIVE'
+            )
+            ->whereHas(
+                'roles',
+                fn ($query) =>
+                    $query
+                        ->where(
+                            'role_code',
+                            $role->value
+                        )
+                        ->whereNull(
+                            'user_roles.revoked_at'
+                        )
+            )
             ->get();
     }
 }

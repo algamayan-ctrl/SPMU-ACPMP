@@ -447,21 +447,6 @@
                 ['reports.index', 'reports.index', 'Reports', 'reports'],
                 ['administration.index', 'administration.*', 'Configuration', 'settings'],
             ],
-            'GSU' => [
-                ['dashboard', 'dashboard', 'Dashboard', 'dashboard'],
-                ['approvals.index', 'approvals.*', 'Approval Queue', 'approval'],
-                ['requests.index', 'requests.*', 'Request Records', 'requests'],
-                ['inventory.index', 'inventory.*', 'Inventory View', 'inventory'],
-                ['calendar.index', 'calendar.*', 'Borrowing Calendar', 'calendar'],
-            ],
-            'VPAF' => [
-                ['dashboard', 'dashboard', 'Dashboard', 'dashboard'],
-                ['approvals.index', 'approvals.*', 'Approval Queue', 'approval'],
-                ['requests.index', 'requests.*', 'Request Records', 'requests'],
-                ['inventory.index', 'inventory.*', 'Inventory View', 'inventory'],
-                ['calendar.index', 'calendar.*', 'Borrowing Calendar', 'calendar'],
-                ['reports.index', 'reports.*', 'Reports', 'reports'],
-            ],
             'ICTU' => [
                 ['dashboard', 'dashboard', 'Dashboard', 'dashboard'],
                 ['administration.users.index', 'administration.users.*', 'User Accounts', 'users'],
@@ -469,6 +454,9 @@
                 ['administration.settings.index', 'administration.settings.*', 'System Settings', 'settings'],
                 ['reports.audit', 'reports.audit', 'Audit Trail', 'reports'],
                 ['reports.notifications', 'reports.notifications', 'Delivery Records', 'notifications'],
+            ],
+            'LAUNDRY' => [
+                ['laundry.index', 'laundry.*', 'Laundry Requests', 'custody'],
             ],
             default => [],
         };

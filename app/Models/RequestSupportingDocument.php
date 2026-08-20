@@ -8,31 +8,47 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
 class RequestSupportingDocument extends Model
 {
-    public const TYPE_SIGNED_REQUEST_LETTER = 'SIGNED_REQUEST_LETTER';
-    public const TYPE_PTC = 'PTC';
+    public const TYPE_REQUEST_LETTER = 'SIGNED_BR_LETTER';
+    public const TYPE_PERMISSION_TO_CONDUCT = 'PTC_LETTER';
 
-    public const STATUS_ACTIVE = 'ACTIVE';
-    public const STATUS_SUPERSEDED = 'SUPERSEDED';
+    public const STATUS_PENDING = 'PENDING_VERIFICATION';
+    public const STATUS_VERIFIED = 'VERIFIED';
+    public const STATUS_RETURNED_FOR_REVISION = 'RETURNED_FOR_REVISION';
+    public const STATUS_REJECTED = 'REJECTED';
 
     protected $fillable = [
+        'request_id',
         'request_version_id',
+        'document_type',
+        'version_no',
         'stored_file_id',
         'uploaded_by_user_id',
-        'document_type',
-        'status',
         'uploaded_at',
+        'verification_status',
+        'verified_by_user_id',
+        'verified_at',
+        'verification_remarks',
+        'is_current',
         'superseded_at',
     ];
 
     protected function casts(): array
     {
         return [
+            'version_no' => 'integer',
             'uploaded_at' => 'datetime',
+            'verified_at' => 'datetime',
+            'is_current' => 'boolean',
             'superseded_at' => 'datetime',
         ];
     }
 
-    public function version(): BelongsTo
+    public function request(): BelongsTo
+    {
+        return $this->belongsTo(BorrowingRequest::class, 'request_id');
+    }
+
+    public function requestVersion(): BelongsTo
     {
         return $this->belongsTo(RequestVersion::class, 'request_version_id');
     }
@@ -42,22 +58,28 @@ class RequestSupportingDocument extends Model
         return $this->belongsTo(StoredFile::class, 'stored_file_id');
     }
 
-    public function uploadedBy(): BelongsTo
+    public function uploader(): BelongsTo
     {
         return $this->belongsTo(User::class, 'uploaded_by_user_id');
     }
 
-    public function scopeActive(Builder $query): Builder
+    public function verifier(): BelongsTo
     {
-        return $query->where('status', self::STATUS_ACTIVE);
+        return $this->belongsTo(User::class, 'verified_by_user_id');
     }
 
-    public function label(): string
+    public function scopeCurrent(Builder $query): Builder
     {
-        return match ($this->document_type) {
-            self::TYPE_SIGNED_REQUEST_LETTER => 'Signed Borrowing Request Letter',
-            self::TYPE_PTC => 'Permission to Conduct Letter (PTC)',
-            default => $this->document_type,
-        };
+        return $query->where('is_current', true);
+    }
+
+    public function isRequestLetter(): bool
+    {
+        return $this->document_type === self::TYPE_REQUEST_LETTER;
+    }
+
+    public function isPermissionToConduct(): bool
+    {
+        return $this->document_type === self::TYPE_PERMISSION_TO_CONDUCT;
     }
 }

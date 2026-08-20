@@ -1,4 +1,4 @@
-@extends('layouts.app', ['title' => session('active_workspace') === 'BORROWER' ? 'My Borrowings' : 'Custody'])
+@extends('layouts.app', ['title' => session('active_workspace') === 'BORROWER' ? 'My Borrowings' : 'Pickup & Custody'])
 
 @section('content')
 
@@ -36,7 +36,7 @@
         <p class="eyebrow">Release and return</p>
 
         <h1>
-            {{ $isBorrower ? 'My Borrowings' : 'Borrower Slips and custody' }}
+            {{ $isBorrower ? 'My Borrowings' : 'Pickup & Custody' }}
         </h1>
     </div>
 </section>
@@ -216,7 +216,7 @@
 
                     <small>
                         Return due:
-                        {{ $custody->due_at->format('d M Y') }}
+                        {{ optional($custody->request->currentVersion?->return_date ?: $custody->due_at)->format('d M Y') ?: '—' }}
                     </small>
 
                     <small>
@@ -358,11 +358,7 @@
                 $actionLabel = match($custody->status) {
                     'PREPARING_RELEASE' =>
                         $custody->prepared_at
-                            ? (
-                                $custody->acknowledged_at
-                                    ? 'Record release'
-                                    : 'Await acknowledgement'
-                            )
+                            ? 'Record physical release'
                             : 'Prepare release',
 
                     'ACTIVE',
@@ -448,10 +444,12 @@
                         <small>Return deadline</small>
 
                         <strong>
-                            <x-date
-                                :value="$custody->due_at"
-                                with-time
-                            />
+                            {{
+                                optional(
+                                    $custody->request->currentVersion?->return_date
+                                        ?: $custody->due_at
+                                )->format('d M Y') ?: '—'
+                            }}
                         </strong>
                     </span>
 

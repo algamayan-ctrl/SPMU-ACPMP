@@ -8,16 +8,76 @@ use Symfony\Component\HttpFoundation\Response;
 
 class SecurityHeaders
 {
-    public function handle(Request $request, Closure $next): Response
-    {
+    public function handle(
+        Request $request,
+        Closure $next
+    ): Response {
         $response = $next($request);
-        $response->headers->set('X-Content-Type-Options', 'nosniff');
-        $response->headers->set('X-Frame-Options', 'DENY');
-        $response->headers->set('Referrer-Policy', 'same-origin');
-        $response->headers->set('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
-        $response->headers->set('Content-Security-Policy', "default-src 'self'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'");
-        if (app()->environment('production') && $request->isSecure()) {
-            $response->headers->set('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+
+        $response->headers->set(
+            'X-Content-Type-Options',
+            'nosniff'
+        );
+
+        $response->headers->set(
+            'Referrer-Policy',
+            'same-origin'
+        );
+
+        $response->headers->set(
+            'Permissions-Policy',
+            'camera=(), microphone=(), geolocation=()'
+        );
+
+        if ($request->routeIs('files.show')) {
+            /*
+             * The protected PDF/image may be displayed only
+             * inside the same SPMU-ACPMP application.
+             */
+            $response->headers->set(
+                'X-Frame-Options',
+                'SAMEORIGIN'
+            );
+
+            $response->headers->set(
+                'Content-Security-Policy',
+                "default-src 'self'; ".
+                "base-uri 'self'; ".
+                "frame-ancestors 'self'; ".
+                "form-action 'self'; ".
+                "img-src 'self' data: blob:; ".
+                "style-src 'self' 'unsafe-inline'; ".
+                "script-src 'self' 'unsafe-inline'; ".
+                "object-src 'self';"
+            );
+        } else {
+            $response->headers->set(
+                'X-Frame-Options',
+                'DENY'
+            );
+
+            $response->headers->set(
+                'Content-Security-Policy',
+                "default-src 'self'; ".
+                "base-uri 'self'; ".
+                "frame-ancestors 'none'; ".
+                "frame-src 'self'; ".
+                "form-action 'self'; ".
+                "img-src 'self' data: blob:; ".
+                "style-src 'self' 'unsafe-inline'; ".
+                "script-src 'self' 'unsafe-inline'; ".
+                "object-src 'self';"
+            );
+        }
+
+        if (
+            app()->environment('production')
+            && $request->isSecure()
+        ) {
+            $response->headers->set(
+                'Strict-Transport-Security',
+                'max-age=31536000; includeSubDomains'
+            );
         }
 
         return $response;

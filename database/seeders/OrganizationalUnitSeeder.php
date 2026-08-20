@@ -30,6 +30,14 @@ class OrganizationalUnitSeeder extends Seeder
             );
         }
 
+        /*
+         * GSU and VPAF are physical request-letter signatories only.
+         * They are not active system portals or account-assignment units.
+         */
+        OrganizationalUnit::query()
+            ->whereIn('unit_code', ['GSU', 'VPAF'])
+            ->update(['active' => false]);
+
         foreach ($this->borrowerColleges() as $code => $name) {
             OrganizationalUnit::query()->firstOrCreate(
                 ['unit_code' => $code],
@@ -48,9 +56,8 @@ class OrganizationalUnitSeeder extends Seeder
     {
         return [
             'SPMU' => 'Supply and Property Management Unit',
-            'GSU' => 'General Services Unit',
-            'VPAF' => 'Office of the Vice President for Administration and Finance',
             'ICTU' => 'Information and Communications Technology Unit',
+            'LAUNDRY' => 'Laundry Service Area',
         ];
     }
 

@@ -3,65 +3,498 @@
 namespace App\Services;
 
 use App\Enums\AccessClassification;
-use App\Enums\UserRole;
 use App\Models\BorrowerRestriction;
+use App\Models\BorrowingRequest;
 use App\Models\CustodyTransaction;
 use App\Models\EarlyReturnRequest;
 use App\Models\GeneratedDocument;
+use App\Models\GatePass;
 use App\Models\Incident;
 use App\Models\IncidentLine;
+use App\Models\LaundryJob;
+use App\Models\LaundryJobLine;
 use App\Models\LaundryRecord;
 use App\Models\OverdueCase;
 use App\Models\ReturnLine;
 use App\Models\ReturnTransaction;
 use App\Models\SystemSetting;
 use App\Models\User;
+use Carbon\CarbonImmutable;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
+use Throwable;
 
 class CustodyService
 {
     public function __construct(
-        private SignatureService $signatures,
         private DocumentService $documents,
         private AuditService $audit,
         private NotificationService $notifications,
     ) {}
 
+    /**
+     * Create the current pickup/custody record immediately after SPMU
+     * approval and inventory reservation.
+     *
+     * This method intentionally does not assign a pickup time. The SPMU
+     * Action Officer schedules the pickup window later from the custody
+     * workspace. It is idempotent so replaying the approval-side call does
+     * not duplicate the custody transaction or its lines.
+     */
+    public function ensurePickupRecord(
+        BorrowingRequest $request,
+        User $actor
+    ): CustodyTransaction {
+        return DB::transaction(function () use ($request): CustodyTransaction {
+            $request = BorrowingRequest::query()
+                ->with([
+                    'currentVersion.items.allocation',
+                ])
+                ->lockForUpdate()
+                ->findOrFail($request->id);
+
+            $version = $request->currentVersion;
+
+            if (! $version) {
+                throw ValidationException::withMessages([
+                    'custody' => 'The approved request version could not be found.',
+                ]);
+            }
+
+            $dueAt = $version->return_due_at;
+
+            if (! $dueAt && $version->return_date) {
+                $timezone = config('app.timezone') ?: 'Asia/Manila';
+                $dueAt = CarbonImmutable::parse(
+                    $version->return_date,
+                    $timezone
+                )->endOfDay();
+            }
+
+            if (! $dueAt) {
+                throw ValidationException::withMessages([
+                    'custody' => 'The approved Expected Return Date could not be found.',
+                ]);
+            }
+
+            $custody = CustodyTransaction::query()->firstOrCreate(
+                [
+                    'request_id' => $request->id,
+                ],
+                [
+                    'custody_no' => 'CUS-'
+                        .now()->format('Ymd')
+                        .'-'
+                        .str_pad(
+                            (string) $request->id,
+                            5,
+                            '0',
+                            STR_PAD_LEFT
+                        ),
+                    'request_version_id' => $version->id,
+                    'borrower_user_id' => $request->borrower_user_id,
+                    'status' => 'PREPARING_RELEASE',
+
+                    // Pickup is scheduled later by the SPMU Action Officer.
+                    'scheduled_release_at' => null,
+                    'pickup_expires_at' => null,
+                    'pickup_expired_at' => null,
+                    'pickup_scheduled_by_user_id' => null,
+                    'pickup_scheduled_at' => null,
+
+                    'due_at' => $dueAt,
+                    'prepared_by_user_id' => null,
+                    'prepared_at' => null,
+                    'released_by_user_id' => null,
+                    'released_at' => null,
+                    'acknowledged_at' => null,
+                    'closed_at' => null,
+                ]
+            );
+
+            foreach ($version->items as $item) {
+                $allocation = $item->allocation;
+
+                if (! $allocation || $allocation->status !== 'ACTIVE') {
+                    throw ValidationException::withMessages([
+                        'custody' => 'The approved inventory reservation is incomplete. Re-run SPMU verification before preparing release.',
+                    ]);
+                }
+
+                $approvedQuantity = (float) (
+                    $item->approved_quantity
+                    ?? $allocation->allocated_quantity
+                );
+
+                if ($approvedQuantity <= 0) {
+                    throw ValidationException::withMessages([
+                        'custody' => 'An approved custody quantity must be greater than zero.',
+                    ]);
+                }
+
+                $custody->lines()->firstOrCreate(
+                    [
+                        'request_item_id' => $item->id,
+                    ],
+                    [
+                        'allocation_id' => $allocation->id,
+                        'approved_quantity' => $approvedQuantity,
+                        'quantity_to_receive' => $approvedQuantity,
+                        'actual_released_quantity' => 0,
+                        'returned_quantity' => 0,
+                    ]
+                );
+            }
+
+            return $custody->fresh([
+                'lines.requestItem.inventoryItem',
+                'borrower',
+                'request.currentVersion',
+            ]);
+        }, 3);
+    }
+
+    /**
+     * Expire pickup claim windows that were not completed before the
+     * configured cutoff.
+     *
+     * Expiring the pickup window does not cancel the approved request or
+     * release its inventory reservation. It only closes the current claim
+     * window so the SPMU Action Officer can schedule a new pickup window.
+     * Any earlier preparation must be reconfirmed for the new schedule.
+     */
+    public function expirePickupWindows(): int
+    {
+        $expired = 0;
+
+        CustodyTransaction::query()
+            ->where('status', 'PREPARING_RELEASE')
+            ->whereNull('released_at')
+            ->whereNotNull('pickup_expires_at')
+            ->whereNull('pickup_expired_at')
+            ->where('pickup_expires_at', '<', now())
+            ->orderBy('id')
+            ->each(function (CustodyTransaction $custody) use (&$expired): void {
+                DB::transaction(function () use ($custody, &$expired): void {
+                    $locked = CustodyTransaction::query()
+                        ->lockForUpdate()
+                        ->find($custody->id);
+
+                    if (
+                        ! $locked
+                        || $locked->status !== 'PREPARING_RELEASE'
+                        || $locked->released_at
+                        || ! $locked->pickup_expires_at
+                        || $locked->pickup_expired_at
+                        || $locked->pickup_expires_at->gte(now())
+                    ) {
+                        return;
+                    }
+
+                    $expiredAt = now();
+
+                    $locked->update([
+                        'pickup_expired_at' => $expiredAt,
+                        'prepared_by_user_id' => null,
+                        'prepared_at' => null,
+                    ]);
+
+                    $locked->lines()->update([
+                        'item_status' => 'CONFIRMED',
+                    ]);
+
+                    $this->audit->record(
+                        'PICKUP_WINDOW_EXPIRED',
+                        $locked,
+                        after: [
+                            'pickup_expires_at' => $locked->pickup_expires_at->toIso8601String(),
+                            'pickup_expired_at' => $expiredAt->toIso8601String(),
+                            'reservation_released' => false,
+                            'requires_rescheduling' => true,
+                        ]
+                    );
+
+                    $locked->loadMissing('borrower');
+
+                    if ($locked->borrower) {
+                        $this->notifications->send(
+                            'PICKUP_WINDOW_EXPIRED',
+                            collect([$locked->borrower]),
+                            "The pickup window for {$locked->custody_no} has expired. The approved reservation remains in place; wait for SPMU to schedule a new pickup window.",
+                            $locked
+                        );
+                    }
+
+                    $expired++;
+                }, 3);
+            });
+
+        return $expired;
+    }
+
+    public function schedulePickup(
+        CustodyTransaction $custody,
+        User $spmu,
+        string $pickupAt,
+        string $pickupExpiresAt
+    ): void {
+        abort_unless(
+            $spmu->access_classification === AccessClassification::SpmuOfficer
+                && $custody->borrower_user_id !== $spmu->id
+                && $custody->status === 'PREPARING_RELEASE'
+                && ! $custody->released_at,
+            403
+        );
+
+        $timezone = config('app.timezone') ?: 'Asia/Manila';
+        $pickup = CarbonImmutable::parse($pickupAt, $timezone);
+        $expires = CarbonImmutable::parse($pickupExpiresAt, $timezone);
+
+        $custody->loadMissing('request.currentVersion', 'borrower');
+        $version = $custody->request?->currentVersion;
+
+        if (! $version) {
+            throw ValidationException::withMessages([
+                'pickup_at' => 'The approved request schedule could not be found.',
+            ]);
+        }
+
+        $approvedSchedule = $version->getAttribute('schedule_date')
+            ?: $version->getAttribute('needed_from');
+
+        if (! $approvedSchedule) {
+            throw ValidationException::withMessages([
+                'pickup_at' => 'The approved Schedule Date could not be found.',
+            ]);
+        }
+
+        $approvedDate = CarbonImmutable::parse($approvedSchedule, $timezone)->toDateString();
+
+        if ($pickup->toDateString() !== $approvedDate) {
+            throw ValidationException::withMessages([
+                'pickup_at' => 'Pickup must be scheduled on the approved Schedule Date: '
+                    .CarbonImmutable::parse($approvedDate, $timezone)->format('F j, Y').'.',
+            ]);
+        }
+
+        if ($expires->toDateString() !== $pickup->toDateString()) {
+            throw ValidationException::withMessages([
+                'pickup_expires_at' => 'Pickup time and pickup expiration must be on the same calendar date.',
+            ]);
+        }
+
+        if ($expires->lte($pickup)) {
+            throw ValidationException::withMessages([
+                'pickup_expires_at' => 'Pickup expiration must be later than the pickup time.',
+            ]);
+        }
+
+        DB::transaction(function () use ($custody, $spmu, $pickup, $expires): void {
+            $locked = CustodyTransaction::query()
+                ->lockForUpdate()
+                ->findOrFail($custody->id);
+
+            if ($locked->status !== 'PREPARING_RELEASE' || $locked->released_at) {
+                throw ValidationException::withMessages([
+                    'pickup_at' => 'This pickup transaction has already moved to another state.',
+                ]);
+            }
+
+            $before = [
+                'scheduled_release_at' => $locked->scheduled_release_at,
+                'pickup_expires_at' => $locked->pickup_expires_at,
+                'pickup_scheduled_by_user_id' => $locked->pickup_scheduled_by_user_id,
+                'prepared_at' => $locked->prepared_at,
+            ];
+
+            $locked->update([
+                'scheduled_release_at' => $pickup,
+                'pickup_expires_at' => $expires,
+                'pickup_scheduled_by_user_id' => $spmu->id,
+                'pickup_scheduled_at' => now(),
+                'pickup_expired_at' => null,
+                // A changed pickup schedule requires physical preparation to be reconfirmed.
+                'prepared_by_user_id' => null,
+                'prepared_at' => null,
+            ]);
+
+            $this->audit->record(
+                'PICKUP_SCHEDULED',
+                $locked,
+                before: $before,
+                after: [
+                    'pickup_at' => $pickup->toIso8601String(),
+                    'pickup_expires_at' => $expires->toIso8601String(),
+                    'scheduled_by_user_id' => $spmu->id,
+                ]
+            );
+
+            $locked->loadMissing('borrower');
+
+            if ($locked->borrower) {
+                $this->notifications->send(
+                    'PICKUP_SCHEDULED',
+                    collect([$locked->borrower]),
+                    "Pickup for {$locked->custody_no} is scheduled on {$pickup->format('F j, Y g:i A')} and may be claimed until {$expires->format('g:i A')}.",
+                    $locked
+                );
+            }
+        }, 3);
+    }
+
     public function updateReceiptQuantities(CustodyTransaction $custody, User $spmu, array $quantities, array $reasons): void
     {
-        abort_unless($spmu->access_classification === AccessClassification::SpmuOfficer && $custody->borrower_user_id !== $spmu->id && $custody->status === 'PREPARING_RELEASE' && ! $custody->acknowledged_at, 403);
+        abort_unless(
+            $spmu->access_classification === AccessClassification::SpmuOfficer
+                && $custody->borrower_user_id !== $spmu->id
+                && $custody->status === 'PREPARING_RELEASE'
+                && ! $custody->released_at,
+            403
+        );
 
-        DB::transaction(function () use ($custody, $quantities, $reasons): void {
+        DB::transaction(function () use ($custody, $quantities): void {
             foreach ($custody->lines()->get() as $line) {
-                $quantity = (float) ($quantities[$line->id] ?? $line->approved_quantity);
-                if ($quantity < 0 || $quantity > (float) $line->approved_quantity) {
-                    throw ValidationException::withMessages(['quantities' => 'Quantity to receive must be between zero and the approved quantity.']);
+                $approved = (float) $line->approved_quantity;
+                $quantity = (float) ($quantities[$line->id] ?? $approved);
+
+                if (abs($quantity - $approved) > 0.000001) {
+                    throw ValidationException::withMessages([
+                        'quantities' => 'Prepared quantity must exactly match the verified approved quantity. Revise the request if the quantity must change.',
+                    ]);
                 }
-                $reason = trim((string) ($reasons[$line->id] ?? ''));
-                if ($quantity < (float) $line->approved_quantity && $reason === '') {
-                    throw ValidationException::withMessages(['quantities' => 'Provide a reason for every reduced release quantity.']);
-                }
-                $line->update(['quantity_to_receive' => $quantity, 'adjustment_reason' => $reason ?: null]);
+
+                $line->update([
+                    'quantity_to_receive' => $approved,
+                    'adjustment_reason' => null,
+                ]);
             }
-            $custody->update(['prepared_at' => null, 'prepared_by_user_id' => null]);
-            $this->audit->record('FINAL_ISSUED_QUANTITY_RECORDED', $custody, after: ['quantities' => $quantities, 'reasons' => $reasons]);
+
+            $custody->update([
+                'prepared_at' => null,
+                'prepared_by_user_id' => null,
+            ]);
+
+            $this->audit->record(
+                'FINAL_ISSUED_QUANTITY_RECORDED',
+                $custody,
+                after: ['quantities' => $quantities]
+            );
         });
     }
 
     public function prepare(CustodyTransaction $custody, User $spmu): void
     {
-        abort_unless($spmu->access_classification === AccessClassification::SpmuOfficer && $custody->borrower_user_id !== $spmu->id && $custody->status === 'PREPARING_RELEASE', 403);
-        $custody->loadMissing('lines');
+        abort_unless(
+            $spmu->access_classification === AccessClassification::SpmuOfficer
+                && $custody->borrower_user_id !== $spmu->id
+                && $custody->status === 'PREPARING_RELEASE',
+            403
+        );
+
+        $custody->loadMissing([
+            'borrower',
+            'request.currentVersion',
+            'lines.requestItem.inventoryItem',
+            'gatePass',
+        ]);
+
+        if (! $custody->hasPickupSchedule()) {
+            throw ValidationException::withMessages([
+                'prepare' => 'Schedule the pickup window before confirming physical preparation.',
+            ]);
+        }
+
         foreach ($custody->lines as $line) {
-            if ((float) $line->quantity_to_receive < (float) $line->approved_quantity && blank($line->adjustment_reason)) {
-                throw ValidationException::withMessages(['prepare' => 'Every lower quantity requires a verified adjustment reason.']);
+            if (
+                abs(
+                    (float) $line->quantity_to_receive
+                    - (float) $line->approved_quantity
+                ) > 0.000001
+            ) {
+                throw ValidationException::withMessages([
+                    'prepare' => 'Every prepared quantity must exactly match the verified approved quantity.',
+                ]);
             }
         }
-        $custody->update(['prepared_by_user_id' => $spmu->id, 'prepared_at' => now()]);
-        $this->audit->record('RELEASE_PREPARED', $custody, reason: 'SPMU verified physical preparation and any lower quantities.');
+
+        DB::transaction(function () use ($custody, $spmu): void {
+            $custody->update([
+                'prepared_by_user_id' => $spmu->id,
+                'prepared_at' => now(),
+            ]);
+
+            $custody->lines()->update([
+                'item_status' => 'PREPARED',
+                'adjustment_reason' => null,
+            ]);
+        });
+
+        $fresh = $custody->fresh([
+            'borrower',
+            'request.currentVersion',
+            'lines.requestItem.inventoryItem',
+            'gatePass',
+        ]);
+
+        $this->documents->borrowerSlip($fresh);
+
+        $offCampusLine = $fresh->lines->first(
+            fn ($line) =>
+                $line->requestItem?->use_location === 'OFF_CAMPUS'
+                && (float) $line->quantity_to_receive > 0
+        );
+
+        if ($offCampusLine) {
+            $gatePassDocument = $this->documents->conditionalForm(
+                $fresh,
+                'GATE_PASS'
+            );
+
+            if ($fresh->gatePass) {
+                $fresh->gatePass->update([
+                    'custody_line_id' => $offCampusLine->id,
+                    'pass_document_id' => $gatePassDocument->id,
+                    'bearer_name' => $fresh->borrower?->full_name,
+                    'destination' => $fresh->request?->currentVersion?->location,
+                    'purpose' => $fresh->request?->currentVersion?->purpose_event,
+                    'status' => $fresh->gatePass->status === 'VERIFIED'
+                        ? 'VERIFIED'
+                        : 'PENDING',
+                ]);
+            } else {
+                GatePass::query()->create([
+                    'custody_transaction_id' => $fresh->id,
+                    'custody_line_id' => $offCampusLine->id,
+                    'pass_document_id' => $gatePassDocument->id,
+                    'bearer_name' => $fresh->borrower?->full_name,
+                    'destination' => $fresh->request?->currentVersion?->location,
+                    'purpose' => $fresh->request?->currentVersion?->purpose_event,
+                    'status' => 'PENDING',
+                ]);
+            }
+        }
+
+        $hasLaundry = $fresh->lines->contains(
+            fn ($line) =>
+                (bool) $line->requestItem?->inventoryItem?->laundry_required
+                && (float) $line->quantity_to_receive > 0
+        );
+
+        if ($hasLaundry) {
+            $this->documents->conditionalForm(
+                $fresh->fresh(),
+                'LAUNDRY_FORM'
+            );
+        }
+
+        $this->audit->record(
+            'RELEASE_PREPARED',
+            $fresh,
+            reason: 'SPMU confirmed exact approved quantities and generated the required physical forms.'
+        );
     }
 
     public function acknowledge(CustodyTransaction $custody, User $borrower): void
@@ -70,43 +503,125 @@ class CustodyService
         if (! $custody->prepared_at) {
             throw ValidationException::withMessages(['acknowledge' => 'SPMU must verify the prepared quantities before borrower acknowledgement.']);
         }
-        DB::transaction(function () use ($custody, $borrower): void {
-            $snapshot = $this->signatures->snapshot($borrower, 'BORROWER_SLIP_ACKNOWLEDGEMENT', UserRole::Borrower->value);
-            $hasLinen = $custody->lines()->whereHas('requestItem.inventoryItem', fn ($query) => $query->where('laundry_required', true))->exists();
-            $laundrySnapshot = $hasLinen ? $this->signatures->snapshot($borrower, 'LAUNDRY_FORM_BORROWER', UserRole::Borrower->value) : null;
-            $custody->update(['borrower_ack_signature_snapshot_id' => $snapshot->id, 'laundry_borrower_signature_snapshot_id' => $laundrySnapshot?->id, 'acknowledged_at' => now()]);
-            $custody->lines()->update(['item_status' => 'PREPARED']);
-            GeneratedDocument::query()->where('subject_type', CustodyTransaction::class)->where('subject_id', $custody->id)->where('document_type', 'BORROWER_SLIP')->where('status', 'FINAL')->update([
-                'status' => 'SUPERSEDED', 'invalidated_at' => now(), 'invalidation_reason' => 'Replaced by acknowledged slip version.',
+        DB::transaction(function () use ($custody): void {
+            $hasLinen = $custody->lines()
+                ->whereHas('requestItem.inventoryItem', fn ($query) => $query->where('laundry_required', true))
+                ->exists();
+
+            /*
+             * This is a system acknowledgement only. It is NOT an electronic
+             * signature. All documents that require signatures are printed,
+             * signed by hand, scanned, and uploaded/verified as evidence.
+             * Legacy signature columns are explicitly cleared and are not used
+             * by the active workflow.
+             */
+            $custody->update([
+                'borrower_ack_signature_snapshot_id' => null,
+                'laundry_borrower_signature_snapshot_id' => null,
+                'laundry_approver_signature_snapshot_id' => null,
+                'acknowledged_at' => now(),
             ]);
+
+            $custody->lines()->update(['item_status' => 'PREPARED']);
+
+            GeneratedDocument::query()
+                ->where('subject_type', CustodyTransaction::class)
+                ->where('subject_id', $custody->id)
+                ->where('document_type', 'BORROWER_SLIP')
+                ->where('status', 'FINAL')
+                ->update([
+                    'status' => 'SUPERSEDED',
+                    'invalidated_at' => now(),
+                    'invalidation_reason' => 'Replaced by acknowledged slip version.',
+                ]);
+
             $this->documents->borrowerSlip($custody->fresh());
+
             if ($hasLinen) {
                 $this->documents->replaceConditionalForm($custody->fresh(), 'LAUNDRY_FORM');
             } else {
                 $this->documents->refreshPacketIfReady($custody->fresh());
             }
-            $this->audit->record('BORROWER_RECEIPT_ACKNOWLEDGED', $custody, after: ['signature_snapshot_id' => $snapshot->id]);
+
+            $this->audit->record(
+                'BORROWER_RECEIPT_ACKNOWLEDGED',
+                $custody,
+                after: [
+                    'acknowledged_at' => $custody->fresh()->acknowledged_at?->toIso8601String(),
+                    'signature_method' => 'NONE_SYSTEM_ACKNOWLEDGEMENT_ONLY',
+                ]
+            );
         });
     }
 
-    public function release(CustodyTransaction $custody, User $spmu): void
+    public function release(CustodyTransaction $custody, User $spmu, ?string $remarks = null): void
     {
-        abort_unless($spmu->access_classification === AccessClassification::SpmuOfficer && $custody->borrower_user_id !== $spmu->id && $custody->status === 'PREPARING_RELEASE', 403);
-        if (! $custody->prepared_at || ! $custody->acknowledged_at) {
-            throw ValidationException::withMessages(['release' => 'SPMU preparation and borrower acknowledgement are required before physical release.']);
+        abort_unless(
+            $spmu->access_classification === AccessClassification::SpmuOfficer
+                && $custody->borrower_user_id !== $spmu->id
+                && $custody->status === 'PREPARING_RELEASE',
+            403
+        );
+
+        if (! $custody->prepared_at) {
+            throw ValidationException::withMessages([
+                'release' => 'SPMU physical preparation is required before release.',
+            ]);
         }
         $custody->loadMissing('request.currentVersion', 'gatePass', 'lines.requestItem.inventoryItem');
-        if ($custody->lines->contains(fn ($line) => $line->requestItem->use_location === 'OFF_CAMPUS')
-            && (! $custody->gatePass?->prepared_verified_at || ! $custody->gatePass?->approved_at)) {
-            throw ValidationException::withMessages(['release' => 'The Gate Pass must first contain the SPMU Action Officer and SPMU Head digital signatures. Guard evidence is uploaded after campus exit.']);
+        $hasOffCampusItem = $custody->lines->contains(
+            fn ($line) => $line->requestItem->use_location === 'OFF_CAMPUS'
+        );
+
+        if ($hasOffCampusItem && ! $custody->gatePass) {
+            throw ValidationException::withMessages([
+                'release' => 'Generate and print the Gate Pass before release. Required signatures are handwritten/wet signatures on the printed form; the signed scan is uploaded and verified as evidence.',
+            ]);
         }
-        if ($custody->lines->contains(fn ($line) => $line->requestItem->inventoryItem->laundry_required) && ! $custody->laundry_approved_at) {
-            throw ValidationException::withMessages(['release' => 'The Laundry Form must first contain the Borrower and SPMU Head digital signatures.']);
+        $hasLinen = $custody->lines->contains(
+            fn ($line) =>
+                (bool) $line->requestItem->inventoryItem->laundry_required
+                && (float) $line->quantity_to_receive > 0
+        );
+
+        $laundryDocument = null;
+
+        if ($hasLinen) {
+            /*
+             * The Laundry Form is a physical working document. It is generated
+             * by SPMU and travels with the borrower to Laundry; it is not
+             * digitally approved by the Laundry Worker or borrower.
+             */
+            $laundryDocument = GeneratedDocument::query()
+                ->where('subject_type', CustodyTransaction::class)
+                ->where('subject_id', $custody->id)
+                ->where('document_type', 'LAUNDRY_FORM')
+                ->where('status', 'FINAL')
+                ->latest('id')
+                ->first();
+
+            if (! $laundryDocument) {
+                $laundryDocument = $this->documents->conditionalForm(
+                    $custody->fresh(),
+                    'LAUNDRY_FORM'
+                );
+            }
         }
 
-        DB::transaction(function () use ($custody, $spmu): void {
+        DB::transaction(function () use ($custody, $spmu, $hasLinen, $laundryDocument, $remarks): void {
             $custody->loadMissing('lines.requestItem.inventoryItem', 'lines.allocation', 'borrower', 'request');
-            $transactionId = $this->transactionHeader('PHYSICAL_RELEASE', $custody, $spmu, 'Physical count, condition, and borrower acknowledgement completed.');
+
+            $releaseReason = trim((string) $remarks);
+            if ($releaseReason === '') {
+                $releaseReason = 'Physical count, condition, and required handwritten signatures confirmed.';
+            }
+
+            $transactionId = $this->transactionHeader(
+                'PHYSICAL_RELEASE',
+                $custody,
+                $spmu,
+                $releaseReason
+            );
             foreach ($custody->lines as $line) {
                 $allocation = $line->allocation()->lockForUpdate()->firstOrFail();
                 $actual = (float) $line->quantity_to_receive;
@@ -125,9 +640,99 @@ class CustodyService
                 }
                 $line->update(['item_status' => $actual > 0 ? 'RELEASED_PENDING_RETURN' : 'CLOSED', 'compliance_status' => $line->requestItem->use_location === 'OFF_CAMPUS' ? 'AWAITING_GUARD_SIGNATURE' : ($line->requestItem->inventoryItem->laundry_required ? 'LAUNDRY_FORM_READY' : 'NOT_REQUIRED')]);
             }
-            $custody->update(['released_by_user_id' => $spmu->id, 'released_at' => now(), 'status' => 'ACTIVE']);
+
+            if ($hasLinen) {
+                $job = LaundryJob::query()->updateOrCreate(
+                    [
+                        'custody_transaction_id' => $custody->id,
+                    ],
+                    [
+                        'generated_document_id' => $laundryDocument?->id,
+                        'status' => 'FOR_LAUNDRY',
+                        'ready_at' => null,
+                        'released_to_borrower_at' => null,
+                        'form_verified_by_user_id' => null,
+                        'form_verified_at' => null,
+                        'completed_at' => null,
+                    ]
+                );
+
+                foreach ($custody->lines as $line) {
+                    if (
+                        ! $line->requestItem->inventoryItem->laundry_required
+                        || (float) $line->actual_released_quantity <= 0
+                    ) {
+                        continue;
+                    }
+
+                    LaundryJobLine::query()->updateOrCreate(
+                        [
+                            'custody_line_id' => $line->id,
+                        ],
+                        [
+                            'laundry_job_id' => $job->id,
+                            'issued_quantity' => $line->actual_released_quantity,
+                            'received_quantity' => null,
+                            'issue_type' => null,
+                            'affected_quantity' => 0,
+                            'completed_quantity' => null,
+                            'remarks' => null,
+                        ]
+                    );
+
+                    $line->update([
+                        'compliance_status' => 'FOR_LAUNDRY',
+                    ]);
+                }
+            }
+
+            $custody->update([
+                'released_by_user_id' => $spmu->id,
+                'released_at' => now(),
+                'status' => 'ACTIVE',
+            ]);
+
+            /*
+             * Off-campus Gate Passes are physical wet-signed forms.
+             * After physical issuance, the current form is ready to be
+             * accomplished by the guard and returned as a scan. No digital
+             * SPMU signature/approval step is required.
+             */
+            $custody->gatePass()
+                ->where('status', '!=', 'VERIFIED')
+                ->update([
+                    'status' => 'READY_FOR_PRINTING',
+                    'prepared_verified_by_user_id' => null,
+                    'prepared_verifier_signature_snapshot_id' => null,
+                    'prepared_verified_at' => null,
+                    'approved_by_user_id' => null,
+                    'approver_signature_snapshot_id' => null,
+                    'temporary_delegation_id' => null,
+                    'approved_at' => null,
+                ]);
+
             $this->audit->record('ITEMS_RELEASED', $custody, after: ['released_by' => $spmu->id, 'released_at' => now()->toIso8601String()]);
             $this->notifications->send('ITEMS_RELEASED', collect([$custody->borrower]), "Items under {$custody->custody_no} were physically released. Return deadline: {$custody->due_at->format('F j, Y g:i A')}.", $custody);
+
+            if ($hasLinen) {
+                $laundryWorkers = User::query()
+                    ->where(
+                        'access_classification',
+                        AccessClassification::LaundryWorker->value
+                    )
+                    ->where('account_status', 'ACTIVE')
+                    ->get();
+
+                if ($laundryWorkers->isNotEmpty()) {
+                    $this->notifications->send(
+                        'LINEN_FOR_LAUNDRY',
+                        $laundryWorkers,
+                        "A linen transaction under {$custody->custody_no} is for Laundry. The borrower will bring the used linen and physical Laundry Form after use.",
+                        $custody,
+                        ['SYSTEM']
+                    );
+                }
+            }
         }, 3);
     }
 
@@ -159,6 +764,10 @@ class CustodyService
             ]);
             $transactionId = $this->transactionHeader('PHYSICAL_RETURN', $return, $spmu, $remarks ?: 'Physical return and manual condition inspection.');
 
+            $laundryJob = LaundryJob::query()
+                ->where('custody_transaction_id', $custody->id)
+                ->first();
+
             foreach ($custody->lines as $line) {
                 $outstanding = max(0, (float) $line->actual_released_quantity - (float) $line->returned_quantity);
                 $quantity = (float) ($quantities[$line->id] ?? 0);
@@ -178,12 +787,48 @@ class CustodyService
                 }
 
                 $item = $line->requestItem->inventoryItem;
-                $disposition = $condition === 'FINE' ? ($item->laundry_required ? 'LAUNDRY' : 'AVAILABLE') : match ($condition) {
-                    'MISSING', 'LOST' => 'LOST',
-                    'STOLEN' => 'STOLEN',
-                    'DESTROYED' => 'DESTROYED',
-                    default => 'DAMAGED_MAINTENANCE',
-                };
+
+                if ($item->laundry_required && $laundryJob) {
+                    /*
+                     * New linen flow:
+                     * Borrower -> Laundry -> Borrower -> SPMU.
+                     *
+                     * Laundry completion does not return inventory to Available.
+                     * Only SPMU's final physical return inspection may move the
+                     * cleaned linen from Borrowed to its final inventory state.
+                     */
+                    if (
+                        $laundryJob->status !== 'FOR_SPMU_FINAL_CHECK'
+                        || ! $laundryJob->form_verified_at
+                    ) {
+                        throw ValidationException::withMessages([
+                            'return' =>
+                                'This linen cannot be finalized yet. Laundry must upload the accomplished form, release the cleaned linen to the borrower, and SPMU must verify/encode the form first.',
+                        ]);
+                    }
+
+                    $disposition = $condition === 'FINE'
+                        ? 'AVAILABLE'
+                        : match ($condition) {
+                            'MISSING', 'LOST' => 'LOST',
+                            'STOLEN' => 'STOLEN',
+                            'DESTROYED' => 'DESTROYED',
+                            default => 'DAMAGED_MAINTENANCE',
+                        };
+                } else {
+                    /*
+                     * Historical compatibility for older laundry records that
+                     * were created only after an SPMU return.
+                     */
+                    $disposition = $condition === 'FINE'
+                        ? ($item->laundry_required ? 'LAUNDRY' : 'AVAILABLE')
+                        : match ($condition) {
+                            'MISSING', 'LOST' => 'LOST',
+                            'STOLEN' => 'STOLEN',
+                            'DESTROYED' => 'DESTROYED',
+                            default => 'DAMAGED_MAINTENANCE',
+                        };
+                }
                 $returnLine = ReturnLine::query()->create([
                     'return_transaction_id' => $return->id,
                     'custody_line_id' => $line->id,
@@ -239,17 +884,122 @@ class CustodyService
                 }
             }
 
-            $custody->refresh()->load('lines');
-            $allReturned = $custody->lines->every(fn ($line) => (float) $line->returned_quantity >= (float) $line->actual_released_quantity);
-            $overdue = OverdueCase::query()->where('custody_transaction_id', $custody->id)->first();
+            $custody->refresh()->load('lines.requestItem.inventoryItem');
+
+            if ($laundryJob) {
+                $allLaundryReturned = $custody->lines
+                    ->filter(
+                        fn ($line) =>
+                            (bool) $line->requestItem->inventoryItem->laundry_required
+                            && (float) $line->actual_released_quantity > 0
+                    )
+                    ->every(
+                        fn ($line) =>
+                            (float) $line->returned_quantity
+                            >= (float) $line->actual_released_quantity
+                    );
+
+                if ($allLaundryReturned) {
+                    $laundryJob->update([
+                        'status' => 'LAUNDRY_COMPLETED',
+                        'completed_at' => now(),
+                    ]);
+
+                    $custody->lines()
+                        ->whereHas(
+                            'requestItem.inventoryItem',
+                            fn ($query) =>
+                                $query->where('laundry_required', true)
+                        )
+                        ->update([
+                            'compliance_status' => 'LAUNDRY_COMPLETED',
+                        ]);
+                }
+            }
+
+            $allReturned = $custody->lines->every(
+                fn ($line) =>
+                    (float) $line->returned_quantity
+                    >= (float) $line->actual_released_quantity
+            );
+
+            $overdue = OverdueCase::query()
+                ->where('custody_transaction_id', $custody->id)
+                ->first();
+
+            if ($allReturned) {
+                /*
+                 * PENDING_RETURN means that physical property is still
+                 * outstanding. Once every released quantity for this custody
+                 * has been physically returned, lift that restriction unless
+                 * the same borrower still has another custody with an
+                 * outstanding issued quantity.
+                 */
+                $hasOtherOutstandingCustody = CustodyTransaction::query()
+                    ->where('borrower_user_id', $custody->borrower_user_id)
+                    ->whereKeyNot($custody->id)
+                    ->whereHas(
+                        'lines',
+                        fn ($query) =>
+                            $query->whereColumn(
+                                'returned_quantity',
+                                '<',
+                                'actual_released_quantity'
+                            )
+                    )
+                    ->exists();
+
+                if (! $hasOtherOutstandingCustody) {
+                    BorrowerRestriction::query()
+                        ->where('borrower_user_id', $custody->borrower_user_id)
+                        ->where('restriction_type', 'PENDING_RETURN')
+                        ->where('status', 'ACTIVE')
+                        ->update([
+                            'status' => 'LIFTED',
+                            'effective_to' => now(),
+                            'lifted_by_user_id' => $spmu->id,
+                        ]);
+                }
+            }
+
             if ($overdue && $allReturned && $overdue->status !== 'RESOLVED') {
                 $rate = SystemSetting::value('daily_overdue_tariff');
-                $days = max(1, (int) ceil($overdue->grace_expires_at->diffInMinutes(now()) / 1440));
+                $days = max(
+                    1,
+                    (int) ceil(
+                        $overdue->grace_expires_at->diffInMinutes(now())
+                        / 1440
+                    )
+                );
+
                 $overdue->update([
                     'rate_snapshot' => is_numeric($rate) ? $rate : null,
-                    'accrued_amount' => is_numeric($rate) ? round($days * (float) $rate, 2) : 0,
+                    'accrued_amount' => is_numeric($rate)
+                        ? round($days * (float) $rate, 2)
+                        : 0,
                     'status' => 'RETURNED_PENDING_SETTLEMENT',
                 ]);
+
+                /*
+                 * The physical-return restriction is finished at this point,
+                 * but the late-return accountability remains open until the
+                 * assessed fee is settled or formally waived.
+                 */
+                BorrowerRestriction::query()->firstOrCreate(
+                    [
+                        'borrower_user_id' => $custody->borrower_user_id,
+                        'restriction_type' => 'OVERDUE_RETURN',
+                        'status' => 'ACTIVE',
+                    ],
+                    [
+                        'reason' =>
+                            'Late return under '
+                            .$custody->custody_no
+                            .' is awaiting accountability settlement.',
+                        'effective_from' => now(),
+                        'imposed_by_user_id' => $spmu->id,
+                    ]
+                );
             }
             $hasOpenIncident = Incident::query()
                 ->where('custody_transaction_id', $custody->id)
@@ -257,14 +1007,14 @@ class CustodyService
                 ->exists();
             $hasOpenLaundry = LaundryRecord::query()
                 ->whereHas('returnLine.custodyLine', fn ($query) => $query->where('custody_transaction_id', $custody->id))
-                ->whereNot('status', 'VERIFIED')
+                ->where('status', '!=', 'VERIFIED')
                 ->exists();
             $hasOpenOverdue = OverdueCase::query()
                 ->where('custody_transaction_id', $custody->id)
-                ->whereNot('status', 'RESOLVED')
+                ->where('status', '!=', 'RESOLVED')
                 ->exists();
             $hasOpenGatePass = $custody->gatePass()
-                ->whereNot('status', 'VERIFIED')
+                ->where('status', '!=', 'VERIFIED')
                 ->exists();
             $hasOpenObligation = $hasOpenIncident || $hasOpenLaundry || $hasOpenOverdue || $hasOpenGatePass;
             $status = match (true) {
@@ -304,9 +1054,20 @@ class CustodyService
 
     public function requestEarlyReturn(CustodyTransaction $custody, User $borrower, array $quantities, string $proposedReturnAt, ?string $reason): EarlyReturnRequest
     {
-        abort_unless($custody->borrower_user_id === $borrower->id && in_array($custody->status, ['ACTIVE', 'PARTIALLY_RETURNED', 'OVERDUE'], true), 403);
+        $custody = $custody->fresh() ?? $custody;
 
-        return DB::transaction(function () use ($custody, $borrower, $quantities, $proposedReturnAt, $reason): EarlyReturnRequest {
+        abort_unless(
+            $custody->borrower_user_id === $borrower->id
+                && $custody->released_at
+                && in_array(
+                    $custody->status,
+                    ['ACTIVE', 'PARTIALLY_RETURNED', 'OVERDUE'],
+                    true
+                ),
+            403
+        );
+
+        $early = DB::transaction(function () use ($custody, $borrower, $quantities, $proposedReturnAt, $reason): EarlyReturnRequest {
             $early = EarlyReturnRequest::create([
                 'early_return_no' => 'ER-'.now()->format('YmdHis').'-'.$custody->id,
                 'custody_transaction_id' => $custody->id,
@@ -316,26 +1077,73 @@ class CustodyService
                 'status' => 'REQUESTED',
                 'requested_at' => now(),
             ]);
+
             $selected = 0;
+
             foreach ($custody->lines()->get() as $line) {
-                $outstanding = max(0, (float) $line->actual_released_quantity - (float) $line->returned_quantity);
+                $outstanding = max(
+                    0,
+                    (float) $line->actual_released_quantity
+                        - (float) $line->returned_quantity
+                );
+
                 $quantity = (float) ($quantities[$line->id] ?? 0);
+
                 if ($quantity < 0 || $quantity > $outstanding) {
-                    throw ValidationException::withMessages(['early_return' => 'An Early Return quantity cannot exceed the outstanding issued quantity.']);
+                    throw ValidationException::withMessages([
+                        'early_return' => 'An Early Return quantity cannot exceed the outstanding issued quantity.',
+                    ]);
                 }
+
                 if ($quantity > 0) {
-                    $early->lines()->create(['custody_line_id' => $line->id, 'proposed_quantity' => $quantity]);
+                    $early->lines()->create([
+                        'custody_line_id' => $line->id,
+                        'proposed_quantity' => $quantity,
+                    ]);
                     $selected++;
                 }
             }
+
             if ($selected === 0) {
-                throw ValidationException::withMessages(['early_return' => 'Select at least one item quantity for Early Return.']);
+                throw ValidationException::withMessages([
+                    'early_return' => 'Select at least one item quantity for Early Return.',
+                ]);
             }
-            $this->audit->record('EARLY_RETURN_REQUESTED', $early, reason: $reason, after: ['proposed_return_at' => $proposedReturnAt]);
-            $this->notifications->send('EARLY_RETURN_REQUESTED', $this->spmuRecipients()->merge([$borrower])->unique('id'), "Early Return {$early->early_return_no} was requested for {$custody->custody_no}. No inventory changes occur until SPMU inspection.", $custody);
 
             return $early;
         });
+
+        try {
+            $this->audit->record(
+                'EARLY_RETURN_REQUESTED',
+                $early,
+                reason: $reason,
+                after: ['proposed_return_at' => $proposedReturnAt]
+            );
+        } catch (Throwable $exception) {
+            Log::warning('Early Return audit recording failed after persistence.', [
+                'early_return_id' => $early->id,
+                'exception' => $exception->getMessage(),
+            ]);
+        }
+
+        try {
+            $this->notifications->send(
+                'EARLY_RETURN_REQUESTED',
+                $this->spmuRecipients()
+                    ->merge([$borrower])
+                    ->unique('id'),
+                "Early Return {$early->early_return_no} was requested for {$custody->custody_no}. No inventory changes occur until SPMU inspection.",
+                $custody
+            );
+        } catch (Throwable $exception) {
+            Log::warning('Early Return notification failed after persistence.', [
+                'early_return_id' => $early->id,
+                'exception' => $exception->getMessage(),
+            ]);
+        }
+
+        return $early;
     }
 
     private function spmuRecipients(): Collection

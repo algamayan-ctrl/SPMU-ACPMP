@@ -7,13 +7,16 @@ use App\Enums\RequestStatus;
 use App\Models\BorrowingRequest;
 use App\Models\InventoryItem;
 use App\Models\RequestItem;
+use App\Models\RequestSupportingDocument;
 use App\Models\RequestVersion;
 use App\Services\DocumentService;
 use App\Services\InventoryService;
+use App\Services\ProtectedFileService;
 use App\Services\RequestWorkflowService;
 use Carbon\Carbon;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
+use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
@@ -23,80 +26,152 @@ class BorrowingRequestController extends Controller
 {
     public function index(Request $request): View
     {
-        $query = BorrowingRequest::query()->with(['borrower', 'currentVersion.items', 'custody'])->latest();
-        $workspace = strtoupper((string) $request->session()->get('active_workspace'));
+        $query = BorrowingRequest::query()
+            ->with(['borrower', 'currentVersion.items', 'custody'])
+            ->latest();
+
+        $workspace = strtoupper(
+            (string) $request->session()->get('active_workspace')
+        );
 
         if ($workspace === 'BORROWER') {
-            $query->where('borrower_user_id', $request->user()->id);
-        } elseif (in_array($workspace, ['GSU', 'VPAF'], true)) {
-            $query->where(function ($query) use ($request, $workspace): void {
-                $query->where('status', 'UNDER_'.$workspace)
-                    ->orWhereHas(
-                        'currentVersion.approvalSteps',
-                        fn ($step) => $step
-                            ->where('stage_code', $workspace)
-                            ->where('approver_user_id', $request->user()->id)
-                    );
-            });
+            $query->where(
+                'borrower_user_id',
+                $request->user()->id
+            );
         }
 
-        return view('requests.index', ['requests' => $query->get()]);
+        return view(
+            'requests.index',
+            [
+                'requests' => $query->get(),
+            ]
+        );
     }
 
     public function create(): View
     {
-        return view('requests.form', [
-            'borrowingRequest' => new BorrowingRequest,
-            'version' => new RequestVersion,
-            'items' => InventoryItem::with('unit')
-                ->where('active', true)
-                ->where('borrowable', true)
-                ->orderBy('unique_description')
-                ->get(),
-        ]);
+        return view(
+            'requests.form',
+            [
+                'borrowingRequest' => new BorrowingRequest,
+                'version' => new RequestVersion,
+
+                'items' => InventoryItem::with('unit')
+                    ->where('active', true)
+                    ->where('borrowable', true)
+                    ->where('condition_code', 'SERVICEABLE')
+                    ->orderBy('unique_description')
+                    ->get(),
+            ]
+        );
     }
 
     public function store(
         Request $request,
         InventoryService $inventory,
+        ProtectedFileService $files,
         DocumentService $documents
     ): RedirectResponse {
         $data = $this->validateRequest($request);
+
         $user = $request->user();
 
         if ($user->activeRestrictions()->exists()) {
             throw ValidationException::withMessages([
-                'request' => 'An active borrowing restriction prevents a new request.',
+                'request' =>
+                    'An active borrowing restriction prevents a new request.',
             ]);
         }
 
         $borrowingRequest = DB::transaction(
-            function () use ($data, $user, $inventory): BorrowingRequest {
-                $borrowingRequest = BorrowingRequest::query()->create([
-                    'request_no' => 'BR-'.now()->format('YmdHis').'-'.$user->id,
-                    'borrower_user_id' => $user->id,
-                    'accountable_unit_id' => $user->organizational_unit_id,
-                    'current_version_no' => 1,
-                    'status' => RequestStatus::Draft,
-                ]);
+            function () use (
+                $data,
+                $user,
+                $inventory
+            ): BorrowingRequest {
+                $borrowingRequest =
+                    BorrowingRequest::query()->create([
+                        'request_no' =>
+                            'BR-'
+                            .now()->format('YmdHis')
+                            .'-'
+                            .$user->id,
 
-                $version = $borrowingRequest->versions()->create(
-                    $this->versionData($data, $user->id, 1)
+                        'borrower_user_id' =>
+                            $user->id,
+
+                        'accountable_unit_id' =>
+                            $user->organizational_unit_id,
+
+                        'current_version_no' =>
+                            1,
+
+                        'status' =>
+                            RequestStatus::Draft,
+                    ]);
+
+                $version =
+                    $borrowingRequest
+                        ->versions()
+                        ->create(
+                            $this->versionData(
+                                $data,
+                                $user->id,
+                                1
+                            )
+                        );
+
+                $this->saveItems(
+                    $version,
+                    $data,
+                    $inventory
                 );
 
-                $this->saveItems($version, $data, $inventory);
-
                 return $borrowingRequest;
-            }
+            },
+            3
         );
 
-        $documents->requestLetter($borrowingRequest->fresh(), false);
+        $borrowingRequest->load(
+            'currentVersion'
+        );
+
+        $this->syncSupportingDocuments(
+            $request,
+            $borrowingRequest,
+            $files,
+            (bool) (
+                $data['represents_student_activity']
+                ?? false
+            )
+        );
+
+        /*
+         * Generate the printable Borrowing Request Letter after the draft
+         * data is saved. The borrower prints this document, obtains the
+         * required GSU/VPAF wet signatures, scans the accomplished letter,
+         * and uploads that scan before submission to SPMU.
+         *
+         * Document-generation failure must never erase the saved draft.
+         */
+        try {
+            $documents->requestLetter(
+                $borrowingRequest->fresh(),
+                false
+            );
+        } catch (\Throwable $exception) {
+            report($exception);
+        }
 
         return redirect()
-            ->route('requests.show', $borrowingRequest)
+            ->route(
+                'requests.show',
+                $borrowingRequest
+            )
             ->with(
                 'status',
-                'Draft request and official preview generated. Review the letter before certifying and submitting it.'
+                'Draft request created. Print the generated Borrowing Request Letter, obtain the required wet signatures, then upload the fully signed scan and the Permission to Conduct Letter when applicable.'
             );
     }
 
@@ -104,22 +179,43 @@ class BorrowingRequestController extends Controller
         Request $request,
         BorrowingRequest $borrowingRequest
     ): View {
-        $canDecide = $this->authorizeRequest($request, $borrowingRequest);
-        $approvalStage = $this->approvalStage($borrowingRequest->status);
+        $canDecide =
+            $this->authorizeRequest(
+                $request,
+                $borrowingRequest
+            );
+
+        $approvalStage =
+            $this->approvalStage(
+                $borrowingRequest->status
+            );
 
         $borrowingRequest->load([
             'borrower.organizationalUnit',
             'accountableUnit',
+
             'currentVersion.items.inventoryItem.unit',
+
             'currentVersion.approvalSteps.approver',
+
             'currentVersion.documents.downloads',
+
+            'currentVersion.supportingDocuments.file',
+
+            'currentVersion.supportingDocuments.uploader',
+
             'statusHistory.actor',
+
             'custody.lines.requestItem.inventoryItem',
         ]);
 
         return view(
             'requests.show',
-            compact('borrowingRequest', 'canDecide', 'approvalStage')
+            compact(
+                'borrowingRequest',
+                'canDecide',
+                'approvalStage'
+            )
         );
     }
 
@@ -128,7 +224,8 @@ class BorrowingRequestController extends Controller
         BorrowingRequest $borrowingRequest
     ): View {
         abort_unless(
-            $borrowingRequest->borrower_user_id === $request->user()->id
+            $borrowingRequest->borrower_user_id
+                === $request->user()->id
             && in_array(
                 $borrowingRequest->status,
                 [
@@ -140,27 +237,43 @@ class BorrowingRequestController extends Controller
             403
         );
 
-        $borrowingRequest->load('currentVersion.items');
-
-        return view('requests.form', [
-            'borrowingRequest' => $borrowingRequest,
-            'version' => $borrowingRequest->currentVersion,
-            'items' => InventoryItem::with('unit')
-                ->where('active', true)
-                ->where('borrowable', true)
-                ->orderBy('unique_description')
-                ->get(),
+        $borrowingRequest->load([
+            'currentVersion.items',
+            'currentVersion.supportingDocuments.file',
         ]);
+
+        return view(
+            'requests.form',
+            [
+                'borrowingRequest' =>
+                    $borrowingRequest,
+
+                'version' =>
+                    $borrowingRequest->currentVersion,
+
+                'items' =>
+                    InventoryItem::with('unit')
+                        ->where('active', true)
+                        ->where('borrowable', true)
+                        ->where('condition_code', 'SERVICEABLE')
+                        ->orderBy(
+                            'unique_description'
+                        )
+                        ->get(),
+            ]
+        );
     }
 
     public function update(
         Request $request,
         BorrowingRequest $borrowingRequest,
         InventoryService $inventory,
+        ProtectedFileService $files,
         DocumentService $documents
     ): RedirectResponse {
         abort_unless(
-            $borrowingRequest->borrower_user_id === $request->user()->id
+            $borrowingRequest->borrower_user_id
+                === $request->user()->id
             && in_array(
                 $borrowingRequest->status,
                 [
@@ -172,7 +285,8 @@ class BorrowingRequestController extends Controller
             403
         );
 
-        $data = $this->validateRequest($request);
+        $data =
+            $this->validateRequest($request);
 
         DB::transaction(
             function () use (
@@ -181,25 +295,47 @@ class BorrowingRequestController extends Controller
                 $request,
                 $inventory
             ): void {
-                $versionNo = $borrowingRequest->status === RequestStatus::ReturnedForRevision
+                $versionNo =
+                    $borrowingRequest->status
+                        === RequestStatus::ReturnedForRevision
                     ? $borrowingRequest->current_version_no + 1
                     : $borrowingRequest->current_version_no;
 
-                if ($borrowingRequest->status === RequestStatus::ReturnedForRevision) {
-                    $version = $borrowingRequest->versions()->create(
-                        $this->versionData(
-                            $data,
-                            $request->user()->id,
-                            $versionNo
-                        )
-                    );
+                if (
+                    $borrowingRequest->status
+                    === RequestStatus::ReturnedForRevision
+                ) {
+                    /*
+                     * Returned requests create a new version.
+                     *
+                     * Old scanned approved documents are NOT
+                     * copied to the new version automatically.
+                     *
+                     * The borrower must attach the corrected
+                     * approved document(s) before resubmission.
+                     */
+                    $version =
+                        $borrowingRequest
+                            ->versions()
+                            ->create(
+                                $this->versionData(
+                                    $data,
+                                    $request->user()->id,
+                                    $versionNo
+                                )
+                            );
 
                     $borrowingRequest->update([
-                        'current_version_no' => $versionNo,
-                        'status' => RequestStatus::Draft,
+                        'current_version_no' =>
+                            $versionNo,
+
+                        'status' =>
+                            RequestStatus::Draft,
                     ]);
                 } else {
-                    $version = $borrowingRequest->currentVersion;
+                    $version =
+                        $borrowingRequest
+                            ->currentVersion;
 
                     $version->update(
                         $this->versionData(
@@ -209,30 +345,70 @@ class BorrowingRequestController extends Controller
                         )
                     );
 
-                    $version->items()->delete();
+                    $version
+                        ->items()
+                        ->delete();
                 }
 
-                $this->saveItems($version, $data, $inventory);
-            }
+                $this->saveItems(
+                    $version,
+                    $data,
+                    $inventory
+                );
+            },
+            3
         );
 
+        $borrowingRequest->refresh();
+
+        $borrowingRequest->load(
+            'currentVersion'
+        );
+
+        $this->syncSupportingDocuments(
+            $request,
+            $borrowingRequest,
+            $files,
+            (bool) (
+                $data['represents_student_activity']
+                ?? false
+            )
+        );
+
+        /*
+         * Editing changes the content of the printable letter. Supersede
+         * the prior draft PDF and generate the current version again.
+         */
         $borrowingRequest
-            ->fresh()
             ->currentVersion
-            ->documents()
+            ?->documents()
             ->where('document_type', 'REQUEST_LETTER')
             ->where('status', 'DRAFT')
             ->update([
                 'status' => 'SUPERSEDED',
                 'invalidated_at' => now(),
-                'invalidation_reason' => 'Draft was regenerated after borrower editing.',
+                'invalidation_reason' =>
+                    'Draft request was edited and the printable letter was regenerated.',
             ]);
 
-        $documents->requestLetter($borrowingRequest->fresh(), false);
+        try {
+            $documents->requestLetter(
+                $borrowingRequest->fresh(),
+                false
+            );
+        } catch (\Throwable $exception) {
+            report($exception);
+        }
 
         return redirect()
-            ->route('requests.show', $borrowingRequest)
-            ->with('status', 'Request draft updated.');
+            ->route(
+                'requests.show',
+                $borrowingRequest
+            )
+            ->with(
+                'status',
+                'Request draft updated. Print the latest generated request letter, obtain the required wet signatures, and upload the current signed scan before submitting.'
+            );
     }
 
     public function submit(
@@ -240,13 +416,17 @@ class BorrowingRequestController extends Controller
         BorrowingRequest $borrowingRequest,
         RequestWorkflowService $workflow
     ): RedirectResponse {
-        $workflow->submit($borrowingRequest, $request->user());
+        $workflow->submit(
+            $borrowingRequest,
+            $request->user()
+        );
 
         return back()->with(
             'status',
-            'Request signed and submitted to SPMU. Pending requests do not reserve inventory.'
+            'Request and scanned approved document(s) submitted to SPMU for verification. No inventory reservation has been created yet.'
         );
     }
+
 
     public function recoverDraftDocument(
         Request $request,
@@ -265,10 +445,11 @@ class BorrowingRequestController extends Controller
         return back()->with(
             'status',
             $result['generated']
-                ? 'The missing draft request-letter preview was regenerated successfully.'
-                : 'The draft request-letter preview is already available. No duplicate was created.'
+                ? 'Printable Borrowing Request Letter regenerated.'
+                : 'The current printable Borrowing Request Letter is already available.'
         );
     }
+
 
     public function cancel(
         Request $request,
@@ -276,8 +457,18 @@ class BorrowingRequestController extends Controller
         RequestWorkflowService $workflow
     ): RedirectResponse {
         $data = $request->validate([
-            'reason' => ['required', 'string', 'max:1000'],
+            'reason' => [
+                'required',
+                'string',
+                'max:1000',
+            ],
         ]);
+
+        $requiresSpmuConfirmation =
+            $borrowingRequest->status
+                === RequestStatus::ApprovedReadyForRelease
+            && $borrowingRequest->borrower_user_id
+                === $request->user()->id;
 
         $workflow->cancel(
             $borrowingRequest,
@@ -287,26 +478,113 @@ class BorrowingRequestController extends Controller
 
         return back()->with(
             'status',
-            'Request cancelled and any unreleased allocation restored.'
+            $requiresSpmuConfirmation
+                ? 'Cancellation request submitted to SPMU. The reservation remains active until SPMU confirms the cancellation.'
+                : 'Request cancelled. Any applicable unreleased reservation was restored by the authorized workflow.'
         );
     }
 
-    private function validateRequest(Request $request): array
-    {
-        return $request->validate([
-            'purpose_event' => ['required', 'string', 'max:255'],
-            'location' => ['required', 'string', 'max:255'],
-
-            'premises' => [
+    public function reviewCancellation(
+        Request $request,
+        BorrowingRequest $borrowingRequest,
+        RequestWorkflowService $workflow
+    ): RedirectResponse {
+        $data = $request->validate([
+            'decision' => [
                 'required',
                 Rule::in([
-                    'ON_CAMPUS',
-                    'OFF_CAMPUS',
+                    'APPROVED',
+                    'REJECTED',
                 ]),
             ],
 
-            'needed_from' => ['required', 'date', 'after:now'],
-            'return_due_at' => ['required', 'date', 'after:needed_from'],
+            'remarks' => [
+                'nullable',
+                'string',
+                'max:2000',
+            ],
+        ]);
+
+        $workflow->reviewCancellation(
+            $borrowingRequest,
+            $request->user(),
+            $data['decision'],
+            $data['remarks'] ?? null
+        );
+
+        return back()->with(
+            'status',
+            $data['decision'] === 'APPROVED'
+                ? 'Cancellation confirmed by SPMU. The unreleased reservation was restored to Available inventory.'
+                : 'Cancellation request rejected. The existing reservation remains active.'
+        );
+    }
+
+    private function validateRequest(
+        Request $request
+    ): array {
+        /*
+         * Date-only UI contract.
+         *
+         * Current/legacy Blade files may still submit:
+         * - needed_from
+         * - return_due_at
+         *
+         * New UI may submit the clearer names:
+         * - schedule_date
+         * - return_date
+         *
+         * Both are accepted here so UI work can be merged
+         * without changing the backend workflow. Any time
+         * portion submitted by the old datetime-local UI is
+         * intentionally ignored.
+         */
+        $request->merge([
+            'schedule_date' =>
+                $request->input('schedule_date')
+                ?: $request->input('needed_from'),
+
+            'return_date' =>
+                $request->input('return_date')
+                ?: $request->input('return_due_at'),
+        ]);
+
+        $data = $request->validate([
+            'purpose_event' => [
+                'required',
+                'string',
+                'max:255',
+            ],
+
+            'location' => [
+                'required',
+                'string',
+                'max:255',
+            ],
+
+            'schedule_date' => [
+                'required',
+                'date',
+            ],
+
+            'return_date' => [
+                'required',
+                'date',
+            ],
+
+            /*
+             * Legacy field names remain accepted while the
+             * existing Borrower UI is still being replaced.
+             */
+            'needed_from' => [
+                'nullable',
+                'date',
+            ],
+
+            'return_due_at' => [
+                'nullable',
+                'date',
+            ],
 
             'student_organization' => [
                 'nullable',
@@ -326,10 +604,50 @@ class BorrowingRequestController extends Controller
                 'max:255',
             ],
 
+            'represented_year_level' => [
+                'required_if:represents_student_activity,1',
+                'nullable',
+                'string',
+                'max:40',
+            ],
+
+            'event_details' => [
+                'required',
+                'string',
+                'max:2000',
+            ],
+
             'remarks' => [
                 'nullable',
                 'string',
                 'max:1000',
+            ],
+
+            'off_campus' => [
+                'nullable',
+                'boolean',
+            ],
+
+            /*
+             * Supporting documents are optional while
+             * saving a DRAFT.
+             *
+             * RequestWorkflowService::submit()
+             * enforces the required document set before
+             * SPMU can receive the request.
+             */
+            'approved_request_letter' => [
+                'nullable',
+                'file',
+                'mimes:pdf,png,jpg,jpeg,webp',
+                'max:10240',
+            ],
+
+            'permission_to_conduct_letter' => [
+                'nullable',
+                'file',
+                'mimes:pdf,png,jpg,jpeg,webp',
+                'max:10240',
             ],
 
             'item_ids' => [
@@ -354,7 +672,64 @@ class BorrowingRequestController extends Controller
                 'numeric',
                 'min:0',
             ],
+
+            'locations' => [
+                'nullable',
+                'array',
+            ],
+
+            'locations.*' => [
+                'nullable',
+                Rule::in([
+                    'ON_CAMPUS',
+                    'OFF_CAMPUS',
+                ]),
+            ],
         ]);
+
+        $timezone =
+            config('app.timezone')
+            ?: 'Asia/Manila';
+
+        $scheduleDate = Carbon::parse(
+            $data['schedule_date'],
+            $timezone
+        )->startOfDay();
+
+        $returnDate = Carbon::parse(
+            $data['return_date'],
+            $timezone
+        )->startOfDay();
+
+        /*
+         * Preserve the existing business rule that the
+         * borrowing date must be a future calendar date.
+         * The comparison is now DATE-ONLY, not time-based.
+         */
+        if (
+            ! $scheduleDate->gt(
+                now($timezone)->startOfDay()
+            )
+        ) {
+            throw ValidationException::withMessages([
+                'schedule_date' =>
+                    'Schedule Date must be after today.',
+            ]);
+        }
+
+        /*
+         * Preserve the existing rule that Return Date is
+         * after Schedule Date, but compare calendar dates
+         * only.
+         */
+        if (! $returnDate->gt($scheduleDate)) {
+            throw ValidationException::withMessages([
+                'return_date' =>
+                    'Return Date must be after Schedule Date.',
+            ]);
+        }
+
+        return $data;
     }
 
     private function versionData(
@@ -363,33 +738,89 @@ class BorrowingRequestController extends Controller
         int $versionNo
     ): array {
         return [
-            'version_no' => $versionNo,
-            'purpose_event' => $data['purpose_event'],
-            'location' => $data['location'],
-            'needed_from' => $data['needed_from'],
-            'return_due_at' => $data['return_due_at'],
+            'version_no' =>
+                $versionNo,
 
-            'represents_student_activity' => (bool) (
-                $data['represents_student_activity'] ?? false
-            ),
+            'purpose_event' =>
+                $data['purpose_event'],
 
-            'student_organization' => $data['student_organization'] ?? null,
-
-            'represented_program_department' =>
-                $data['represented_program_department'] ?? null,
+            'location' =>
+                $data['location'],
 
             /*
-             * Legacy database fields such as event_details and
-             * represented_year_level are intentionally omitted.
-             *
-             * This keeps older stored values readable while the revised
-             * Create/Edit form no longer collects or overwrites them.
+             * Canonical date-only fields.
              */
+            'schedule_date' =>
+                Carbon::parse(
+                    $data['schedule_date'],
+                    config('app.timezone')
+                        ?: 'Asia/Manila'
+                )->toDateString(),
 
-            'off_campus' => $data['premises'] === 'OFF_CAMPUS',
+            'return_date' =>
+                Carbon::parse(
+                    $data['return_date'],
+                    config('app.timezone')
+                        ?: 'Asia/Manila'
+                )->toDateString(),
 
-            'remarks' => $data['remarks'] ?? null,
-            'created_by_user_id' => $userId,
+            /*
+             * Legacy timestamp columns remain populated for
+             * existing inventory/calendar/report code. Their
+             * time portions are normalized and are not user-
+             * selected times.
+             */
+            'needed_from' =>
+                Carbon::parse(
+                    $data['schedule_date'],
+                    config('app.timezone')
+                        ?: 'Asia/Manila'
+                )->startOfDay(),
+
+            'return_due_at' =>
+                Carbon::parse(
+                    $data['return_date'],
+                    config('app.timezone')
+                        ?: 'Asia/Manila'
+                )->endOfDay(),
+
+            'represents_student_activity' =>
+                (bool) (
+                    $data[
+                        'represents_student_activity'
+                    ] ?? false
+                ),
+
+            'student_organization' =>
+                $data[
+                    'student_organization'
+                ] ?? null,
+
+            'represented_program_department' =>
+                $data[
+                    'represented_program_department'
+                ] ?? null,
+
+            'represented_year_level' =>
+                $data[
+                    'represented_year_level'
+                ] ?? null,
+
+            'event_details' =>
+                $data['event_details'],
+
+            'off_campus' =>
+                collect(
+                    $data['locations'] ?? []
+                )->contains(
+                    'OFF_CAMPUS'
+                ),
+
+            'remarks' =>
+                $data['remarks'] ?? null,
+
+            'created_by_user_id' =>
+                $userId,
         ];
     }
 
@@ -399,61 +830,126 @@ class BorrowingRequestController extends Controller
         InventoryService $inventory
     ): void {
         $selected = 0;
-        $location = $data['premises'];
 
-        foreach ($data['item_ids'] as $itemId) {
-            $quantity = (float) (
-                $data['quantities'][$itemId] ?? 0
-            );
+        foreach (
+            $data['item_ids']
+            as $itemId
+        ) {
+            $quantity =
+                (float) (
+                    $data['quantities'][$itemId]
+                    ?? 0
+                );
 
             if ($quantity <= 0) {
                 continue;
             }
 
-            $item = InventoryItem::with('unit')
-                ->where('active', true)
-                ->where('borrowable', true)
-                ->findOrFail($itemId);
+            $item =
+                InventoryItem::with('unit')
+                    ->where(
+                        'active',
+                        true
+                    )
+                    ->where(
+                        'borrowable',
+                        true
+                    )
+                    ->where(
+                        'condition_code',
+                        'SERVICEABLE'
+                    )
+                    ->findOrFail(
+                        $itemId
+                    );
 
             /*
-             * Premises is request-level.
+             * Draft-time availability check.
              *
-             * OFF_CAMPUS is intentionally stricter than merely trusting
-             * the submitted form or the item's flag: current policy allows
-             * only the inventory item named Barricade.
+             * This provides immediate borrower feedback.
+             *
+             * IMPORTANT:
+             * This does NOT create a reservation.
              */
-            if ($location === 'OFF_CAMPUS') {
-                $isBarricade = strcasecmp(
-                    trim((string) $item->unique_description),
-                    'Barricade'
-                ) === 0;
+            $balance =
+                $inventory->availability(
+                    $item,
+                    Carbon::parse(
+                        $data['schedule_date'],
+                        config('app.timezone')
+                            ?: 'Asia/Manila'
+                    )->startOfDay(),
+                    Carbon::parse(
+                        $data['return_date'],
+                        config('app.timezone')
+                            ?: 'Asia/Manila'
+                    )->endOfDay()
+                );
 
-                if (! $isBarricade || ! $item->off_campus_allowed) {
-                    throw ValidationException::withMessages([
-                        'premises' => 'Off-campus borrowing is permitted only for Barricade.',
-                    ]);
-                }
+            if (
+                $quantity
+                > $balance['available']
+            ) {
+                throw ValidationException::withMessages([
+                    'quantities' =>
+                        "{$item->unique_description} has only {$balance['available']} available for the complete period.",
+                ]);
             }
 
-            $balance = $inventory->availability(
-                $item,
-                Carbon::parse($data['needed_from']),
-                Carbon::parse($data['return_due_at'])
-            );
+            $location =
+                strtoupper(
+                    (string) (
+                        $data[
+                            'locations'
+                        ][$item->id]
+                        ?? 'ON_CAMPUS'
+                    )
+                );
 
-            if ($quantity > $balance['available']) {
+            if (
+                ! $item->off_campus_allowed
+                && $location !== 'ON_CAMPUS'
+            ) {
                 throw ValidationException::withMessages([
-                    'quantities' => "{$item->unique_description} has only {$balance['available']} available for the complete period.",
+                    'locations' =>
+                        "{$item->unique_description} is restricted to On-Campus use.",
+                ]);
+            }
+
+            if (
+                ! in_array(
+                    $location,
+                    [
+                        'ON_CAMPUS',
+                        'OFF_CAMPUS',
+                    ],
+                    true
+                )
+            ) {
+                throw ValidationException::withMessages([
+                    'locations' =>
+                        'Choose a valid campus location for each selected item.',
                 ]);
             }
 
             RequestItem::query()->create([
-                'request_version_id' => $version->id,
-                'inventory_item_id' => $item->id,
-                'description_snapshot' => $item->unique_description,
-                'unit_snapshot' => $item->unit->unit_name,
-                'requested_quantity' => $quantity,
-                'use_location' => $location,
+                'request_version_id' =>
+                    $version->id,
+
+                'inventory_item_id' =>
+                    $item->id,
+
+                'description_snapshot' =>
+                    $item->unique_description,
+
+                'unit_snapshot' =>
+                    $item->unit->unit_name,
+
+                'requested_quantity' =>
+                    $quantity,
+
+                'use_location' =>
+                    $location,
             ]);
 
             $selected++;
@@ -461,46 +957,165 @@ class BorrowingRequestController extends Controller
 
         if ($selected === 0) {
             throw ValidationException::withMessages([
-                'items' => 'Enter a quantity greater than zero for at least one item.',
+                'items' =>
+                    'Enter a quantity greater than zero for at least one item.',
             ]);
         }
+    }
+
+    private function syncSupportingDocuments(
+        Request $request,
+        BorrowingRequest $borrowingRequest,
+        ProtectedFileService $files,
+        bool $representsStudentActivity
+    ): void {
+        $version = $borrowingRequest->currentVersion;
+
+        if (! $version) {
+            throw ValidationException::withMessages([
+                'documents' => 'The current request version could not be found.',
+            ]);
+        }
+
+        if ($request->hasFile('approved_request_letter')) {
+            $this->storeSupportingDocument(
+                $borrowingRequest,
+                $version,
+                $request->file('approved_request_letter'),
+                RequestSupportingDocument::TYPE_REQUEST_LETTER,
+                $files,
+                $request->user()->id
+            );
+        }
+
+        if (
+            $representsStudentActivity
+            && $request->hasFile('permission_to_conduct_letter')
+        ) {
+            $this->storeSupportingDocument(
+                $borrowingRequest,
+                $version,
+                $request->file('permission_to_conduct_letter'),
+                RequestSupportingDocument::TYPE_PERMISSION_TO_CONDUCT,
+                $files,
+                $request->user()->id
+            );
+        }
+
+        /*
+        * If a draft is changed from student activity to
+        * regular borrowing, do NOT delete the historical PTC.
+        *
+        * Mark the current PTC as superseded so the audit trail
+        * is preserved.
+        */
+        if (! $representsStudentActivity) {
+            $version
+                ->supportingDocuments()
+                ->where(
+                    'document_type',
+                    RequestSupportingDocument::TYPE_PERMISSION_TO_CONDUCT
+                )
+                ->where('is_current', true)
+                ->update([
+                    'is_current' => false,
+                    'superseded_at' => now(),
+                ]);
+        }
+    }
+
+    private function storeSupportingDocument(
+        BorrowingRequest $borrowingRequest,
+        RequestVersion $version,
+        UploadedFile $upload,
+        string $documentType,
+        ProtectedFileService $files,
+        int $uploaderId
+    ): void {
+        $storedFile = $files->storeUpload(
+            $upload,
+            'request-supporting-documents/'
+                .$borrowingRequest->id
+                .'/version-'
+                .$version->version_no,
+            'REQUEST_SUPPORTING_DOCUMENT'
+        );
+
+        /*
+        * Determine the next document version.
+        */
+        $latestVersion = (int) RequestSupportingDocument::query()
+            ->where('request_version_id', $version->id)
+            ->where('document_type', $documentType)
+            ->max('version_no');
+
+        $nextVersion = $latestVersion + 1;
+
+        /*
+        * Preserve the old uploaded document.
+        *
+        * Never overwrite or delete historical request evidence.
+        */
+        RequestSupportingDocument::query()
+            ->where('request_version_id', $version->id)
+            ->where('document_type', $documentType)
+            ->where('is_current', true)
+            ->update([
+                'is_current' => false,
+                'superseded_at' => now(),
+            ]);
+
+        RequestSupportingDocument::query()->create([
+            'request_id' => $borrowingRequest->id,
+            'request_version_id' => $version->id,
+            'document_type' => $documentType,
+            'version_no' => $nextVersion,
+            'stored_file_id' => $storedFile->id,
+            'uploaded_by_user_id' => $uploaderId,
+            'uploaded_at' => now(),
+
+            'verification_status' =>
+                RequestSupportingDocument::STATUS_PENDING,
+
+            'verified_by_user_id' => null,
+            'verified_at' => null,
+            'verification_remarks' => null,
+
+            'is_current' => true,
+            'superseded_at' => null,
+        ]);
     }
 
     private function authorizeRequest(
         Request $request,
         BorrowingRequest $borrowingRequest
     ): bool {
-        $user = $request->user();
-        $workspace = strtoupper(
-            (string) $request->session()->get('active_workspace')
-        );
+        $user =
+            $request->user();
 
-        $assignedOfficer = in_array(
-            $workspace,
-            ['GSU', 'VPAF'],
-            true
-        ) && (
-            $borrowingRequest->status->value === 'UNDER_'.$workspace
-            || $borrowingRequest
-                ->currentVersion
-                ?->approvalSteps()
-                ->where('stage_code', $workspace)
-                ->where('approver_user_id', $user->id)
-                ->exists()
-        );
+        $workspace =
+            strtoupper(
+                (string) $request
+                    ->session()
+                    ->get(
+                        'active_workspace'
+                    )
+            );
 
-        $canDecide = $this->canDecideApproval(
-            $request,
-            $borrowingRequest
-        );
+        $canDecide =
+            $this->canDecideApproval(
+                $request,
+                $borrowingRequest
+            );
 
         abort_unless(
             (
                 $workspace === 'BORROWER'
-                && $borrowingRequest->borrower_user_id === $user->id
+                && $borrowingRequest
+                    ->borrower_user_id
+                    === $user->id
             )
             || $workspace === 'SPMU'
-            || $assignedOfficer
             || $canDecide,
             403
         );
@@ -512,37 +1127,46 @@ class BorrowingRequestController extends Controller
         Request $request,
         BorrowingRequest $borrowingRequest
     ): bool {
-        $stage = $this->approvalStage(
-            $borrowingRequest->status
-        );
-
-        $user = $request->user();
-
+        /*
+         * New request decisions are SPMU only.
+         */
         if (
-            ! $stage
-            || $borrowingRequest->borrower_user_id === $user->id
+            $borrowingRequest->status
+            !== RequestStatus::UnderSpmu
         ) {
             return false;
         }
 
-        $headClassification = match ($stage) {
-            'SPMU' => AccessClassification::SpmuHead,
-            'GSU' => AccessClassification::GsuHead,
-            default => AccessClassification::VpafHead,
-        };
+        $user =
+            $request->user();
 
-        return $user->access_classification === $headClassification
-            || (bool) $user->activeDelegationFor($stage);
+        if (
+            $user->primaryWorkspace()
+                !== 'SPMU'
+        ) {
+            return false;
+        }
+
+        if (
+            $user->access_classification
+                === AccessClassification::SpmuHead
+        ) {
+            return true;
+        }
+
+        return
+            $user->access_classification
+                === AccessClassification::SpmuOfficer
+            && $user->activeDelegationFor(
+                'SPMU'
+            ) !== null;
     }
 
     private function approvalStage(
         RequestStatus $status
     ): ?string {
-        return match ($status) {
-            RequestStatus::UnderSpmu => 'SPMU',
-            RequestStatus::UnderGsu => 'GSU',
-            RequestStatus::UnderVpaf => 'VPAF',
-            default => null,
-        };
+        return $status === RequestStatus::UnderSpmu
+            ? 'SPMU'
+            : null;
     }
 }

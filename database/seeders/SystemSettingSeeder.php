@@ -25,7 +25,7 @@ class SystemSettingSeeder extends Seeder
         return [
             'approved_letter_download_time' => ['23:59', 'TIME', 'WORKFLOW', 'Same-day approved-letter deadline in Asia/Manila.'],
             'overdue_grace_hours' => [24, 'INTEGER', 'PENALTY', 'Approved manuscript grace period before overdue status.'],
-            'daily_overdue_tariff' => [null, 'MONEY', 'PENALTY', 'Open for SPMU/VPAF finalization.'],
+            'daily_overdue_tariff' => [null, 'MONEY', 'PENALTY', 'Open for SPMU policy finalization.'],
             'sms_provider' => [null, 'STRING', 'NOTIFICATION', 'Open for ICTU provider configuration.'],
             'due_soon_hours' => [24, 'INTEGER', 'NOTIFICATION', 'Editable reminder baseline.'],
             'rslddp_template_status' => ['PROVISIONAL', 'STRING', 'DOCUMENT', 'Official layout and appraisal requirements remain open.'],

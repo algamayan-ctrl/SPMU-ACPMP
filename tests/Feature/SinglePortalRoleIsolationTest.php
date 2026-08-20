@@ -9,6 +9,7 @@ use App\Models\User;
 use Database\Seeders\DatabaseSeeder;
 use Database\Seeders\DemoUserSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Routing\Middleware\ThrottleRequests;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Route;
 use Tests\TestCase;
@@ -23,28 +24,31 @@ class SinglePortalRoleIsolationTest extends TestCase
         $this->seed(DatabaseSeeder::class);
     }
 
-    public function test_every_classification_has_exactly_one_portal_and_only_borrower_may_borrow(): void
+    public function test_every_active_classification_has_exactly_one_portal_and_only_borrower_may_borrow(): void
     {
         $expectations = [
             AccessClassification::BorrowerOnly->value => ['BORROWER', true],
             AccessClassification::SpmuHead->value => ['SPMU', false],
             AccessClassification::SpmuOfficer->value => ['SPMU', false],
-            AccessClassification::GsuHead->value => ['GSU', false],
-            AccessClassification::VpafHead->value => ['VPAF', false],
             AccessClassification::IctuMaintainer->value => ['ICTU', false],
+            AccessClassification::LaundryWorker->value => ['LAUNDRY', false],
         ];
 
         foreach ($expectations as $classification => [$portal, $mayBorrow]) {
-            $user = User::query()->where('access_classification', $classification)->firstOrFail();
+            $user = User::query()
+                ->where('access_classification', $classification)
+                ->firstOrFail();
 
             $this->assertSame($portal, $user->primaryWorkspace());
             $this->assertSame([$portal], $user->allowedWorkspaces());
             $this->assertSame($mayBorrow, $user->mayBorrow());
+
             $activeRoles = $user->roles()
                 ->wherePivotNull('revoked_at')
                 ->get()
                 ->map(fn (Role $role) => $role->role_code->value)
                 ->all();
+
             $this->assertSame([$portal], $activeRoles);
         }
     }
@@ -53,18 +57,37 @@ class SinglePortalRoleIsolationTest extends TestCase
     {
         $borrower = $this->classificationUser(AccessClassification::BorrowerOnly);
         $spmuOfficer = $this->classificationUser(AccessClassification::SpmuOfficer);
-        $gsuHead = $this->classificationUser(AccessClassification::GsuHead);
         $ictu = $this->classificationUser(AccessClassification::IctuMaintainer);
+        $laundry = $this->classificationUser(AccessClassification::LaundryWorker);
 
-        $this->withSession(['active_workspace' => 'BORROWER'])->actingAs($spmuOfficer)
-            ->get(route('requests.create'))->assertForbidden();
-        $this->withSession(['active_workspace' => 'BORROWER'])->actingAs($ictu)
-            ->get(route('requests.create'))->assertForbidden();
-        $this->actingAs($borrower)->get(route('inventory.create'))->assertForbidden();
-        $this->actingAs($spmuOfficer)->get(route('administration.users.index'))->assertForbidden();
-        $this->actingAs($gsuHead)->get(route('reports.index'))->assertForbidden();
+        $this->withSession(['active_workspace' => 'BORROWER'])
+            ->actingAs($spmuOfficer)
+            ->get(route('requests.create'))
+            ->assertForbidden();
 
-        $this->withSession(['active_workspace' => 'BORROWER'])->actingAs($spmuOfficer)
+        $this->withSession(['active_workspace' => 'BORROWER'])
+            ->actingAs($ictu)
+            ->get(route('requests.create'))
+            ->assertForbidden();
+
+        $this->actingAs($borrower)
+            ->get(route('inventory.create'))
+            ->assertForbidden();
+
+        $this->actingAs($spmuOfficer)
+            ->get(route('administration.users.index'))
+            ->assertForbidden();
+
+        $this->actingAs($laundry)
+            ->get(route('approvals.index'))
+            ->assertForbidden();
+
+        $this->actingAs($laundry)
+            ->get(route('administration.users.index'))
+            ->assertForbidden();
+
+        $this->withSession(['active_workspace' => 'BORROWER'])
+            ->actingAs($spmuOfficer)
             ->get(route('dashboard'))
             ->assertOk()
             ->assertSessionHas('active_workspace', 'SPMU');
@@ -72,22 +95,26 @@ class SinglePortalRoleIsolationTest extends TestCase
 
     public function test_login_automatically_establishes_the_single_portal_without_a_chooser(): void
     {
+        $this->withoutMiddleware(ThrottleRequests::class);
+
         $expectations = [
             'borrower@spmu.test' => 'BORROWER',
             'spmu-head@spmu.test' => 'SPMU',
             'spmu@spmu.test' => 'SPMU',
-            'gsu@spmu.test' => 'GSU',
-            'vpaf@spmu.test' => 'VPAF',
             'ictu@spmu.test' => 'ICTU',
+            'laundry@spmu.test' => 'LAUNDRY',
         ];
 
         foreach ($expectations as $email => $portal) {
             $this->post(route('login.store'), [
                 'email' => $email,
                 'password' => DemoUserSeeder::PASSWORD,
-            ])->assertRedirect(route('dashboard'))->assertSessionHas('active_workspace', $portal);
+            ])
+                ->assertRedirect(route('dashboard'))
+                ->assertSessionHas('active_workspace', $portal);
 
-            $this->post(route('logout'))->assertRedirect(route('home'));
+            $this->post(route('logout'))
+                ->assertRedirect(route('home'));
         }
 
         $this->assertFalse(Route::has('workspace.choose'));
@@ -98,7 +125,10 @@ class SinglePortalRoleIsolationTest extends TestCase
     public function test_login_fails_safely_when_portal_classification_is_invalid(): void
     {
         $user = $this->classificationUser(AccessClassification::BorrowerOnly);
-        DB::table('users')->where('id', $user->id)->update(['access_classification' => 'INVALID_CLASSIFICATION']);
+
+        DB::table('users')
+            ->where('id', $user->id)
+            ->update(['access_classification' => 'INVALID_CLASSIFICATION']);
 
         $this->post(route('login.store'), [
             'email' => $user->email,
@@ -112,28 +142,52 @@ class SinglePortalRoleIsolationTest extends TestCase
     {
         $ictu = $this->classificationUser(AccessClassification::IctuMaintainer);
         $user = $this->classificationUser(AccessClassification::BorrowerOnly);
-        $spmuUnit = OrganizationalUnit::query()->where('unit_code', 'SPMU')->firstOrFail();
-        $borrowerRole = Role::query()->where('role_code', 'BORROWER')->firstOrFail();
-        $spmuRole = Role::query()->where('role_code', 'SPMU')->firstOrFail();
+        $spmuUnit = OrganizationalUnit::query()
+            ->where('unit_code', 'SPMU')
+            ->firstOrFail();
+        $borrowerRole = Role::query()
+            ->where('role_code', 'BORROWER')
+            ->firstOrFail();
+        $spmuRole = Role::query()
+            ->where('role_code', 'SPMU')
+            ->firstOrFail();
 
-        $this->actingAs($ictu)->put(route('administration.users.update', $user), [
-            'organizational_unit_id' => $spmuUnit->id,
-            'employee_no' => $user->employee_no,
-            'full_name' => $user->full_name,
-            'designation' => $user->designation,
-            'employment_type' => $user->employment_type->value,
-            'email' => $user->email,
-            'mobile_no' => $user->mobile_no,
-            'account_status' => $user->account_status->value,
-            'access_classification' => AccessClassification::SpmuOfficer->value,
-        ])->assertRedirect(route('administration.users.index'))->assertSessionHasNoErrors();
+        $this->actingAs($ictu)
+            ->put(route('administration.users.update', $user), [
+                'organizational_unit_id' => $spmuUnit->id,
+                'employee_no' => $user->employee_no,
+                'full_name' => $user->full_name,
+                'designation' => $user->designation,
+                'employment_type' => $user->employment_type->value,
+                'email' => $user->email,
+                'mobile_no' => $user->mobile_no,
+                'account_status' => $user->account_status->value,
+                'access_classification' => AccessClassification::SpmuOfficer->value,
+            ])
+            ->assertRedirect(route('administration.users.index'))
+            ->assertSessionHasNoErrors();
 
         $this->assertDatabaseHas('user_roles', [
             'user_id' => $user->id,
             'role_id' => $borrowerRole->id,
         ]);
-        $this->assertFalse(DB::table('user_roles')->where('user_id', $user->id)->where('role_id', $borrowerRole->id)->whereNull('revoked_at')->exists());
-        $this->assertTrue(DB::table('user_roles')->where('user_id', $user->id)->where('role_id', $spmuRole->id)->whereNull('revoked_at')->exists());
+
+        $this->assertFalse(
+            DB::table('user_roles')
+                ->where('user_id', $user->id)
+                ->where('role_id', $borrowerRole->id)
+                ->whereNull('revoked_at')
+                ->exists(),
+        );
+
+        $this->assertTrue(
+            DB::table('user_roles')
+                ->where('user_id', $user->id)
+                ->where('role_id', $spmuRole->id)
+                ->whereNull('revoked_at')
+                ->exists(),
+        );
+
         $this->assertSame(['SPMU'], $user->fresh()->allowedWorkspaces());
         $this->assertFalse($user->fresh()->mayBorrow());
     }
@@ -147,17 +201,78 @@ class SinglePortalRoleIsolationTest extends TestCase
 
         $officer->refresh();
         $this->assertSame($passwordHash, $officer->password);
+
         $activeRoles = $officer->roles()
             ->wherePivotNull('revoked_at')
             ->get()
             ->map(fn (Role $role) => $role->role_code->value)
             ->all();
+
         $this->assertSame(['SPMU'], $activeRoles);
-        $this->assertSame(1, DB::table('user_roles')->where('user_id', $officer->id)->whereNull('revoked_at')->count());
+        $this->assertSame(
+            1,
+            DB::table('user_roles')
+                ->where('user_id', $officer->id)
+                ->whereNull('revoked_at')
+                ->count(),
+        );
+    }
+
+
+    public function test_user_administration_hides_retired_signatory_accounts_and_lists_laundry_worker(): void
+    {
+        $ictu = $this->classificationUser(AccessClassification::IctuMaintainer);
+        $institution = OrganizationalUnit::query()
+            ->where('unit_code', 'CSPC')
+            ->firstOrFail();
+
+        User::factory()->create([
+            'organizational_unit_id' => $institution->id,
+            'employee_no' => 'LEGACY-GSU-'.uniqid(),
+            'email' => 'legacy-gsu-'.uniqid().'@example.test',
+            'full_name' => 'Legacy GSU Account',
+            'access_classification' => AccessClassification::GsuHead,
+            'account_status' => 'INACTIVE',
+        ]);
+
+        User::factory()->create([
+            'organizational_unit_id' => $institution->id,
+            'employee_no' => 'LEGACY-VPAF-'.uniqid(),
+            'email' => 'legacy-vpaf-'.uniqid().'@example.test',
+            'full_name' => 'Legacy VPAF Account',
+            'access_classification' => AccessClassification::VpafHead,
+            'account_status' => 'INACTIVE',
+        ]);
+
+        $this->actingAs($ictu)
+            ->get(route('administration.users.index'))
+            ->assertOk()
+            ->assertSee('Laundry Worker Demo')
+            ->assertDontSee('Legacy GSU Account')
+            ->assertDontSee('Legacy VPAF Account');
+    }
+
+    public function test_gsu_and_vpaf_are_not_assignable_or_active_system_portals(): void
+    {
+        $assignable = array_map(
+            fn (AccessClassification $classification) => $classification->value,
+            AccessClassification::assignableCases(),
+        );
+
+        $this->assertNotContains('GSU_HEAD', $assignable);
+        $this->assertNotContains('VPAF_HEAD', $assignable);
+
+        $this->assertFalse(AccessClassification::GsuHead->isPortalEnabled());
+        $this->assertFalse(AccessClassification::VpafHead->isPortalEnabled());
+
+        $this->assertSame([], AccessClassification::GsuHead->workspaces());
+        $this->assertSame([], AccessClassification::VpafHead->workspaces());
     }
 
     private function classificationUser(AccessClassification $classification): User
     {
-        return User::query()->where('access_classification', $classification->value)->firstOrFail();
+        return User::query()
+            ->where('access_classification', $classification->value)
+            ->firstOrFail();
     }
 }

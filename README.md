@@ -1,98 +1,95 @@
 # SPMU-ACPMP
 
-SPMU Asset Custody and Performance Monitoring Program is a Laravel 13 system implementing the approved CSPC property-borrowing process for five user groups: Borrower, SPMU, GSU, VPAF, and ICTU.
+SPMU Asset Custody and Performance Monitoring Program is a Laravel 13 system for CSPC property borrowing, custody, return, laundry handling, accountability, reporting, and ICTU administration.
 
-## Implemented system
+## Final active access model
 
-- Employee/faculty/staff accounts only, with ICTU-controlled access classifications and one assigned portal per normal account.
-- Only `BORROWER_ONLY` accounts may borrow; SPMU and ICTU personnel retain only their operational or administration portal.
-- Formal temporary delegated approver records are time-bound, office-specific, attributable, and never require sharing a Head's password.
-- Editable user profiles and protected e-signature upload/snapshots.
-- Date-aware inventory availability and an approved/active borrowing calendar.
-- Editable descriptive inventory records without barcode or physical asset-ID dependency.
-- Digital request letter with represented student organization, program/department, year, event, place, and fixed borrowing period.
-- Sequential SPMU → GSU → VPAF signed approvals with exact version, approver name, received/action timestamps, and audit history.
-- Atomic allocation only after VPAF approval; pending requests do not reserve stock.
-- Same-day approved-letter download gate before Borrower's Slip access.
-- SPMU-recorded final issued quantities, SPMU preparation check, borrower e-signed acknowledgement, and physical release before an item becomes Borrowed.
-- Cancellation before release with allocation restoration; released transactions use Early Return.
-- Partial/complete return, manual physical inspection, linen-to-laundry routing, and inventory state ledger.
-- Barricade-only off-campus policy with a Gate Pass digitally verified by an SPMU Action Officer, digitally approved by the SPMU Head/delegate, and wet-signed by the guard after exit.
-- Conditional Laundry Form for linen only, digitally signed by Borrower and SPMU Head/delegate, then wet-signed by the laundry worker.
-- One consolidated PDF packet with the approved letter, Borrower's Slip, and only the applicable conditional forms, each preserved on its own page.
-- Item-level custody states, Early Return notices, and separate return/laundry/gate compliance instead of one request-level return flag.
-- Damage, destruction, missing, lost, and stolen incident records; evidence is required and theft requires a police-blotter reference.
-- Provisional RSLDDP case data and controlled output after its template setting is marked `APPROVED`.
-- 24-hour overdue grace period, due-soon/overdue notices, configurable daily tariff, escalating offense sanctions, and borrowing restrictions.
-- Billing Statements limited to penalties/property charges; borrower receipt upload, SPMU original inspection and OR encoding, settlement, and authorized waiver.
-- In-system notices, real email transport, configurable SMS webhook, and delivery reports.
-- Printable dashboards, period filters, CSV exports, inventory states, utilization, overdue, penalties, repeat offenses, return compliance, audit, and KPI observations.
-- ICTU local SQLite backup, Docker/MariaDB deployment files, scheduled deadline processing, security headers, login throttling, and technical audit records.
+The application has one requester portal and four active staff classifications:
 
-## Quick local start on Windows
+| Access | Purpose |
+|---|---|
+| Borrower | Creates borrowing requests and tracks personal requests/custody. Only Borrower accounts may borrow. |
+| SPMU Admin / Head | SPMU verification/decision authority, oversight, reports, and authorized controls. |
+| SPMU Action Officer | Pickup scheduling, exact-quantity preparation, physical release/return, evidence and operational processing. May make an SPMU decision only under a valid formal delegation. |
+| Laundry Worker | Handles linen jobs only: views assigned laundry work, uploads the accomplished signed Laundry Form, and records cleaned linen release for final SPMU checking. |
+| ICTU Maintainer | User accounts, classifications, system settings, audit trail, delivery records, deployment and technical operations. |
 
-Open PowerShell in this folder and run:
+**GSU and VPAF are not application roles, portals, approval queues, or system approvers.** When required by the institutional Borrowing Request Letter, they are **physical signatories only**. The borrower prints the letter, obtains the required handwritten/wet signatures, scans the accomplished document, and uploads it to SPMU for verification.
+
+## Final borrowing workflow
+
+1. Borrower checks available/serviceable inventory and creates a Draft request.
+2. The system generates a printable Draft Borrowing Request Letter.
+3. Borrower prints the letter and obtains required handwritten/wet signatures, including the required GSU/VPAF institutional signatories on the physical letter.
+4. Borrower scans and uploads the fully signed Borrowing Request Letter. A Permission to Conduct document is also required when the request represents a student activity/organization.
+5. SPMU opens the submitted scan beside the verification checklist and chooses **Verify & Approve**, **Return for Revision**, or **Reject**.
+6. Approval performs the final availability check and reserves the exact approved quantity. No GSU/VPAF in-system stage follows SPMU.
+7. SPMU Action Officer schedules pickup, confirms the exact approved quantity, and generates the Borrower Slip plus only the applicable physical Gate Pass and/or Laundry Form.
+8. Required signatures on operational forms are handwritten/wet signatures. The system records process confirmation/evidence; it does not create electronic-signature snapshots.
+9. SPMU records physical release and return. Off-campus Gate Pass and linen Laundry Form evidence are uploaded/verified as required.
+10. When released custody includes linen, a Laundry Job is created for the Laundry Worker. The worker uploads the accomplished signed form and records cleaned linen release; SPMU performs the final verification/return step before linen becomes available again.
+
+## Other implemented controls
+
+- Single-portal role isolation and cross-portal 403 protection.
+- Formal, time-bound SPMU delegation using the delegate's own account.
+- Date-aware inventory availability and borrowing calendar.
+- Exact reservation/allocation with database locking and no silent quantity reduction.
+- Cancellation/Early Return controls and item-level physical return inspection.
+- Damage, destruction, missing, lost, stolen, evidence, billing, sanctions and restrictions.
+- In-system notifications, SMTP email, configurable SMS webhook and delivery records.
+- Reports, CSV exports, audit history, security headers, login throttling and protected file storage.
+- Docker/MariaDB application, database and scheduler services.
+
+## Docker local start
+
+Use Docker rather than XAMPP for the project runtime. From PowerShell in the project root:
 
 ```powershell
-.\tools\artisan.cmd migrate --seed
-.\tools\artisan.cmd serve --host=127.0.0.1 --port=8001
+docker compose up -d --build
+docker compose exec -T app php artisan migrate --force
+docker compose exec -T app php artisan db:seed --force
+docker compose exec -T app php artisan optimize:clear
 ```
 
-Keep PowerShell open, then visit `http://127.0.0.1:8001`.
+Open:
 
-Local demonstration accounts all use `SPMU-Demo-2026!`:
+```text
+http://127.0.0.1:8080
+```
 
-| Role | Email |
+Local demo password: `SPMU-Demo-2026!`
+
+| Demo access | Email |
 |---|---|
 | Borrower | `borrower@spmu.test` |
 | SPMU Action Officer | `spmu@spmu.test` |
-| SPMU Head | `spmu-head@spmu.test` |
-| GSU | `gsu@spmu.test` |
-| VPAF | `vpaf@spmu.test` |
-| ICTU | `ictu@spmu.test` |
+| SPMU Admin / Head | `spmu-head@spmu.test` |
+| Laundry Worker | `laundry@spmu.test` |
+| ICTU Maintainer | `ictu@spmu.test` |
 
-These accounts and signatures are for local demonstration only. `SEED_DEMO_USERS` is disabled in the production example.
+There are intentionally **no GSU or VPAF login accounts** in the current demo seeder.
 
-See [RUN-IN-VSCODE.md](RUN-IN-VSCODE.md) for the manuscript-aligned Visual Studio Code, Docker, and MariaDB instructions. See [START-HERE.md](START-HERE.md) for the shortest local-preview guide, [docs/USER-GUIDE.md](docs/USER-GUIDE.md) for each role's workflow, and [docs/INTERFACE-DESIGN.md](docs/INTERFACE-DESIGN.md) for the approved simple role-based UI pattern.
-
-## Verification
+## Test suite
 
 ```powershell
-.\tools\artisan.cmd test
-.\tools\php.cmd vendor\bin\pint --test
-.\tools\composer.cmd validate --strict --no-check-publish
+docker compose -p spmu-acpmp-test -f .\docker-compose.test.yml build --no-cache test
+
+docker compose -p spmu-acpmp-test -f .\docker-compose.test.yml run --rm test php vendor/bin/phpunit --testdox
 ```
-
-The tests cover access classifications, portal isolation, formal delegation, request/approval/allocation/download/release, mixed conditional forms, final issued quantities, Early Return, overdue billing and settlement, theft evidence/RSLDDP, inventory data, and security boundaries.
-
-## Deadline processor
-
-For local testing, run it manually:
-
-```powershell
-.\tools\artisan.cmd spmu:process-deadlines
-```
-
-Production must continuously run Laravel's scheduler. The supplied Docker `scheduler` service does this automatically.
-
-## Production deployment
-
-The included Docker configuration uses PHP 8.4/Apache and MariaDB 11.4. Follow [docs/DEPLOYMENT-ICTU.md](docs/DEPLOYMENT-ICTU.md). Never use local demo accounts, the SQLite database, `APP_DEBUG=true`, or placeholder secrets in production.
-
-## Intentionally open client values
-
-The operational design expressly leaves these configurable until client approval: daily penalty tariff, SMS provider, official RSLDDP layout/status, backup schedule, final barricade quantity, and other opening inventory corrections. The system is functional with those values unset, but dependent actions remain visibly pending rather than inventing an official value. See [docs/CONFIGURATION-REGISTER.md](docs/CONFIGURATION-REGISTER.md).
 
 ## Source map
 
 - `app/Http/Controllers` — role portals and form actions.
-- `app/Services` — workflow, inventory, documents, signatures, custody, notifications, files, and audit logic.
+- `app/Services` — request workflow, inventory, custody, documents, notifications, files and audit logic.
 - `app/Models` — business records and relationships.
-- `database/migrations` — full relational schema.
-- `database/seeders` — approved inventory/reference data and optional local accounts.
-- `resources/views` and `public/css/app.css` — responsive user interface.
-- `routes/web.php` and `routes/console.php` — protected pages and scheduled operations.
-- `tests` — executable acceptance and regression coverage.
-- `docker` and `docker-compose.yml` — ICTU deployment runtime.
+- `database/migrations` — relational schema and workflow revisions.
+- `database/seeders` — reference data and optional demo accounts.
+- `resources/views` / `public/css/app.css` — responsive interface.
+- `routes/web.php` — protected application routes.
+- `tests` — executable regression/acceptance coverage.
+- `docker-compose.yml` / `docker-compose.test.yml` — application and test runtimes.
 
-Generated documents and evidence are protected application files, not public web files. Do not edit `vendor`, `database/database.sqlite`, generated storage files, or finalized records manually.
+Legacy GSU/VPAF enum/database values may remain only so historical records do not break. They are disabled from assignment and hidden from active user administration.
+
+For the explicit finalized client baseline, see [docs/CLIENT-WORKFLOW-FINAL.md](docs/CLIENT-WORKFLOW-FINAL.md).

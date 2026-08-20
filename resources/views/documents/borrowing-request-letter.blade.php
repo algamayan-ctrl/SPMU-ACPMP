@@ -274,7 +274,7 @@
         }
 
         .approval-signatures td {
-            width: 33.333%;
+            width: 50%;
             padding: 0.5mm 2.2mm 0;
             vertical-align: bottom;
             text-align: center;
@@ -470,74 +470,49 @@
     <section class="certification">
         <h2 class="section-heading">Borrower Certification</h2>
         <p class="certification-text">
-            I certify that the information and requested quantities stated in this letter are accurate. I accept accountability for the requested properties and their return by the recorded deadline in accordance with the approved request.
+            I certify that the information and requested quantities stated in this letter are accurate. I accept accountability for the requested properties and their return on the approved Expected Return Date, subject to SPMU verification and actual physical issuance.
         </p>
 
         <div class="signature-area">
-            <p class="signature-intro">Respectfully submitted and certified by:</p>
-            @if ($borrowerSignatureDataUri)
-                <img class="signature-image" src="{{ $borrowerSignatureDataUri }}" alt="E-signature of {{ $borrowingRequest->borrower->full_name }}">
-            @elseif ($version->borrowerSignature)
-                <div class="typed-signature">/s/ {{ $borrowingRequest->borrower->full_name }}</div>
-            @else
-                <div class="signature-space"></div>
-            @endif
+            <p class="signature-intro">Respectfully submitted by:</p>
+            <div class="signature-space"></div>
             <div class="signature-line"></div>
             <div class="signer-name">{{ $borrowingRequest->borrower->full_name }}</div>
             <span class="signer-role">Accountable Borrower</span>
             <span class="signer-designation">{{ $borrowerDesignation }}</span>
-            <span class="signer-date">Signed on {{ $visibleSignedAt ?: 'Pending' }}</span>
+            <span class="signer-date">Date: ____________________</span>
             <div class="integrity-note">
-                @if ($version->borrowerSignature)
-                    Digitally signed in SPMU-ACPMP | Ref: {{ substr($version->borrowerSignature->sha256, 0, 12) }}...{{ substr($version->borrowerSignature->sha256, -8) }}
-                @else
-                    Digital signature pending borrower certification.
-                @endif
+                Handwritten/wet signature required on the printed copy. The system does not apply an electronic signature.
             </div>
         </div>
     </section>
 
-    @if ($isFinal)
-        <section class="approvals">
-            <h2 class="section-heading">Approvals</h2>
-            <table class="approval-signatures" aria-label="Authorized approvals">
-                <tr>
-                    @foreach ($approvals as $approval)
-                        <td class="approval-signature-block">
-                            <div class="approval-caption">
-                                Approved by - {{ $approval['stage'] }}
-                                @if ($approval['delegated'])
-                                    <br><small>Temporary Delegate</small>
-                                @endif
-                            </div>
-                            @if ($approval['signature_data_uri'])
-                                <img class="approval-signature" src="{{ $approval['signature_data_uri'] }}" alt="E-signature of {{ $approval['name'] }}">
-                            @elseif ($approval['signature'])
-                                <div class="typed-signature">/s/ {{ $approval['name'] }}</div>
-                            @else
-                                <div class="approval-signature-space"></div>
-                            @endif
-                            <div class="approval-name">{{ $approval['name'] ?: 'Pending' }}</div>
-                            <span class="approval-role">{{ $approval['role'] }}</span>
-                            <span class="approval-date">Approved on {{ $approval['decided_at_formal'] ?: 'Pending' }}</span>
-                            <span class="approval-routing">Received {{ $approval['received_at_formal'] ?: 'Pending' }}</span>
-                            <span class="approval-integrity">
-                                @if ($approval['signature'])
-                                    Digital integrity ref: {{ substr($approval['signature']->sha256, 0, 10) }}...{{ substr($approval['signature']->sha256, -6) }}
-                                @else
-                                    Digital signature pending
-                                @endif
-                            </span>
-                        </td>
-                    @endforeach
-                </tr>
-            </table>
-            @if ($borrowingRequest->download_deadline_at)
-                <p class="approval-note">
-                    Download the fully approved letter by {{ $visibleDownloadDeadline }} Asia/Manila to unlock the Borrower's Slip.
-                </p>
-            @endif
-        </section>
-    @endif
+    <section class="approvals">
+        <h2 class="section-heading">Required Physical Institutional Signatures</h2>
+        <table class="approval-signatures" aria-label="Required physical signatures">
+            <tr>
+                <td class="approval-signature-block">
+                    <div class="approval-caption">GSU</div>
+                    <div class="approval-signature-space"></div>
+                    <div class="approval-name">____________________________</div>
+                    <span class="approval-role">Authorized GSU Signatory</span>
+                    <span class="approval-date">Date: ____________________</span>
+                </td>
+                <td class="approval-signature-block">
+                    <div class="approval-caption">VPAF</div>
+                    <div class="approval-signature-space"></div>
+                    <div class="approval-name">____________________________</div>
+                    <span class="approval-role">Authorized VPAF Signatory / Noted By</span>
+                    <span class="approval-date">Date: ____________________</span>
+                </td>
+            </tr>
+        </table>
+        <p class="approval-note">
+            GSU and VPAF are physical signatories only; they do not approve this request inside SPMU-ACPMP.
+            Print this letter, obtain the required handwritten/wet signatures, scan the fully accomplished
+            document, and upload it to the same request before submission. SPMU then verifies the uploaded
+            signed letter in the system. Inventory is reserved only after SPMU verification and approval.
+        </p>
+    </section>
 </body>
 </html>

@@ -74,12 +74,12 @@
 
             <label>
                 Items needed from
-                <input type="datetime-local" name="from" value="{{ $from->format('Y-m-d\TH:i') }}">
+                <input type="date" name="from" value="{{ $from->format('Y-m-d') }}">
             </label>
 
             <label>
                 Expected return date
-                <input type="datetime-local" name="to" value="{{ $to->format('Y-m-d\TH:i') }}">
+                <input type="date" name="to" value="{{ $to->format('Y-m-d') }}">
             </label>
 
             <button class="button secondary" type="submit">Check selected period</button>

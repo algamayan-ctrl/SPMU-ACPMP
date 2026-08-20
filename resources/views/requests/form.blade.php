@@ -23,6 +23,25 @@
             ? 'OFF_CAMPUS'
             : 'ON_CAMPUS'
     );
+
+    $supporting = $version->exists
+        ? $version->supportingDocuments->where('is_current', true)
+        : collect();
+
+    $requestLetter = $supporting->firstWhere(
+        'document_type',
+        App\Models\RequestSupportingDocument::TYPE_REQUEST_LETTER
+    );
+
+    $ptc = $supporting->firstWhere(
+        'document_type',
+        App\Models\RequestSupportingDocument::TYPE_PERMISSION_TO_CONDUCT
+    );
+
+    $representsStudentActivity = (bool) old(
+        'represents_student_activity',
+        $version->represents_student_activity
+    );
 @endphp
 
 <style>
@@ -389,6 +408,7 @@
 
 <form
     method="post"
+    enctype="multipart/form-data"
     action="{{ $borrowingRequest->exists
         ? route('requests.update', $borrowingRequest)
         : route('requests.store')
@@ -452,13 +472,13 @@
                     <label>
                         Items needed from
                         <input
-                            id="needed_from"
+                            id="schedule_date"
                             type="date"
-                            name="needed_from"
-                            value="{{ old('needed_from', optional($version->needed_from)->format('Y-m-d')) }}"
+                            name="schedule_date"
+                            value="{{ old('schedule_date', optional($version->schedule_date ?: $version->needed_from)->format('Y-m-d')) }}"
                             required
                         >
-                        @error('needed_from')
+                        @error('schedule_date')
                             <small class="field-error">{{ $message }}</small>
                         @enderror
                     </label>
@@ -466,13 +486,13 @@
                     <label>
                         Expected return date
                         <input
-                            id="return_due_at"
+                            id="return_date"
                             type="date"
-                            name="return_due_at"
-                            value="{{ old('return_due_at', optional($version->return_due_at)->format('Y-m-d')) }}"
+                            name="return_date"
+                            value="{{ old('return_date', optional($version->return_date ?: $version->return_due_at)->format('Y-m-d')) }}"
                             required
                         >
-                        @error('return_due_at')
+                        @error('return_date')
                             <small class="field-error">{{ $message }}</small>
                         @enderror
                     </label>
@@ -506,6 +526,16 @@
                                 value="{{ old('represented_program_department', $version->represented_program_department) }}"
                             >
                             @error('represented_program_department')
+                                <small class="field-error">{{ $message }}</small>
+                            @enderror
+                        </label>
+                        <label>
+                            Year level
+                            <input
+                                name="represented_year_level"
+                                value="{{ old('represented_year_level', $version->represented_year_level) }}"
+                            >
+                            @error('represented_year_level')
                                 <small class="field-error">{{ $message }}</small>
                             @enderror
                         </label>
@@ -595,7 +625,8 @@
                                     ($item->specification ?? '')
                                 );
                                 $isBarricade = strcasecmp(trim($item->unique_description), 'Barricade') === 0;
-                            @endphp
+
+@endphp
 
                             <tr
                                 class="request-item-row"
@@ -669,10 +700,107 @@
         {{-- =========================================================
              03 — REVIEW AND SAVE
         ========================================================== --}}
-        <section class="request-card" aria-labelledby="review-heading">
+
+        {{-- =========================================================
+             03 — SUPPORTING DOCUMENTS
+        ========================================================== --}}
+        <section
+            class="request-card"
+            aria-labelledby="supporting-documents-heading"
+        >
             <div class="request-card-header">
                 <div class="request-card-title">
-                    <div class="section-number" aria-hidden="true">03</div>
+                    <div
+                        class="section-number"
+                        aria-hidden="true"
+                    >
+                        03
+                    </div>
+
+                    <div>
+                        <h2 id="supporting-documents-heading">
+                            Supporting documents
+                        </h2>
+
+                        <p class="meta">
+                            These files may be added while the request is still
+                            a draft. Required documents are checked again before
+                            the request can be submitted to SPMU.
+                        </p>
+                    </div>
+                </div>
+            </div>
+
+            <div class="request-card-body">
+                <div class="details-two-col">
+
+                    <label>
+                        Approved / Signed Borrowing Request Letter
+                        <input
+                            type="file"
+                            name="approved_request_letter"
+                            accept=".pdf,.png,.jpg,.jpeg,.webp"
+                        >
+
+                        <small class="meta">
+                            Upload the scanned fully signed request letter when
+                            it is available. PDF, PNG, JPG, JPEG, or WebP;
+                            maximum 10 MB.
+                        </small>
+
+                        @if($requestLetter)
+                            <small class="meta">
+                                ✓ A current Borrowing Request Letter is already
+                                attached. Uploading a new file will create a new
+                                document version.
+                            </small>
+                        @endif
+
+                        @error('approved_request_letter')
+                            <small class="field-error">
+                                {{ $message }}
+                            </small>
+                        @enderror
+                    </label>
+
+                    <label
+                        id="ptc-upload-group"
+                        @if(!$representsStudentActivity) hidden @endif
+                    >
+                        Permission to Conduct Letter
+                        <input
+                            type="file"
+                            name="permission_to_conduct_letter"
+                            accept=".pdf,.png,.jpg,.jpeg,.webp"
+                        >
+
+                        <small class="meta">
+                            Required for student activity / organization
+                            requests before submission to SPMU.
+                        </small>
+
+                        @if($ptc)
+                            <small class="meta">
+                                ✓ A current Permission to Conduct Letter is
+                                already attached. Uploading a new file will
+                                create a new document version.
+                            </small>
+                        @endif
+
+                        @error('permission_to_conduct_letter')
+                            <small class="field-error">
+                                {{ $message }}
+                            </small>
+                        @enderror
+                    </label>
+
+                </div>
+            </div>
+        </section>
+<section class="request-card" aria-labelledby="review-heading">
+            <div class="request-card-header">
+                <div class="request-card-title">
+                    <div class="section-number" aria-hidden="true">04</div>
                     <div>
                         <h2 id="review-heading">Review and save your draft</h2>
                         <p class="meta">Saving creates the request draft and official preview. It does not submit the request for approval.</p>
@@ -1022,10 +1150,10 @@ document.addEventListener('DOMContentLoaded', () => {
     */
 
     const neededFrom =
-        document.getElementById('needed_from');
+        document.getElementById('schedule_date');
 
     const returnDueAt =
-        document.getElementById('return_due_at');
+        document.getElementById('return_date');
 
     const availabilityMessage =
         document.getElementById('availability-message');
@@ -1158,4 +1286,30 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 </script>
 
+
+<script>
+document.addEventListener('DOMContentLoaded', () => {
+    const studentActivityToggle =
+        document.getElementById('represents_students');
+
+    const ptcUploadGroup =
+        document.getElementById('ptc-upload-group');
+
+    function syncPtcUploadVisibility() {
+        if (!studentActivityToggle || !ptcUploadGroup) {
+            return;
+        }
+
+        ptcUploadGroup.hidden =
+            !studentActivityToggle.checked;
+    }
+
+    studentActivityToggle?.addEventListener(
+        'change',
+        syncPtcUploadVisibility
+    );
+
+    syncPtcUploadVisibility();
+});
+</script>
 @endsection

@@ -35,45 +35,109 @@ class RevisionControlsTest extends TestCase
         $this->assertClassification(AccessClassification::BorrowerOnly, true, ['BORROWER']);
         $this->assertClassification(AccessClassification::SpmuHead, false, ['SPMU']);
         $this->assertClassification(AccessClassification::SpmuOfficer, false, ['SPMU']);
-        $this->assertClassification(AccessClassification::GsuHead, false, ['GSU']);
-        $this->assertClassification(AccessClassification::VpafHead, false, ['VPAF']);
+        $this->assertClassification(AccessClassification::LaundryWorker, false, ['LAUNDRY']);
         $this->assertClassification(AccessClassification::IctuMaintainer, false, ['ICTU']);
+
+        $this->assertFalse(AccessClassification::GsuHead->isPortalEnabled());
+        $this->assertFalse(AccessClassification::VpafHead->isPortalEnabled());
+        $this->assertSame([], AccessClassification::GsuHead->workspaces());
+        $this->assertSame([], AccessClassification::VpafHead->workspaces());
     }
 
-    public function test_formal_temporary_delegate_uses_own_account_and_is_attributed_to_the_decision(): void
+    public function test_formal_spmu_temporary_delegate_uses_own_account_and_is_attributed_to_the_decision(): void
     {
-        $delegate = User::where('email', 'borrower@spmu.test')->firstOrFail();
-        $gsuHead = User::where('access_classification', AccessClassification::GsuHead->value)->firstOrFail();
-        $borrower = User::factory()->create([
-            'access_classification' => AccessClassification::BorrowerOnly,
-            'organizational_unit_id' => $gsuHead->organizational_unit_id,
+        $spmuHead = User::where(
+            'access_classification',
+            AccessClassification::SpmuHead->value
+        )->firstOrFail();
+
+        $delegate = User::where(
+            'access_classification',
+            AccessClassification::SpmuOfficer->value
+        )->firstOrFail();
+
+        $borrower = User::where(
+            'access_classification',
+            AccessClassification::BorrowerOnly->value
+        )->firstOrFail();
+
+        $ictu = User::where(
+            'access_classification',
+            AccessClassification::IctuMaintainer->value
+        )->firstOrFail();
+
+        /*
+         * A formal delegation is SPMU-only in the active workflow.
+         * The acting officer still uses their own account.
+         */
+        $delegate->update([
+            'organizational_unit_id' => $spmuHead->organizational_unit_id,
         ]);
-        $ictu = User::where('access_classification', AccessClassification::IctuMaintainer->value)->firstOrFail();
-        $delegate->update(['organizational_unit_id' => $gsuHead->organizational_unit_id]);
+
         $delegation = TemporaryDelegation::create([
-            'office_role' => 'GSU', 'absent_head_user_id' => $gsuHead->id, 'delegate_user_id' => $delegate->id,
-            'recorded_by_user_id' => $ictu->id, 'authority_reference' => 'MEMO-TEST-001', 'reason' => 'Head is unavailable.',
-            'effective_from' => now()->subHour(), 'effective_to' => now()->addDay(), 'status' => 'ACTIVE',
+            'office_role' => 'SPMU',
+            'absent_head_user_id' => $spmuHead->id,
+            'delegate_user_id' => $delegate->id,
+            'recorded_by_user_id' => $ictu->id,
+            'authority_reference' => 'MEMO-TEST-001',
+            'reason' => 'SPMU Head is unavailable.',
+            'effective_from' => now()->subHour(),
+            'effective_to' => now()->addDay(),
+            'status' => 'ACTIVE',
         ]);
+
         $request = BorrowingRequest::create([
-            'request_no' => 'BR-DELEGATE-001', 'borrower_user_id' => $borrower->id,
-            'accountable_unit_id' => $borrower->organizational_unit_id, 'current_version_no' => 1, 'status' => RequestStatus::UnderGsu,
+            'request_no' => 'BR-DELEGATE-001',
+            'borrower_user_id' => $borrower->id,
+            'accountable_unit_id' => $borrower->organizational_unit_id,
+            'current_version_no' => 1,
+            'status' => RequestStatus::UnderSpmu,
         ]);
+
         $version = $request->versions()->create([
-            'version_no' => 1, 'purpose_event' => 'Delegation test', 'location' => 'Campus',
-            'needed_from' => now()->addDay(), 'return_due_at' => now()->addDays(2), 'created_by_user_id' => $borrower->id,
+            'version_no' => 1,
+            'purpose_event' => 'SPMU delegation test',
+            'location' => 'Campus',
+            'needed_from' => now()->addDay(),
+            'return_due_at' => now()->addDays(2),
+            'created_by_user_id' => $borrower->id,
         ]);
-        ApprovalStep::create(['request_version_id' => $version->id, 'stage_code' => ApprovalStage::Gsu, 'sequence_no' => 2, 'received_at' => now(), 'decision' => 'RECEIVED']);
 
-        $this->withSession(['active_workspace' => 'GSU'])->actingAs($delegate)
-            ->post(route('approvals.decide', $request), ['decision' => 'APPROVED'])
-            ->assertSessionHasNoErrors()
-            ->assertSessionHas('active_workspace', 'BORROWER');
+        ApprovalStep::create([
+            'request_version_id' => $version->id,
+            'stage_code' => ApprovalStage::Spmu,
+            'sequence_no' => 1,
+            'received_at' => now(),
+            'decision' => 'RECEIVED',
+        ]);
 
-        $this->assertSame(RequestStatus::UnderVpaf, $request->fresh()->status);
+        /*
+         * Use REJECTED here so this focused test verifies delegation
+         * attribution without depending on supporting-document and
+         * inventory-reservation fixtures.
+         */
+        $this->withSession(['active_workspace' => 'SPMU'])
+            ->actingAs($delegate)
+            ->post(
+                route('approvals.decide', $request),
+                [
+                    'decision' => 'REJECTED',
+                    'remarks' => 'Delegated SPMU verification test.',
+                ]
+            )
+            ->assertSessionHasNoErrors();
+
+        $this->assertSame(
+            RequestStatus::Rejected,
+            $request->fresh()->status
+        );
+
         $this->assertDatabaseHas('approval_steps', [
-            'request_version_id' => $version->id, 'approver_user_id' => $delegate->id,
-            'temporary_delegation_id' => $delegation->id, 'decision' => 'APPROVED',
+            'request_version_id' => $version->id,
+            'stage_code' => ApprovalStage::Spmu->value,
+            'approver_user_id' => $delegate->id,
+            'temporary_delegation_id' => $delegation->id,
+            'decision' => 'REJECTED',
         ]);
     }
 
@@ -87,9 +151,9 @@ class RevisionControlsTest extends TestCase
         $this->assertDatabaseHas('generated_documents', ['subject_id' => $custody->id, 'document_type' => 'BORROWER_SLIP', 'status' => 'FINAL']);
         $this->assertDatabaseHas('generated_documents', ['subject_id' => $custody->id, 'document_type' => 'GATE_PASS', 'status' => 'FINAL']);
         $this->assertDatabaseHas('generated_documents', ['subject_id' => $custody->id, 'document_type' => 'LAUNDRY_FORM', 'status' => 'FINAL']);
-        $this->withSession(['active_workspace' => 'BORROWER'])->actingAs($borrower)->get(route('custody.show', $custody))->assertOk()->assertSee('Item-level monitoring');
+        $this->withSession(['active_workspace' => 'BORROWER'])->actingAs($borrower)->get(route('custody.show', $custody))->assertOk()->assertSee('Reserved / issued property');
         $spmuOfficer = User::where('access_classification', AccessClassification::SpmuOfficer->value)->firstOrFail();
-        $this->withSession(['active_workspace' => 'SPMU'])->actingAs($spmuOfficer)->get(route('custody.show', $custody))->assertOk()->assertSee('Record final issued quantities');
+        $this->withSession(['active_workspace' => 'SPMU'])->actingAs($spmuOfficer)->get(route('custody.show', $custody))->assertOk()->assertSee('Prepare exact approved quantity');
 
         [$ordinaryRequest, $ordinaryLetter] = $this->approvedRequestWithItems(false, false, 'BR-ORDINARY-001');
         app(RequestWorkflowService::class)->recordApprovedLetterDownload($ordinaryRequest, $ordinaryLetter, $ordinaryRequest->borrower, '127.0.0.1', 'test');

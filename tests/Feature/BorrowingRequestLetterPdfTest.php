@@ -2,243 +2,618 @@
 
 namespace Tests\Feature;
 
-use App\Enums\ApprovalStage;
+use App\Enums\AccessClassification;
 use App\Enums\RequestStatus;
+use App\Models\Allocation;
 use App\Models\BorrowingRequest;
+use App\Models\CustodyLine;
+use App\Models\CustodyTransaction;
 use App\Models\InventoryItem;
 use App\Models\RequestItem;
 use App\Models\User;
-use App\Models\UserSignature;
 use App\Services\DocumentService;
 use App\Services\ProtectedFileService;
-use App\Services\SignatureService;
-use Carbon\CarbonImmutable;
 use Database\Seeders\DatabaseSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Routing\Router;
+use Illuminate\Validation\ValidationException;
 use Tests\TestCase;
 
 class BorrowingRequestLetterPdfTest extends TestCase
 {
     use RefreshDatabase;
 
-    public function test_ccs_orsem_sized_request_renders_as_a_formal_single_page_pdf(): void
+    protected function setUp(): void
     {
-        $this->seed(DatabaseSeeder::class);
-        $borrower = User::query()->where('email', 'borrower@spmu.test')->firstOrFail();
+        parent::setUp();
+
+        $this->seed(
+            DatabaseSeeder::class
+        );
+    }
+
+    public function test_borrower_can_regenerate_the_printable_draft_request_letter_for_physical_signatures(): void
+    {
+        $this->assertTrue(
+            app(Router::class)->has(
+                'requests.recover-draft-document'
+            )
+        );
+
+        $borrower = User::query()
+            ->where(
+                'access_classification',
+                AccessClassification::BorrowerOnly->value
+            )
+            ->firstOrFail();
+
         $request = BorrowingRequest::query()->create([
-            'request_no' => 'BR-CCS-ORSEM-TEST',
+            'request_no' => 'BR-DRAFT-'.uniqid(),
             'borrower_user_id' => $borrower->id,
             'accountable_unit_id' => $borrower->organizational_unit_id,
             'current_version_no' => 1,
             'status' => RequestStatus::Draft,
         ]);
+
+        $scheduleDate = now()->addDay()->startOfDay();
+        $returnDate = now()->addDays(2)->startOfDay();
+
         $version = $request->versions()->create([
             'version_no' => 1,
-            'purpose_event' => 'CCS Orsem',
-            'event_details' => 'Orientation seminar for new College of Computer Studies students, including introduction to college policies, faculty, facilities, student services, and academic programs.',
-            'location' => 'CSPC Gymnasium',
-            'needed_from' => CarbonImmutable::parse('2026-08-17 08:00:00', 'Asia/Manila'),
-            'return_due_at' => CarbonImmutable::parse('2026-08-18 07:00:00', 'Asia/Manila'),
-            'off_campus' => false,
-            'created_by_user_id' => $borrower->id,
+            'purpose_event' => 'Printable request letter test',
+            'event_details' => 'Physical GSU/VPAF signatory workflow.',
+            'location' => 'CSPC Campus',
+            'schedule_date' => $scheduleDate->toDateString(),
+            'return_date' => $returnDate->toDateString(),
+            'needed_from' => $scheduleDate,
+            'return_due_at' => $returnDate,
         ]);
 
-        $requestedItems = [
-            'LED Wall' => 1,
-            'Microphones' => 2,
-            'Rectangular Table' => 4,
-            'Rectangular Table Cloth - Yellow' => 4,
-            'Monoblock Chairs' => 100,
-            'Barricade' => 2,
-        ];
-        foreach ($requestedItems as $description => $quantity) {
-            $inventoryItem = InventoryItem::query()->where('unique_description', $description)->firstOrFail();
-            RequestItem::query()->create([
-                'request_version_id' => $version->id,
-                'inventory_item_id' => $inventoryItem->id,
-                'description_snapshot' => $inventoryItem->unique_description,
-                'unit_snapshot' => $inventoryItem->unit->unit_name,
-                'requested_quantity' => $quantity,
-                'use_location' => 'ON_CAMPUS',
-            ]);
-        }
+        $this->withSession(['active_workspace' => 'BORROWER'])
+            ->actingAs($borrower)
+            ->post(
+                route('requests.recover-draft-document', $request)
+            )
+            ->assertRedirect()
+            ->assertSessionHasNoErrors();
 
-        $signature = app(SignatureService::class)->snapshot($borrower, 'BORROWING_REQUEST_CERTIFICATION', 'BORROWER');
-        $version->update([
-            'borrower_signature_snapshot_id' => $signature->id,
-            'accuracy_certified' => true,
-            'signed_at' => CarbonImmutable::parse('2026-08-14 12:50:00', 'Asia/Manila'),
+        $this->assertDatabaseHas('generated_documents', [
+            'request_version_id' => $version->id,
+            'document_type' => 'REQUEST_LETTER',
+            'status' => 'DRAFT',
         ]);
 
-        $request = $request->fresh();
-        $service = app(DocumentService::class);
-        $html = $service->requestLetterHtml(
-            $request,
-            false,
-            CarbonImmutable::parse('2026-08-14 12:50:00', 'Asia/Manila'),
+        $html = app(DocumentService::class)->requestLetterHtml(
+            $request->fresh(),
+            false
         );
 
-        $this->assertSame(1, substr_count($html, '<h1 class="document-title">Borrowing Request Letter</h1>'));
-        $this->assertStringContainsString('Borrower / Event Information', $html);
-        $this->assertStringContainsString('<table class="items-table"', $html);
-        $this->assertStringContainsString('<thead>', $html);
-        $this->assertStringContainsString('Borrower Certification', $html);
-        $this->assertStringContainsString('17 August 2026, 8:00 a.m.', $html);
-        $this->assertStringContainsString('Accountable Borrower', $html);
-        $this->assertStringContainsString('Borrower', $html);
-        $this->assertStringContainsString('/s/ Borrower Demo', $html);
-        $this->assertStringNotContainsString('Borrower only', $html);
-        $this->assertStringNotContainsString('BORROWER_ONLY', $html);
-        $this->assertStringNotContainsString('<table class="reference"', $html);
-        $this->assertStringNotContainsString('LED Wall |', $html);
-
-        $document = $service->requestLetter($request, false);
-        $bytes = app(ProtectedFileService::class)->bytes($document->file);
-
-        $this->assertStringStartsWith('%PDF-', $bytes);
-        $this->assertStringContainsString('/Count 1', $bytes, 'The six-item CCS ORSEM reference should fit on one A4 page.');
-        $this->assertSame('REQUEST_LETTER', $document->document_type);
-        $this->assertSame('DRAFT', $document->status);
+        $this->assertStringContainsString('Authorized GSU Signatory', $html);
+        $this->assertStringContainsString('Authorized VPAF Signatory / Noted By', $html);
+        $this->assertStringContainsString('physical signatories only', $html);
+        $this->assertStringContainsString('does not apply an electronic signature', strtolower($html));
     }
 
-    public function test_long_item_table_paginates_instead_of_being_forced_onto_one_page(): void
+    public function test_current_workflow_generates_a_physical_borrower_slip_after_spmu_preparation(): void
     {
-        $this->seed(DatabaseSeeder::class);
-        $borrower = User::query()->where('email', 'borrower@spmu.test')->firstOrFail();
-        $request = BorrowingRequest::query()->create([
-            'request_no' => 'BR-LONG-PDF-TEST',
-            'borrower_user_id' => $borrower->id,
-            'accountable_unit_id' => $borrower->organizational_unit_id,
-            'current_version_no' => 1,
-            'status' => RequestStatus::Draft,
-        ]);
-        $version = $request->versions()->create([
-            'version_no' => 1,
-            'purpose_event' => 'Institution-wide equipment requirement',
-            'event_details' => str_repeat('This longer activity description verifies natural wrapping and multi-page document flow. ', 3),
-            'location' => 'CSPC Campus',
-            'needed_from' => now()->addWeek(),
-            'return_due_at' => now()->addWeek()->addDay(),
-            'off_campus' => false,
-            'created_by_user_id' => $borrower->id,
-        ]);
+        $custody =
+            $this->preparedCustody(
+                offCampus:
+                    false,
+                laundry:
+                    false
+            );
 
-        foreach (InventoryItem::query()->with('unit')->get() as $inventoryItem) {
-            RequestItem::query()->create([
-                'request_version_id' => $version->id,
-                'inventory_item_id' => $inventoryItem->id,
-                'description_snapshot' => $inventoryItem->unique_description,
-                'unit_snapshot' => $inventoryItem->unit->unit_name,
-                'requested_quantity' => 1,
-                'use_location' => 'ON_CAMPUS',
-            ]);
-        }
+        $document =
+            app(
+                DocumentService::class
+            )->borrowerSlip(
+                $custody
+            );
 
-        $document = app(DocumentService::class)->requestLetter($request->fresh(), false);
-        $bytes = app(ProtectedFileService::class)->bytes($document->file);
+        $this->assertSame(
+            'BORROWER_SLIP',
+            $document
+                ->document_type
+        );
 
-        $this->assertMatchesRegularExpression(
-            '/\/Count\s+(?:[2-9]|[1-9][0-9]+)\b/',
-            $bytes,
-            'A request containing the complete inventory list should paginate naturally.',
+        $this->assertSame(
+            'FINAL',
+            $document
+                ->status
+        );
+
+        $bytes =
+            app(
+                ProtectedFileService::class
+            )->bytes(
+                $document
+                    ->file
+            );
+
+        $this->assertStringStartsWith(
+            '%PDF-',
+            $bytes
         );
     }
 
-    public function test_authorized_raster_signature_snapshot_is_embedded_in_the_letter(): void
+    public function test_current_gate_pass_is_generated_only_for_off_campus_property(): void
     {
-        $this->seed(DatabaseSeeder::class);
-        $borrower = User::query()->where('email', 'borrower@spmu.test')->firstOrFail();
-        $borrower->currentSignature()->update(['status' => 'REPLACED', 'effective_to' => now()]);
+        $offCampus =
+            $this->preparedCustody(
+                offCampus:
+                    true,
+                laundry:
+                    false
+            );
 
-        $file = app(ProtectedFileService::class)->storeBytes(
-            (string) file_get_contents(resource_path('images/cspc-logo-print.jpg')),
-            'test-signatures',
-            'signature.jpg',
-            'image/jpeg',
-            'jpg',
-            'PROFILE_SIGNATURE',
-            $borrower->id,
+        $document =
+            app(
+                DocumentService::class
+            )->conditionalForm(
+                $offCampus,
+                'GATE_PASS'
+            );
+
+        $this->assertSame(
+            'GATE_PASS',
+            $document
+                ->document_type
         );
-        UserSignature::query()->create([
-            'user_id' => $borrower->id,
-            'stored_file_id' => $file->id,
-            'effective_from' => now(),
-            'status' => 'ACTIVE',
-        ]);
 
-        $request = BorrowingRequest::query()->create([
-            'request_no' => 'BR-RASTER-SIGNATURE-TEST',
-            'borrower_user_id' => $borrower->id,
-            'accountable_unit_id' => $borrower->organizational_unit_id,
-            'current_version_no' => 1,
-            'status' => RequestStatus::Draft,
-        ]);
-        $version = $request->versions()->create([
-            'version_no' => 1,
-            'purpose_event' => 'Signature rendering test',
-            'location' => 'CSPC Campus',
-            'needed_from' => now()->addWeek(),
-            'return_due_at' => now()->addWeek()->addDay(),
-            'off_campus' => false,
-            'created_by_user_id' => $borrower->id,
-        ]);
-        $snapshot = app(SignatureService::class)->snapshot($borrower, 'BORROWING_REQUEST_CERTIFICATION', 'BORROWER');
-        $version->update(['borrower_signature_snapshot_id' => $snapshot->id, 'signed_at' => now()]);
+        $this->assertSame(
+            'FINAL',
+            $document
+                ->status
+        );
 
-        $html = app(DocumentService::class)->requestLetterHtml($request->fresh());
+        $bytes =
+            app(
+                ProtectedFileService::class
+            )->bytes(
+                $document
+                    ->file
+            );
 
-        $this->assertStringContainsString('data:image/jpeg;base64,', $html);
-        $this->assertStringNotContainsString('/s/ Borrower Demo', $html);
+        $this->assertStringStartsWith(
+            '%PDF-',
+            $bytes
+        );
+
+        $onCampus =
+            $this->preparedCustody(
+                offCampus:
+                    false,
+                laundry:
+                    false
+            );
+
+        try {
+            app(
+                DocumentService::class
+            )->conditionalForm(
+                $onCampus,
+                'GATE_PASS'
+            );
+
+            $this->fail(
+                'An on-campus-only custody must not generate a Gate Pass.'
+            );
+        } catch (
+            ValidationException $exception
+        ) {
+            $this->assertArrayHasKey(
+                'document',
+                $exception
+                    ->errors()
+            );
+        }
     }
 
-    public function test_final_letter_uses_formal_signature_blocks_for_all_approvals(): void
+    public function test_current_laundry_form_is_generated_only_for_laundry_required_property(): void
     {
-        $this->seed(DatabaseSeeder::class);
-        $borrower = User::query()->where('email', 'borrower@spmu.test')->firstOrFail();
-        $request = BorrowingRequest::query()->create([
-            'request_no' => 'BR-FINAL-APPROVALS-TEST',
-            'borrower_user_id' => $borrower->id,
-            'accountable_unit_id' => $borrower->organizational_unit_id,
-            'current_version_no' => 1,
-            'status' => RequestStatus::FinalApprovedAwaitingDownload,
-        ]);
-        $version = $request->versions()->create([
-            'version_no' => 1,
-            'purpose_event' => 'Final approval presentation test',
-            'location' => 'CSPC Campus',
-            'needed_from' => CarbonImmutable::parse('2026-08-20 08:00:00', 'Asia/Manila'),
-            'return_due_at' => CarbonImmutable::parse('2026-08-21 17:00:00', 'Asia/Manila'),
-            'off_campus' => false,
-            'created_by_user_id' => $borrower->id,
-        ]);
+        $laundryCustody =
+            $this->preparedCustody(
+                offCampus:
+                    false,
+                laundry:
+                    true
+            );
 
-        $approvers = [
-            [ApprovalStage::Spmu, 'spmu-head@spmu.test'],
-            [ApprovalStage::Gsu, 'gsu@spmu.test'],
-            [ApprovalStage::Vpaf, 'vpaf@spmu.test'],
-        ];
-        foreach ($approvers as $index => [$stage, $email]) {
-            $approver = User::query()->where('email', $email)->firstOrFail();
-            $snapshot = app(SignatureService::class)->snapshot($approver, 'APPROVAL_'.$stage->value, $stage->value);
-            $version->approvalSteps()->create([
-                'approver_user_id' => $approver->id,
-                'stage_code' => $stage,
-                'sequence_no' => $index + 1,
-                'received_at' => CarbonImmutable::parse('2026-08-14 13:00:00', 'Asia/Manila')->addMinutes($index * 10),
-                'decision' => 'APPROVED',
-                'decided_at' => CarbonImmutable::parse('2026-08-14 13:05:00', 'Asia/Manila')->addMinutes($index * 10),
-                'signature_snapshot_id' => $snapshot->id,
-            ]);
+        $document =
+            app(
+                DocumentService::class
+            )->conditionalForm(
+                $laundryCustody,
+                'LAUNDRY_FORM'
+            );
+
+        $this->assertSame(
+            'LAUNDRY_FORM',
+            $document
+                ->document_type
+        );
+
+        $this->assertSame(
+            'FINAL',
+            $document
+                ->status
+        );
+
+        $bytes =
+            app(
+                ProtectedFileService::class
+            )->bytes(
+                $document
+                    ->file
+            );
+
+        $this->assertStringStartsWith(
+            '%PDF-',
+            $bytes
+        );
+
+        $regularCustody =
+            $this->preparedCustody(
+                offCampus:
+                    false,
+                laundry:
+                    false
+            );
+
+        try {
+            app(
+                DocumentService::class
+            )->conditionalForm(
+                $regularCustody,
+                'LAUNDRY_FORM'
+            );
+
+            $this->fail(
+                'A non-laundry custody must not generate a Laundry Form.'
+            );
+        } catch (
+            ValidationException $exception
+        ) {
+            $this->assertArrayHasKey(
+                'document',
+                $exception
+                    ->errors()
+            );
+        }
+    }
+
+    public function test_regenerating_current_physical_form_supersedes_the_previous_generated_copy(): void
+    {
+        $custody =
+            $this->preparedCustody(
+                offCampus:
+                    false,
+                laundry:
+                    false
+            );
+
+        $service =
+            app(
+                DocumentService::class
+            );
+
+        $first =
+            $service->borrowerSlip(
+                $custody
+            );
+
+        $second =
+            $service->borrowerSlip(
+                $custody->fresh()
+            );
+
+        $this->assertSame(
+            'SUPERSEDED',
+            $first
+                ->fresh()
+                ->status
+        );
+
+        $this->assertNotNull(
+            $first
+                ->fresh()
+                ->invalidated_at
+        );
+
+        $this->assertSame(
+            'FINAL',
+            $second
+                ->fresh()
+                ->status
+        );
+
+        $this->assertSame(
+            1,
+            $custody
+                ->request
+                ->currentVersion
+                ->documents()
+                ->where(
+                    'subject_type',
+                    CustodyTransaction::class
+                )
+                ->where(
+                    'subject_id',
+                    $custody->id
+                )
+                ->where(
+                    'document_type',
+                    'BORROWER_SLIP'
+                )
+                ->where(
+                    'status',
+                    'FINAL'
+                )
+                ->count()
+        );
+    }
+
+    private function preparedCustody(
+        bool $offCampus,
+        bool $laundry
+    ): CustodyTransaction {
+        $borrower =
+            User::query()
+                ->where(
+                    'access_classification',
+                    AccessClassification::BorrowerOnly->value
+                )
+                ->firstOrFail();
+
+        $itemQuery =
+            InventoryItem::query()
+                ->with(
+                    'unit'
+                )
+                ->where(
+                    'active',
+                    true
+                )
+                ->where(
+                    'borrowable',
+                    true
+                );
+
+        if ($laundry) {
+            $itemQuery
+                ->where(
+                    'laundry_required',
+                    true
+                );
+        } elseif ($offCampus) {
+            $itemQuery
+                ->where(
+                    'off_campus_allowed',
+                    true
+                );
+        } else {
+            $itemQuery
+                ->where(
+                    'laundry_required',
+                    false
+                );
         }
 
-        $html = app(DocumentService::class)->requestLetterHtml($request->fresh(), true);
+        $item =
+            $itemQuery
+                ->firstOrFail();
 
-        $this->assertSame(3, substr_count($html, 'class="approval-signature-block"'));
-        $this->assertStringContainsString('Supply and Property Management Unit', $html);
-        $this->assertStringContainsString('General Services Unit', $html);
-        $this->assertStringContainsString('Vice President for Administration and Finance', $html);
-        $this->assertStringContainsString('/s/ SPMU Head Demo', $html);
-        $this->assertStringContainsString('Approved on 14 August 2026, 1:05 p.m.', $html);
-        $this->assertStringNotContainsString('Digital Approvals', $html);
+        $scheduleDate =
+            now()
+                ->addDay()
+                ->startOfDay();
+
+        $returnDate =
+            now()
+                ->addDays(
+                    2
+                )
+                ->startOfDay();
+
+        $request =
+            BorrowingRequest::query()
+                ->create([
+                    'request_no' =>
+                        'BR-DOC-'
+                        .uniqid(),
+
+                    'borrower_user_id' =>
+                        $borrower->id,
+
+                    'accountable_unit_id' =>
+                        $borrower
+                            ->organizational_unit_id,
+
+                    'current_version_no' =>
+                        1,
+
+                    'status' =>
+                        RequestStatus::ApprovedReadyForRelease,
+                ]);
+
+        $version =
+            $request
+                ->versions()
+                ->create([
+                    'version_no' =>
+                        1,
+
+                    'purpose_event' =>
+                        'Current operational document test',
+
+                    'event_details' =>
+                        'Physical pickup and conditional-form workflow.',
+
+                    'location' =>
+                        $offCampus
+                            ? 'Off-campus venue'
+                            : 'CSPC Campus',
+
+                    'schedule_date' =>
+                        $scheduleDate
+                            ->toDateString(),
+
+                    'return_date' =>
+                        $returnDate
+                            ->toDateString(),
+
+                    'needed_from' =>
+                        $scheduleDate,
+
+                    'return_due_at' =>
+                        $returnDate
+                            ->copy()
+                            ->endOfDay(),
+
+                    'off_campus' =>
+                        $offCampus,
+
+                    'created_by_user_id' =>
+                        $borrower->id,
+                ]);
+
+        $requestItem =
+            RequestItem::query()
+                ->create([
+                    'request_version_id' =>
+                        $version->id,
+
+                    'inventory_item_id' =>
+                        $item->id,
+
+                    'description_snapshot' =>
+                        $item
+                            ->unique_description,
+
+                    'unit_snapshot' =>
+                        $item
+                            ->unit
+                            ->unit_name,
+
+                    'requested_quantity' =>
+                        1,
+
+                    'approved_quantity' =>
+                        1,
+
+                    'use_location' =>
+                        $offCampus
+                            ? 'OFF_CAMPUS'
+                            : 'ON_CAMPUS',
+                ]);
+
+        $allocation =
+            Allocation::query()
+                ->create([
+                    'request_item_id' =>
+                        $requestItem->id,
+
+                    'period_start' =>
+                        $version
+                            ->needed_from,
+
+                    'period_end' =>
+                        $version
+                            ->return_due_at,
+
+                    'allocated_quantity' =>
+                        1,
+
+                    'released_quantity' =>
+                        0,
+
+                    'restored_quantity' =>
+                        0,
+
+                    'status' =>
+                        'ACTIVE',
+
+                    'allocated_at' =>
+                        now(),
+                ]);
+
+        $custody =
+            CustodyTransaction::query()
+                ->create([
+                    'custody_no' =>
+                        'CUS-DOC-'
+                        .uniqid(),
+
+                    'request_id' =>
+                        $request->id,
+
+                    'request_version_id' =>
+                        $version->id,
+
+                    'borrower_user_id' =>
+                        $borrower->id,
+
+                    'status' =>
+                        'PREPARING_RELEASE',
+
+                    'scheduled_release_at' =>
+                        $scheduleDate
+                            ->copy()
+                            ->setTime(
+                                9,
+                                0
+                            ),
+
+                    'pickup_expires_at' =>
+                        $scheduleDate
+                            ->copy()
+                            ->setTime(
+                                12,
+                                0
+                            ),
+
+                    'prepared_at' =>
+                        now(),
+
+                    'due_at' =>
+                        $returnDate
+                            ->copy()
+                            ->endOfDay(),
+                ]);
+
+        CustodyLine::query()
+            ->create([
+                'custody_transaction_id' =>
+                    $custody->id,
+
+                'request_item_id' =>
+                    $requestItem->id,
+
+                'allocation_id' =>
+                    $allocation->id,
+
+                'approved_quantity' =>
+                    1,
+
+                'quantity_to_receive' =>
+                    1,
+
+                'actual_released_quantity' =>
+                    0,
+
+                'returned_quantity' =>
+                    0,
+
+                'item_status' =>
+                    'CONFIRMED',
+            ]);
+
+        return $custody
+            ->fresh([
+                'borrower',
+                'request.currentVersion',
+                'lines.requestItem.inventoryItem.unit',
+            ]);
     }
 }

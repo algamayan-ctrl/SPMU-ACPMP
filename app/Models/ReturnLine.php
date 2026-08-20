@@ -8,16 +8,32 @@ use Illuminate\Database\Eloquent\Relations\HasOne;
 
 class ReturnLine extends Model
 {
-    protected $fillable = ['return_transaction_id', 'custody_line_id', 'quantity_received', 'condition_code', 'disposition_state', 'remarks'];
+    protected $fillable = [
+        'return_transaction_id',
+        'custody_line_id',
+        'quantity_received',
+        'condition_code',
+        'disposition_state',
+        'supporting_evidence_file_id',
+        'police_blotter_reference',
+        'remarks',
+    ];
 
     protected function casts(): array
     {
-        return ['quantity_received' => 'decimal:3'];
+        return [
+            'quantity_received' => 'decimal:3',
+        ];
     }
 
     public function custodyLine(): BelongsTo
     {
         return $this->belongsTo(CustodyLine::class);
+    }
+
+    public function supportingEvidence(): BelongsTo
+    {
+        return $this->belongsTo(StoredFile::class, 'supporting_evidence_file_id');
     }
 
     public function laundryRecord(): HasOne

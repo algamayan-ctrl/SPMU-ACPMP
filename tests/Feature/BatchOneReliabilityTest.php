@@ -9,16 +9,17 @@ use App\Models\Allocation;
 use App\Models\BorrowingRequest;
 use App\Models\CustodyLine;
 use App\Models\CustodyTransaction;
-use App\Models\EvidenceSubmission;
 use App\Models\GatePass;
 use App\Models\GeneratedDocument;
 use App\Models\InventoryItem;
 use App\Models\RequestItem;
+use App\Models\RequestSupportingDocument;
 use App\Models\RequestVersion;
 use App\Models\StoredFile;
 use App\Models\User;
 use App\Services\CustodyService;
 use App\Services\DocumentService;
+use App\Services\ProtectedFileService;
 use Database\Seeders\DatabaseSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\UploadedFile;
@@ -37,71 +38,294 @@ class BatchOneReliabilityTest extends TestCase
         $this->seed(DatabaseSeeder::class);
     }
 
-    public function test_draft_request_survives_document_generation_failure(): void
+    public function test_draft_request_survives_supporting_document_storage_failure(): void
     {
-        $borrower = $this->borrower();
-        $item = InventoryItem::query()->where('active', true)->where('borrowable', true)->firstOrFail();
-        $this->mock(DocumentService::class, function (MockInterface $mock): void {
-            $mock->shouldReceive('requestLetter')->once()->andThrow(new RuntimeException('Simulated document storage failure.'));
-        });
+        $borrower =
+            $this->borrower();
 
-        $this->withoutExceptionHandling();
-        try {
-            $this->withSession(['active_workspace' => 'BORROWER'])->actingAs($borrower)->post(route('requests.store'), [
-                'purpose_event' => 'Document recovery test',
-                'location' => 'Campus',
-                'needed_from' => now()->addDay()->format('Y-m-d H:i:s'),
-                'return_due_at' => now()->addDays(2)->format('Y-m-d H:i:s'),
-                'event_details' => 'The database record must survive a failed preview write.',
-                'item_ids' => [$item->id],
-                'quantities' => [$item->id => 1],
-                'locations' => [$item->id => 'ON_CAMPUS'],
-            ]);
-            $this->fail('The simulated document failure was not raised.');
-        } catch (RuntimeException $exception) {
-            $this->assertSame('Simulated document storage failure.', $exception->getMessage());
-        } finally {
-            $this->withExceptionHandling();
-        }
+        $item =
+            InventoryItem::query()
+                ->where(
+                    'active',
+                    true
+                )
+                ->where(
+                    'borrowable',
+                    true
+                )
+                ->firstOrFail();
 
-        $request = BorrowingRequest::query()->where('borrower_user_id', $borrower->id)->firstOrFail();
-        $this->assertSame(RequestStatus::Draft, $request->status);
-        $this->assertDatabaseHas('request_versions', ['request_id' => $request->id, 'version_no' => 1]);
-        $this->assertDatabaseHas('request_items', ['request_version_id' => $request->currentVersion->id, 'inventory_item_id' => $item->id]);
-        $this->assertDatabaseMissing('generated_documents', ['request_version_id' => $request->currentVersion->id, 'document_type' => 'REQUEST_LETTER']);
+        /*
+         * The current create flow saves the Draft first, then stores
+         * optional supporting documents. A storage failure must not erase
+         * the already-created Draft/request items.
+         */
+        $this->mock(
+            ProtectedFileService::class,
+            function (
+                MockInterface $mock
+            ): void {
+                $mock
+                    ->shouldReceive(
+                        'storeUpload'
+                    )
+                    ->once()
+                    ->andThrow(
+                        new RuntimeException(
+                            'Simulated supporting-document storage failure.'
+                        )
+                    );
+            }
+        );
+
+        $this
+            ->withSession([
+                'active_workspace' =>
+                    'BORROWER',
+            ])
+            ->actingAs(
+                $borrower
+            )
+            ->post(
+                route(
+                    'requests.store'
+                ),
+                [
+                    'purpose_event' =>
+                        'Document recovery test',
+
+                    'location' =>
+                        'Campus',
+
+                    'schedule_date' =>
+                        now()
+                            ->addDay()
+                            ->toDateString(),
+
+                    'return_date' =>
+                        now()
+                            ->addDays(2)
+                            ->toDateString(),
+
+                    'event_details' =>
+                        'The database Draft must survive a failed supporting-document write.',
+
+                    'approved_request_letter' =>
+                        UploadedFile::fake()
+                            ->create(
+                                'approved-request-letter.pdf',
+                                10,
+                                'application/pdf'
+                            ),
+
+                    'item_ids' =>
+                        [
+                            $item->id,
+                        ],
+
+                    'quantities' =>
+                        [
+                            $item->id =>
+                                1,
+                        ],
+
+                    'locations' =>
+                        [
+                            $item->id =>
+                                'ON_CAMPUS',
+                        ],
+                ]
+            )
+            ->assertStatus(
+                500
+            );
+
+        $request =
+            BorrowingRequest::query()
+                ->where(
+                    'borrower_user_id',
+                    $borrower->id
+                )
+                ->firstOrFail();
+
+        $this->assertSame(
+            RequestStatus::Draft,
+            $request->status
+        );
+
+        $this->assertDatabaseHas(
+            'request_versions',
+            [
+                'request_id' =>
+                    $request->id,
+
+                'version_no' =>
+                    1,
+            ]
+        );
+
+        $this->assertDatabaseHas(
+            'request_items',
+            [
+                'request_version_id' =>
+                    $request
+                        ->currentVersion
+                        ->id,
+
+                'inventory_item_id' =>
+                    $item->id,
+            ]
+        );
+
+        $this->assertDatabaseMissing(
+            'request_supporting_documents',
+            [
+                'request_version_id' =>
+                    $request
+                        ->currentVersion
+                        ->id,
+
+                'document_type' =>
+                    'BORROWING_REQUEST_LETTER',
+            ]
+        );
     }
 
-    public function test_missing_preview_can_be_regenerated_once_without_duplication(): void
+    public function test_draft_can_attach_the_current_scanned_approved_request_letter_later(): void
     {
-        [$request] = $this->draftRequest('BR-RECOVER-001');
-        $borrower = $request->borrower;
+        [
+            $request,
+            $version,
+        ] =
+            $this->draftRequest(
+                'BR-SUPPORTING-DOC-001'
+            );
 
-        $this->withSession(['active_workspace' => 'BORROWER'])->actingAs($borrower)
-            ->get(route('requests.show', $request))
-            ->assertOk()
-            ->assertSee('Regenerate missing preview');
+        $borrower =
+            $request->borrower;
 
-        $this->withSession(['active_workspace' => 'BORROWER'])->actingAs($borrower)
-            ->post(route('requests.recover-draft-document', $request))
-            ->assertSessionHasNoErrors()
-            ->assertSessionHas('status', 'The missing draft request-letter preview was regenerated successfully.');
+        $requestItem =
+            $version
+                ->items()
+                ->firstOrFail();
 
-        $this->assertSame(1, GeneratedDocument::query()
-            ->where('request_version_id', $request->currentVersion->id)
-            ->where('document_type', 'REQUEST_LETTER')
-            ->where('status', 'DRAFT')
-            ->count());
+        $this
+            ->withSession([
+                'active_workspace' =>
+                    'BORROWER',
+            ])
+            ->actingAs(
+                $borrower
+            )
+            ->put(
+                route(
+                    'requests.update',
+                    $request
+                ),
+                [
+                    'purpose_event' =>
+                        $version
+                            ->purpose_event,
 
-        $this->withSession(['active_workspace' => 'BORROWER'])->actingAs($borrower)
-            ->post(route('requests.recover-draft-document', $request))
-            ->assertSessionHasNoErrors()
-            ->assertSessionHas('status', 'The draft request-letter preview is already available. No duplicate was created.');
+                    'location' =>
+                        $version
+                            ->location,
 
-        $this->assertSame(1, GeneratedDocument::query()
-            ->where('request_version_id', $request->currentVersion->id)
-            ->where('document_type', 'REQUEST_LETTER')
-            ->where('status', 'DRAFT')
-            ->count());
+                    'schedule_date' =>
+                        now()
+                            ->addDay()
+                            ->toDateString(),
+
+                    'return_date' =>
+                        now()
+                            ->addDays(2)
+                            ->toDateString(),
+
+                    'event_details' =>
+                        $version
+                            ->event_details,
+
+                    'represents_student_activity' =>
+                        0,
+
+                    'approved_request_letter' =>
+                        UploadedFile::fake()
+                            ->create(
+                                'signed-approved-request-letter.pdf',
+                                10,
+                                'application/pdf'
+                            ),
+
+                    'item_ids' =>
+                        [
+                            $requestItem
+                                ->inventory_item_id,
+                        ],
+
+                    'quantities' =>
+                        [
+                            $requestItem
+                                ->inventory_item_id =>
+                                1,
+                        ],
+
+                    'locations' =>
+                        [
+                            $requestItem
+                                ->inventory_item_id =>
+                                'ON_CAMPUS',
+                        ],
+                ]
+            )
+            ->assertSessionHasNoErrors();
+
+        $request->refresh();
+
+        $this->assertDatabaseHas(
+            'request_supporting_documents',
+            [
+                'request_id' =>
+                    $request->id,
+
+                'request_version_id' =>
+                    $request
+                        ->currentVersion
+                        ->id,
+
+                'document_type' =>
+                    RequestSupportingDocument::TYPE_REQUEST_LETTER,
+
+                'version_no' =>
+                    1,
+
+                'verification_status' =>
+                    RequestSupportingDocument::STATUS_PENDING,
+
+                'is_current' =>
+                    true,
+            ]
+        );
+
+        /*
+         * The current physical-signature workflow keeps a printable Draft
+         * Borrowing Request Letter. The borrower prints it, obtains the
+         * required wet signatures, then uploads the accomplished scan.
+         */
+        $this->assertDatabaseHas(
+            'generated_documents',
+            [
+                'request_version_id' =>
+                    $request
+                        ->currentVersion
+                        ->id,
+
+                'document_type' =>
+                    'REQUEST_LETTER',
+
+                'status' =>
+                    'DRAFT',
+            ]
+        );
     }
 
     public function test_earlier_incident_keeps_custody_open_after_final_fine_return(): void
@@ -143,100 +367,542 @@ class BatchOneReliabilityTest extends TestCase
         $this->assertNull($custody->fresh()->closed_at);
     }
 
-    public function test_replayed_conditional_signatures_do_not_create_duplicates(): void
+    public function test_replayed_gate_pass_verification_does_not_replace_verified_physical_evidence(): void
     {
-        [$custody, $gatePass] = $this->gatePassCustody(false);
-        $officer = $this->spmuOfficer();
-        $head = User::query()->where('access_classification', AccessClassification::SpmuHead->value)->firstOrFail();
+        [
+            $custody,
+            $gatePass,
+        ] =
+            $this->gatePassCustody(
+                true
+            );
 
-        $this->withSession(['active_workspace' => 'SPMU'])->actingAs($officer)
-            ->post(route('gate-passes.sign-verified', $gatePass))->assertSessionHasNoErrors();
-        $afterOfficerDocuments = $this->gatePassDocumentCount($custody);
-        $afterOfficerSnapshots = DB::table('signature_snapshots')->count();
+        $officer =
+            $this->spmuOfficer();
 
-        $this->withSession(['active_workspace' => 'SPMU'])->actingAs($officer)
-            ->post(route('gate-passes.sign-verified', $gatePass))->assertSessionHasNoErrors();
-        $this->assertSame($afterOfficerDocuments, $this->gatePassDocumentCount($custody));
-        $this->assertSame($afterOfficerSnapshots, DB::table('signature_snapshots')->count());
+        $first =
+            $this
+                ->withSession([
+                    'active_workspace' =>
+                        'SPMU',
+                ])
+                ->actingAs(
+                    $officer
+                )
+                ->post(
+                    route(
+                        'gate-passes.verify',
+                        $gatePass
+                    ),
+                    [
+                        'accomplished_form' =>
+                            UploadedFile::fake()
+                                ->create(
+                                    'gate-pass-accomplished.pdf',
+                                    10,
+                                    'application/pdf'
+                                ),
 
-        $this->withSession(['active_workspace' => 'SPMU'])->actingAs($head)
-            ->post(route('gate-passes.sign-approved', $gatePass))->assertSessionHasNoErrors();
-        $afterHeadDocuments = $this->gatePassDocumentCount($custody);
-        $afterHeadSnapshots = DB::table('signature_snapshots')->count();
+                        'guard_name' =>
+                            'Guard One',
 
-        $this->withSession(['active_workspace' => 'SPMU'])->actingAs($head)
-            ->post(route('gate-passes.sign-approved', $gatePass))->assertSessionHasNoErrors();
-        $this->assertSame($afterHeadDocuments, $this->gatePassDocumentCount($custody));
-        $this->assertSame($afterHeadSnapshots, DB::table('signature_snapshots')->count());
+                        'guard_signed_at' =>
+                            now()
+                                ->format(
+                                    'Y-m-d H:i:s'
+                                ),
+
+                        'remarks' =>
+                            'Original accomplished Gate Pass returned to SPMU.',
+                    ]
+                );
+
+        $first->assertSessionHasNoErrors();
+
+        $gatePass->refresh();
+
+        $firstFileId =
+            $gatePass
+                ->accomplished_file_id;
+
+        $firstVerifiedAt =
+            $gatePass
+                ->verified_at;
+
+        $auditCount =
+            DB::table(
+                'audit_events'
+            )
+                ->where(
+                    'action_code',
+                    'GATE_PASS_ACCOMPLISHED_VERIFIED'
+                )
+                ->count();
+
+        $this->travel(
+            1
+        )->minute();
+
+        $this
+            ->withSession([
+                'active_workspace' =>
+                    'SPMU',
+            ])
+            ->actingAs(
+                $officer
+            )
+            ->post(
+                route(
+                    'gate-passes.verify',
+                    $gatePass
+                ),
+                [
+                    'accomplished_form' =>
+                        UploadedFile::fake()
+                            ->create(
+                                'duplicate-gate-pass.pdf',
+                                10,
+                                'application/pdf'
+                            ),
+
+                    'guard_name' =>
+                        'Different Guard',
+
+                    'guard_signed_at' =>
+                        now()
+                            ->format(
+                                'Y-m-d H:i:s'
+                            ),
+
+                    'remarks' =>
+                        'Replay must not overwrite the verified record.',
+                ]
+            )
+            ->assertSessionHasNoErrors()
+            ->assertSessionHas(
+                'status',
+                'This Gate Pass is already verified. No duplicate scan or verification was recorded.'
+            );
+
+        $gatePass->refresh();
+
+        $this->assertSame(
+            $firstFileId,
+            $gatePass
+                ->accomplished_file_id
+        );
+
+        $this->assertSame(
+            'Guard One',
+            $gatePass
+                ->guard_name
+        );
+
+        $this->assertTrue(
+            $firstVerifiedAt
+                ->equalTo(
+                    $gatePass
+                        ->verified_at
+                )
+        );
+
+        $this->assertSame(
+            $auditCount,
+            DB::table(
+                'audit_events'
+            )
+                ->where(
+                    'action_code',
+                    'GATE_PASS_ACCOMPLISHED_VERIFIED'
+                )
+                ->count()
+        );
     }
 
-    public function test_repeated_evidence_verification_is_idempotent(): void
+    public function test_spmu_records_guard_details_and_scan_for_accomplished_gate_pass(): void
     {
-        [$custody, $gatePass, $document] = $this->gatePassCustody(true);
-        $borrower = $custody->borrower;
-        $officer = $this->spmuOfficer();
+        [
+            $custody,
+            $gatePass,
+        ] =
+            $this->gatePassCustody(
+                true
+            );
 
-        $this->withSession(['active_workspace' => 'BORROWER'])->actingAs($borrower)->post(route('evidence.store', $document), [
-            'evidence' => UploadedFile::fake()->create('signed-gate-pass.pdf', 10, 'application/pdf'),
-        ])->assertSessionHasNoErrors();
-        $evidence = EvidenceSubmission::query()->firstOrFail();
+        $officer =
+            $this->spmuOfficer();
 
-        $this->withSession(['active_workspace' => 'SPMU'])->actingAs($officer)->post(route('evidence.verify', $evidence), [
-            'decision' => 'VERIFIED',
-        ])->assertSessionHasNoErrors();
-        $auditCount = DB::table('audit_events')->where('action_code', 'PAPER_EVIDENCE_VERIFIED')->count();
-        $verifiedAt = $evidence->fresh()->verified_at;
+        $signedAt =
+            now()
+                ->subMinutes(
+                    5
+                );
 
-        $this->travel(1)->minute();
-        $this->withSession(['active_workspace' => 'SPMU'])->actingAs($officer)->post(route('evidence.verify', $evidence), [
-            'decision' => 'VERIFIED',
-        ])->assertSessionHasNoErrors();
+        $this
+            ->withSession([
+                'active_workspace' =>
+                    'SPMU',
+            ])
+            ->actingAs(
+                $officer
+            )
+            ->post(
+                route(
+                    'gate-passes.verify',
+                    $gatePass
+                ),
+                [
+                    'accomplished_form' =>
+                        UploadedFile::fake()
+                            ->create(
+                                'signed-gate-pass.pdf',
+                                10,
+                                'application/pdf'
+                            ),
 
-        $this->assertSame($auditCount, DB::table('audit_events')->where('action_code', 'PAPER_EVIDENCE_VERIFIED')->count());
-        $this->assertTrue($verifiedAt->equalTo($evidence->fresh()->verified_at));
+                    'guard_name' =>
+                        'Campus Guard',
+
+                    'guard_signed_at' =>
+                        $signedAt
+                            ->format(
+                                'Y-m-d H:i:s'
+                            ),
+
+                    'remarks' =>
+                        'Accomplished physical Gate Pass returned and scanned.',
+                ]
+            )
+            ->assertSessionHasNoErrors();
+
+        $gatePass->refresh();
+
+        $this->assertSame(
+            'VERIFIED',
+            $gatePass->status
+        );
+
+        $this->assertSame(
+            'Campus Guard',
+            $gatePass
+                ->guard_name
+        );
+
+        $this->assertNotNull(
+            $gatePass
+                ->accomplished_file_id
+        );
+
+        $this->assertSame(
+            $officer->id,
+            $gatePass
+                ->uploaded_by_user_id
+        );
+
+        $this->assertSame(
+            $officer->id,
+            $gatePass
+                ->verified_by_user_id
+        );
+
+        $this->assertDatabaseHas(
+            'custody_lines',
+            [
+                'custody_transaction_id' =>
+                    $custody->id,
+
+                'compliance_status' =>
+                    'GATE_PASS_COMPLETED',
+            ]
+        );
+
+        $this->assertDatabaseHas(
+            'audit_events',
+            [
+                'action_code' =>
+                    'GATE_PASS_ACCOMPLISHED_VERIFIED',
+            ]
+        );
     }
 
-    public function test_superseded_document_cannot_be_downloaded_as_current(): void
+    public function test_replacing_scanned_request_letter_preserves_history_and_marks_only_the_latest_as_current(): void
     {
-        [$request] = $this->draftRequest('BR-SUPERSEDED-001');
-        $document = app(DocumentService::class)->requestLetter($request, false);
-        $document->update(['status' => 'SUPERSEDED', 'invalidated_at' => now(), 'invalidation_reason' => 'Replaced for test.']);
+        [
+            $request,
+            $version,
+        ] =
+            $this->draftRequest(
+                'BR-SUPPORTING-DOC-HISTORY-001'
+            );
 
-        $this->withSession(['active_workspace' => 'BORROWER'])->actingAs($request->borrower)
-            ->get(route('documents.download', $document))
-            ->assertStatus(410);
+        $borrower =
+            $request->borrower;
+
+        $requestItem =
+            $version
+                ->items()
+                ->firstOrFail();
+
+        $basePayload = [
+            'purpose_event' =>
+                $version
+                    ->purpose_event,
+
+            'location' =>
+                $version
+                    ->location,
+
+            'schedule_date' =>
+                now()
+                    ->addDay()
+                    ->toDateString(),
+
+            'return_date' =>
+                now()
+                    ->addDays(2)
+                    ->toDateString(),
+
+            'event_details' =>
+                $version
+                    ->event_details,
+
+            'represents_student_activity' =>
+                0,
+
+            'item_ids' =>
+                [
+                    $requestItem
+                        ->inventory_item_id,
+                ],
+
+            'quantities' =>
+                [
+                    $requestItem
+                        ->inventory_item_id =>
+                        1,
+                ],
+
+            'locations' =>
+                [
+                    $requestItem
+                        ->inventory_item_id =>
+                        'ON_CAMPUS',
+                ],
+        ];
+
+        $this
+            ->withSession([
+                'active_workspace' =>
+                    'BORROWER',
+            ])
+            ->actingAs(
+                $borrower
+            )
+            ->put(
+                route(
+                    'requests.update',
+                    $request
+                ),
+                [
+                    ...$basePayload,
+
+                    'approved_request_letter' =>
+                        UploadedFile::fake()
+                            ->create(
+                                'signed-approved-v1.pdf',
+                                10,
+                                'application/pdf'
+                            ),
+                ]
+            )
+            ->assertSessionHasNoErrors();
+
+        $request->refresh();
+
+        $currentVersionId =
+            $request
+                ->currentVersion
+                ->id;
+
+        $first =
+            RequestSupportingDocument::query()
+                ->where(
+                    'request_version_id',
+                    $currentVersionId
+                )
+                ->where(
+                    'document_type',
+                    RequestSupportingDocument::TYPE_REQUEST_LETTER
+                )
+                ->firstOrFail();
+
+        $this->assertTrue(
+            (bool)
+                $first
+                    ->is_current
+        );
+
+        $this
+            ->withSession([
+                'active_workspace' =>
+                    'BORROWER',
+            ])
+            ->actingAs(
+                $borrower
+            )
+            ->put(
+                route(
+                    'requests.update',
+                    $request
+                ),
+                [
+                    ...$basePayload,
+
+                    'approved_request_letter' =>
+                        UploadedFile::fake()
+                            ->create(
+                                'signed-approved-v2.pdf',
+                                10,
+                                'application/pdf'
+                            ),
+                ]
+            )
+            ->assertSessionHasNoErrors();
+
+        $documents =
+            RequestSupportingDocument::query()
+                ->where(
+                    'request_version_id',
+                    $currentVersionId
+                )
+                ->where(
+                    'document_type',
+                    RequestSupportingDocument::TYPE_REQUEST_LETTER
+                )
+                ->orderBy(
+                    'version_no'
+                )
+                ->get();
+
+        $this->assertCount(
+            2,
+            $documents
+        );
+
+        $this->assertSame(
+            1,
+            $documents[0]
+                ->version_no
+        );
+
+        $this->assertFalse(
+            (bool)
+                $documents[0]
+                    ->is_current
+        );
+
+        $this->assertNotNull(
+            $documents[0]
+                ->superseded_at
+        );
+
+        $this->assertSame(
+            2,
+            $documents[1]
+                ->version_no
+        );
+
+        $this->assertTrue(
+            (bool)
+                $documents[1]
+                    ->is_current
+        );
+
+        $this->assertNull(
+            $documents[1]
+                ->superseded_at
+        );
+
+        $this->assertNotSame(
+            $documents[0]
+                ->stored_file_id,
+
+            $documents[1]
+                ->stored_file_id
+        );
     }
 
-    public function test_evidence_cannot_be_uploaded_to_superseded_or_wrong_custody_forms(): void
+    public function test_gate_pass_cannot_be_verified_before_physical_issuance(): void
     {
-        [$custody, , $document] = $this->gatePassCustody(true);
-        $borrower = $custody->borrower;
-        $document->update(['status' => 'SUPERSEDED', 'invalidated_at' => now(), 'invalidation_reason' => 'Replaced for test.']);
+        [
+            $custody,
+            $gatePass,
+        ] =
+            $this->gatePassCustody(
+                false
+            );
 
-        $this->withSession(['active_workspace' => 'BORROWER'])->actingAs($borrower)->post(route('evidence.store', $document), [
-            'evidence' => UploadedFile::fake()->create('obsolete.pdf', 10, 'application/pdf'),
-        ])->assertSessionHasErrors('evidence');
+        $officer =
+            $this->spmuOfficer();
 
-        [$otherRequest, $otherVersion] = $this->draftRequest('BR-WRONG-CUSTODY-001');
-        $wrong = GeneratedDocument::query()->create([
-            'stored_file_id' => $document->stored_file_id,
-            'request_version_id' => $otherVersion->id,
-            'subject_type' => CustodyTransaction::class,
-            'subject_id' => $custody->id,
-            'document_no' => 'WRONG-CUSTODY-001',
-            'document_type' => 'GATE_PASS',
-            'version_no' => 99,
-            'sha256' => $document->sha256,
-            'status' => 'FINAL',
-            'generated_at' => now(),
-        ]);
+        $this
+            ->withSession([
+                'active_workspace' =>
+                    'SPMU',
+            ])
+            ->actingAs(
+                $officer
+            )
+            ->post(
+                route(
+                    'gate-passes.verify',
+                    $gatePass
+                ),
+                [
+                    'accomplished_form' =>
+                        UploadedFile::fake()
+                            ->create(
+                                'premature-gate-pass.pdf',
+                                10,
+                                'application/pdf'
+                            ),
 
-        $this->withSession(['active_workspace' => 'BORROWER'])->actingAs($borrower)->post(route('evidence.store', $wrong), [
-            'evidence' => UploadedFile::fake()->create('wrong.pdf', 10, 'application/pdf'),
-        ])->assertSessionHasErrors('evidence');
+                    'guard_name' =>
+                        'Campus Guard',
 
-        $this->assertSame(0, EvidenceSubmission::query()->count());
-        $this->assertSame(RequestStatus::Draft, $otherRequest->fresh()->status);
+                    'guard_signed_at' =>
+                        now()
+                            ->format(
+                                'Y-m-d H:i:s'
+                            ),
+                ]
+            )
+            ->assertSessionHasErrors(
+                'gate_pass'
+            );
+
+        $gatePass->refresh();
+
+        $this->assertSame(
+            'PENDING',
+            $gatePass->status
+        );
+
+        $this->assertNull(
+            $gatePass
+                ->accomplished_file_id
+        );
+
+        $this->assertNull(
+            $gatePass
+                ->verified_at
+        );
+
+        $this->assertNull(
+            $custody
+                ->fresh()
+                ->released_at
+        );
     }
 
     public function test_authenticated_user_is_logged_out_after_account_deactivation(): void

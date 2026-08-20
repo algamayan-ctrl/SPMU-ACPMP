@@ -17,12 +17,9 @@
 
     $queueLink = match($workspace) {
         'BORROWER' => route('requests.index'),
-
-        'SPMU',
-        'GSU',
-        'VPAF' => route('approvals.index'),
-
-        default => route('administration.users.index'),
+        'SPMU' => route('approvals.index'),
+        'ICTU' => route('administration.users.index'),
+        default => route('dashboard'),
     };
 
 
@@ -33,7 +30,6 @@
     */
 
     $statLinks = match($workspace) {
-
         'BORROWER' => [
             'Open requests' => route('requests.index'),
             'Active borrowings' => route('custody.index'),
@@ -44,15 +40,6 @@
             'SPMU review queue' => route('approvals.index'),
             'Release/return cases' => route('custody.index'),
             'Active inventory' => route('inventory.index'),
-        ],
-
-        'GSU' => [
-            'GSU review queue' => route('approvals.index'),
-            'Active inventory' => route('inventory.index'),
-        ],
-
-        'VPAF' => [
-            'VPAF review queue' => route('approvals.index'),
         ],
 
         'ICTU' => [
@@ -100,31 +87,6 @@
         'Active inventory' => [
             'inventory',
             'success',
-        ],
-
-        'GSU review queue' => [
-            'approval',
-            'info',
-        ],
-
-        'Forwarded approvals' => [
-            'approval',
-            'success',
-        ],
-
-        'VPAF review queue' => [
-            'approval',
-            'info',
-        ],
-
-        'Final approvals' => [
-            'approval',
-            'success',
-        ],
-
-        'Active custody' => [
-            'custody',
-            'warning',
         ],
 
         'Active accounts' => [
@@ -180,14 +142,11 @@
                         'SPMU' =>
                             'Review borrowing requests, prepare approved items for release, process returns, and monitor inventory operations.',
 
-                        'GSU' =>
-                            'Review the requests waiting for GSU approval.',
-
-                        'VPAF' =>
-                            'Review final approvals and monitor allocated property.',
+                        'ICTU' =>
+                            'Manage user access, temporary approvers, settings, and system records.',
 
                         default =>
-                            'Manage user access, temporary approvers, settings, and system records.',
+                            'Open the functions assigned to your account.',
                     }
                 }}
             </p>
@@ -352,7 +311,13 @@
             <div>
 
                 <p class="eyebrow">
-                    {{ $workspace === 'SPMU' ? 'SPMU operations' : 'Your task list' }}
+                    {{
+                        match($workspace) {
+                            'SPMU' => 'SPMU operations',
+                            'ICTU' => 'ICTU administration',
+                            default => 'Your task list',
+                        }
+                    }}
                 </p>
 
                 <h2>
@@ -542,7 +507,7 @@
                                     'Closed',
 
                                 default =>
-                                    $record->status->label(),
+                                    $record->status?->label() ?? 'Status unavailable',
                             },
                         };
 
@@ -630,12 +595,12 @@
                             default => match($record->status) {
 
                                 App\Enums\RequestStatus::Draft => [
-                                    'Action required — complete the required documents, then submit your request to SPMU.',
+                                    'Action required â€” complete the required documents, then submit your request to SPMU.',
                                     'Continue request',
                                 ],
 
                                 App\Enums\RequestStatus::ReturnedForRevision => [
-                                    'Action required — review the SPMU remarks, update the request, and resubmit when ready.',
+                                    'Action required â€” review the SPMU remarks, update the request, and resubmit when ready.',
                                     'Revise request',
                                 ],
 
@@ -879,7 +844,7 @@
 
                             <small>
                                 {{ $record->email }}
-                                ·
+                                Â·
                                 {{ $record->organizationalUnit?->unit_name }}
                             </small>
 
@@ -933,7 +898,7 @@
                                 App\Enums\RequestStatus::FinalApprovedAwaitingDownload => 'Approved',
                                 App\Enums\RequestStatus::UnderGsu,
                                 App\Enums\RequestStatus::UnderVpaf => 'Legacy Review',
-                                default => $record->status->label(),
+                                default => $record->status?->label() ?? 'Status unavailable',
                             },
                         };
 
@@ -1078,7 +1043,7 @@
                                 <small>
                                     {{ $record->borrower?->full_name }}
                                     @if($record->borrower?->organizationalUnit?->unit_name)
-                                        · {{ $record->borrower->organizationalUnit->unit_name }}
+                                        Â· {{ $record->borrower->organizationalUnit->unit_name }}
                                     @endif
                                 </small>
 
@@ -1106,68 +1071,6 @@
 
                     </article>
 
-
-                {{-- ========================================= --}}
-                {{-- LEGACY GSU / VPAF TASK                    --}}
-                {{-- ========================================= --}}
-
-                @else
-
-                    @php
-                        $recordCustody = $record->custody;
-                        $recordCustodyStatus = $recordCustody?->status;
-
-                        $recordDisplayStatus = match($recordCustodyStatus) {
-                            'ACTIVE' => 'ACTIVE',
-                            'PARTIALLY_RETURNED' => 'PARTIALLY_RETURNED',
-                            'OVERDUE' => 'OVERDUE',
-                            'EARLY_RETURN' => 'EARLY_RETURN',
-                            'INCIDENT_OPEN' => 'INCIDENT_OPEN',
-                            'OBLIGATION_OPEN' => 'OBLIGATION_OPEN',
-                            'CLOSED' => 'CLOSED',
-                            default => $record->status,
-                        };
-
-                        $recordDisplayLabel = match($recordCustodyStatus) {
-                            'ACTIVE' => 'Released',
-                            'PARTIALLY_RETURNED' => 'Partially Returned',
-                            'OVERDUE' => 'Overdue',
-                            'EARLY_RETURN' => 'Early Return',
-                            'INCIDENT_OPEN' => 'Incident Open',
-                            'OBLIGATION_OPEN' => 'Obligation Open',
-                            'CLOSED' => 'Returned',
-                            default => $record->status->label(),
-                        };
-                    @endphp
-
-                    <article>
-                        <div>
-
-                            <a
-                                class="ui-pressable dashboard-record-link"
-                                href="{{ route('requests.show', $record) }}"
-                            >
-                                <strong>
-                                    {{ $record->request_no }}
-                                </strong>
-                            </a>
-
-                            <small>
-                                {{
-                                    $record->borrower?->full_name
-                                    .' · '
-                                    .$record->currentVersion?->purpose_event
-                                }}
-                            </small>
-
-                        </div>
-
-                        <x-status-badge
-                            :status="$recordDisplayStatus"
-                            :label="$recordDisplayLabel"
-                        />
-
-                    </article>
 
                 @endif
 
@@ -1536,73 +1439,9 @@
 
 
             {{-- ============================================= --}}
-            {{-- GSU / VPAF QUICK ACTIONS                      --}}
-            {{-- ============================================= --}}
-
-            @elseif(
-                in_array(
-                    $workspace,
-                    [
-                        'GSU',
-                        'VPAF'
-                    ],
-                    true
-                )
-            )
-
-                <a
-                    class="
-                        interactive
-                        ui-pressable
-                    "
-                    href="{{ route('approvals.index') }}"
-                >
-
-                    <span>
-
-                        <strong>
-                            Open approval queue
-                        </strong>
-
-                        <small>
-                            Review requests waiting for your decision.
-                        </small>
-
-                    </span>
-
-                    <x-icon name="chevron-right" />
-
-                </a>
-
-
-                <a
-                    class="
-                        interactive
-                        ui-pressable
-                    "
-                    href="{{ route('calendar.index') }}"
-                >
-
-                    <span>
-
-                        <strong>
-                            View borrowing calendar
-                        </strong>
-
-                        <small>
-                            See confirmed schedules and deadlines.
-                        </small>
-
-                    </span>
-
-                    <x-icon name="chevron-right" />
-
-                </a>
-
-
-            {{-- ============================================= --}}
             {{-- ICTU QUICK ACTIONS                            --}}
             {{-- ============================================= --}}
+
 
             @else
 
@@ -1790,7 +1629,7 @@
                             </small>
 
                             <span>
-                                Return deadline ·
+                                Return deadline Â·
                                 {{ $custody->due_at->format('g:i A') }}
                             </span>
 

@@ -1,99 +1,81 @@
 # Run SPMU-ACPMP in Visual Studio Code
 
-These steps use the manuscript-approved tools. Laragon, XAMPP, and WAMP are not required.
+The project is designed to run with Docker and MariaDB. XAMPP, WAMP and Laragon are not required.
 
-## A. Run the system now using the included local development runtime
+## 1. Open the project and branch
 
-1. Open **Visual Studio Code**.
-2. Select **File > Open Folder**.
-3. Open:
+In Visual Studio Code open the `SPMU-ACPMP` folder. In PowerShell:
 
-   `C:\Users\Admin\Documents\Codex\2026-08-11\ai\outputs\spmu-acpmp`
+```powershell
+git branch --show-current
+git status
+```
 
-4. Select **Terminal > Run Task**.
-5. Select **SPMU: Prepare local database**.
-6. Wait until the migration and seeding task finishes.
-7. Select **Terminal > Run Task** again.
-8. Select **SPMU: Start local Laravel server**.
-9. Keep that VS Code terminal running.
-10. Select **Terminal > Run Task** again.
-11. Select **SPMU: Open local site**.
-12. Microsoft Edge, Google Chrome, or Mozilla Firefox will open:
+The finalized client workflow is on:
 
-    `http://127.0.0.1:8001`
+```text
+client-workflow-update
+```
 
-13. Sign in with one of the local demonstration accounts.
+## 2. Start Docker
 
-| Portal | Email | Password |
-|---|---|---|
-| Borrower | `borrower@spmu.test` | `SPMU-Demo-2026!` |
-| SPMU Action Officer | `spmu@spmu.test` | `SPMU-Demo-2026!` |
-| SPMU Head | `spmu-head@spmu.test` | `SPMU-Demo-2026!` |
-| GSU Head | `gsu@spmu.test` | `SPMU-Demo-2026!` |
-| VPAF Head | `vpaf@spmu.test` | `SPMU-Demo-2026!` |
-| ICTU Maintainer | `ictu@spmu.test` | `SPMU-Demo-2026!` |
+Start Docker Desktop, then from the project root:
 
-14. To stop the local server, open its VS Code terminal and press **Ctrl+C**.
+```powershell
+docker compose up -d --build
+docker compose exec -T app php artisan migrate --force
+docker compose exec -T app php artisan db:seed --force
+docker compose exec -T app php artisan optimize:clear
+```
 
-The included development runtime uses SQLite for quick local testing. The application code remains PHP/Laravel and the interface uses HTML, CSS, JavaScript, and locally served Bootstrap.
+Open:
 
-## B. Run the complete manuscript-aligned Docker and MariaDB environment
+```text
+http://127.0.0.1:8080
+```
 
-1. Install **Docker Desktop for Windows** if it is not installed.
-2. Open Docker Desktop.
-3. Wait until Docker Desktop reports that its engine is running.
-4. Open the project folder in Visual Studio Code.
-5. Select **Terminal > Run Task**.
-6. Select **SPMU: Prepare Docker environment**.
-7. This creates `.env.docker` with local generated application and database secrets.
-8. Select **Terminal > Run Task** again.
-9. Select **SPMU: Start Docker + MariaDB**.
-10. The first build can take several minutes because Docker downloads PHP, Apache, Composer, and MariaDB images.
-11. Wait until the `database`, `app`, and `scheduler` containers are running.
-12. Open Microsoft Edge, Google Chrome, or Mozilla Firefox.
-13. Visit:
+## 3. Local demo accounts
 
-    `http://127.0.0.1:8080`
+All demo accounts use `SPMU-Demo-2026!`.
 
-14. Use the same local demonstration accounts shown above.
-15. To stop the Docker environment, select **Terminal > Run Task > SPMU: Stop Docker**.
+| Portal | Email |
+|---|---|
+| Borrower | `borrower@spmu.test` |
+| SPMU Action Officer | `spmu@spmu.test` |
+| SPMU Admin / Head | `spmu-head@spmu.test` |
+| Laundry Worker | `laundry@spmu.test` |
+| ICTU Maintainer | `ictu@spmu.test` |
 
-Do not delete Docker volumes unless you intentionally want to erase the Docker/MariaDB database.
+GSU and VPAF intentionally have no system login/portal. Their required signatures are handwritten/wet signatures on the physical Borrowing Request Letter before the borrower uploads the accomplished scan to SPMU.
 
-## C. Run verification in Visual Studio Code
+## 4. Run tests
 
-1. Select **Terminal > Run Task**.
-2. Select **SPMU: Run automated tests**.
-3. Confirm that all tests pass.
-4. Optionally open **Extensions** and install the project recommendations:
-   - PHP Intelephense
-   - Laravel Blade support
-   - Docker extension
+```powershell
+docker compose -p spmu-acpmp-test -f .\docker-compose.test.yml build --no-cache test
 
-## D. Use Git for team collaboration
+docker compose -p spmu-acpmp-test -f .\docker-compose.test.yml run --rm test php vendor/bin/phpunit --testdox
+```
 
-1. Open the **Source Control** panel in Visual Studio Code.
-2. Initialize or clone the team Git repository if your team has not done so.
-3. Review changed files before committing.
-4. Never commit `.env`, `.env.docker`, passwords, uploaded evidence, the SQLite database, or files under `storage`.
-5. Commit only reviewed source code, migrations, documentation, and configuration examples.
+## 5. Team Git workflow
 
-## E. Important project folders in Visual Studio Code
+Review the working tree, then push the finalized branch:
 
-1. Open `app/Http/Controllers` for page and action controllers.
-2. Open `app/Services` for borrowing, inventory, documents, signatures, custody, and notification rules.
-3. Open `resources/views` for the role-specific screens.
-4. Open `public/css/app.css` for the original SPMU visual design layered on Bootstrap.
-5. Open `routes/web.php` for protected web routes.
-6. Open `database/migrations` for the MySQL/MariaDB-compatible database structure.
-7. Open `tests/Feature` for workflow and access-control verification.
+```powershell
+git status
+git log -1 --oneline
+git push -u origin client-workflow-update
+```
 
-## F. Applications from the manuscript
+Never commit `.env`, `.env.docker`, credentials, uploaded evidence, generated runtime files, or database volumes.
 
-1. **Visual Studio Code** - primary development environment.
-2. **Git** - version control and team collaboration.
-3. **Docker Desktop** - consistent application deployment.
-4. **MariaDB** - Docker database for the complete environment.
-5. **PHP/Laravel** - backend application framework.
-6. **HTML, CSS, JavaScript, and Bootstrap** - responsive user interface.
-7. **Microsoft Edge, Google Chrome, or Mozilla Firefox** - system operation and compatibility testing.
+## 6. Important source folders
+
+- `app/Http/Controllers` — role pages and actions.
+- `app/Services` — request, inventory, custody, document, notification and audit rules.
+- `resources/views` — role-specific UI.
+- `routes/web.php` — protected routes.
+- `database/migrations` — MariaDB/MySQL-compatible database changes.
+- `database/seeders` — reference data and optional demo identities.
+- `tests/Feature` — access/workflow regression tests.
+- `docker-compose.yml` — application/database/scheduler runtime.
+- `docker-compose.test.yml` — isolated PHPUnit runtime.
