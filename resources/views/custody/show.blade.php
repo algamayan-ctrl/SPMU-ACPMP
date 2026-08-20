@@ -315,7 +315,99 @@
     </section>
 @endif
 
-@if($isSpmuOfficer && $custody->status === 'PREPARING_RELEASE' && $custody->prepared_at)
+@if($isBorrower && $custody->status === 'PREPARING_RELEASE' && $custody->prepared_at && !$custody->acknowledged_at)
+    <section class="content-area">
+        <form method="post" action="{{ route('custody.acknowledge', $custody) }}" class="card form-grid">
+            @csrf
+
+            <div class="card-header">
+                <div>
+                    <p class="eyebrow">Borrower's Slip review</p>
+                    <h2>Review & Confirm Prepared Quantities</h2>
+                </div>
+
+                <x-status-badge
+                    status="PENDING"
+                    label="Confirmation required"
+                />
+            </div>
+
+            <p>
+                Review the final quantities prepared by SPMU before physical release.
+                Confirm only after the listed items and quantities are correct.
+            </p>
+
+            <p class="meta">
+                This is an authenticated system confirmation only and does not create
+                an electronic signature. All required signatures must still be completed
+                by hand on the printed physical documents during the actual handover.
+            </p>
+
+            <button type="submit" class="button primary ui-pressable">
+                Confirm Prepared Quantities
+            </button>
+        </form>
+    </section>
+@endif
+
+@if($isBorrower && $custody->status === 'PREPARING_RELEASE' && $custody->prepared_at && $custody->acknowledged_at && !$custody->released_at)
+    <section class="content-area">
+        <article class="card">
+            <div class="card-header">
+                <div>
+                    <p class="eyebrow">Borrower's Slip review</p>
+                    <h2>Prepared Quantities Confirmed</h2>
+                </div>
+
+                <x-status-badge
+                    status="VERIFIED"
+                    label="Confirmed"
+                />
+            </div>
+
+            <p>
+                Your system confirmation has been recorded. Please proceed with the
+                physical handover and complete all required handwritten/wet signatures
+                on the printed documents.
+            </p>
+
+            <p class="meta">
+                Confirmed {{ optional($custody->acknowledged_at)->format('d F Y, g:i A') }}.
+                No electronic signature was created.
+            </p>
+        </article>
+    </section>
+@endif
+
+@if($isSpmuOfficer && $custody->status === 'PREPARING_RELEASE' && $custody->prepared_at && !$custody->acknowledged_at)
+    <section class="content-area">
+        <article class="card">
+            <div class="card-header">
+                <div>
+                    <p class="eyebrow">Physical handover</p>
+                    <h2>Waiting for Borrower Confirmation</h2>
+                </div>
+
+                <x-status-badge
+                    status="PENDING"
+                    label="Borrower confirmation required"
+                />
+            </div>
+
+            <p>
+                The final quantities have been prepared. The borrower must review and
+                confirm the prepared Borrower's Slip before SPMU can record the physical release.
+            </p>
+
+            <p class="meta">
+                Borrower confirmation is a system confirmation only. Required signatures
+                remain handwritten/wet signatures on the printed physical documents.
+            </p>
+        </article>
+    </section>
+@endif
+
+@if($isSpmuOfficer && $custody->status === 'PREPARING_RELEASE' && $custody->prepared_at && $custody->acknowledged_at)
     <section class="content-area">
         <form method="post" action="{{ route('custody.release', $custody) }}" class="card form-grid">
             @csrf

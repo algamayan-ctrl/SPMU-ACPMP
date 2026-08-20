@@ -568,6 +568,13 @@ class CustodyService
                 'release' => 'SPMU physical preparation is required before release.',
             ]);
         }
+
+        if (! $custody->acknowledged_at) {
+            throw ValidationException::withMessages([
+                'release' => "The borrower must review and confirm the prepared Borrower's Slip before physical release.",
+            ]);
+        }
+
         $custody->loadMissing('request.currentVersion', 'gatePass', 'lines.requestItem.inventoryItem');
         $hasOffCampusItem = $custody->lines->contains(
             fn ($line) => $line->requestItem->use_location === 'OFF_CAMPUS'
