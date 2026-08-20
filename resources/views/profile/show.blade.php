@@ -501,7 +501,7 @@
                 >
                     <option value="light">Light</option>
                     <option value="dark">Dark</option>
-                    <option value="system">System</option>
+                    <option value="system">Default</option>
                 </select>
             </label>
 
@@ -510,7 +510,7 @@
                 data-appearance-status
                 aria-live="polite"
             >
-                System follows this device's light or dark preference.
+                Default theme is light.
             </p>
         <article class="card signature-card" aria-labelledby="signature-heading">
             <div class="card-header">

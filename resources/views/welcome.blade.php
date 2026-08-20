@@ -846,6 +846,7 @@
                     </span>
                     <h3><span class="landing-step-no">3</span>SPMU Review</h3>
                     <p>SPMU verifies the request and approves, returns, or rejects it.</p>
+                    <p>Required institutional signatures are completed physically, including GSU/VPAF institutional signatures; SPMU verification and the official decision are recorded in the system.</p>
                 </article>
 
                 <article>
@@ -1042,4 +1043,3 @@
 </div>
 
 @endsection
-
