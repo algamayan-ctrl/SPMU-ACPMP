@@ -13,8 +13,10 @@ use App\Http\Controllers\DelegationController;
 use App\Http\Controllers\DocumentController;
 use App\Http\Controllers\EvidenceController;
 use App\Http\Controllers\InventoryController;
+use App\Http\Controllers\LaundryController;
 use App\Http\Controllers\NotificationController;
 use App\Http\Controllers\ProfileController;
+use App\Http\Controllers\ProfilePictureController;
 use App\Http\Controllers\ReportController;
 use App\Http\Controllers\SettingController;
 use App\Http\Controllers\TechnicalOperationController;
@@ -74,6 +76,15 @@ Route::middleware(['auth', 'active'])->group(function (): void {
 
     Route::put('/profile', [ProfileController::class, 'update'])
         ->name('profile.update');
+
+    Route::get('/profile/picture', [ProfilePictureController::class, 'show'])
+        ->name('profile.picture.show');
+
+    Route::post('/profile/picture', [ProfilePictureController::class, 'update'])
+        ->name('profile.picture.update');
+
+    Route::delete('/profile/picture', [ProfilePictureController::class, 'destroy'])
+        ->name('profile.picture.destroy');
 
     Route::post('/profile/signature', [ProfileController::class, 'signature'])
         ->name('profile.signature');
@@ -138,11 +149,12 @@ Route::middleware(['auth', 'active'])->group(function (): void {
     | Borrowing Calendar
     |--------------------------------------------------------------------------
     |
-    | Kept separate from Inventory permissions.
+    | Active borrower/SPMU operational calendar only.
+    | GSU/VPAF are not borrowing approvers in the current workflow.
     |
     */
 
-    Route::middleware('workspace:BORROWER,SPMU,GSU,VPAF')->group(function (): void {
+    Route::middleware('workspace:BORROWER,SPMU')->group(function (): void {
 
         Route::get('/calendar', [CalendarController::class, 'index'])
             ->name('calendar.index');
@@ -167,11 +179,14 @@ Route::middleware(['auth', 'active'])->group(function (): void {
 
     /*
     |--------------------------------------------------------------------------
-    | Borrowing Requests - View
+    | Borrowing Requests - Active Workflow View
     |--------------------------------------------------------------------------
+    |
+    | Borrower and SPMU only. GSU/VPAF approval stages are retired from the
+    | active workflow; historical database values may remain for compatibility.
     */
 
-    Route::middleware('workspace:BORROWER,SPMU,GSU,VPAF')->group(function (): void {
+    Route::middleware('workspace:BORROWER,SPMU')->group(function (): void {
 
         Route::get('/requests', [BorrowingRequestController::class, 'index'])
             ->name('requests.index');
@@ -218,11 +233,14 @@ Route::middleware(['auth', 'active'])->group(function (): void {
 
     /*
     |--------------------------------------------------------------------------
-    | Approval Workflow
+    | Approval Workflow - SPMU Only
     |--------------------------------------------------------------------------
+    |
+    | New submissions are verified/decided by SPMU. GSU/VPAF are not active
+    | in-system approval stages.
     */
 
-    Route::middleware('workspace:SPMU,GSU,VPAF')->group(function (): void {
+    Route::middleware('workspace:SPMU')->group(function (): void {
 
         Route::get('/approvals', [ApprovalController::class, 'index'])
             ->name('approvals.index');
@@ -256,6 +274,10 @@ Route::middleware(['auth', 'active'])->group(function (): void {
         Route::get('/custody/{custody}', [CustodyController::class, 'show'])
             ->name('custody.show');
     });
+
+    Route::post('/custody/{custody}/schedule-pickup', [CustodyController::class, 'schedulePickup'])
+        ->middleware('workspace:SPMU')
+        ->name('custody.schedule-pickup');
 
     Route::post('/custody/{custody}/quantities', [CustodyController::class, 'quantities'])
         ->middleware('workspace:SPMU')
@@ -325,18 +347,45 @@ Route::middleware(['auth', 'active'])->group(function (): void {
         ->name('gate-passes.verify');
 
 
+
+    /*
+    |--------------------------------------------------------------------------
+    | Simple Laundry Worker Portal
+    |--------------------------------------------------------------------------
+    |
+    | Laundry Worker responsibility is intentionally minimal:
+    | - view the current Laundry Form / linen list
+    | - upload the accomplished scanned Laundry Form
+    | - mark the cleaned linen released back to the borrower
+    |
+    | SPMU performs the structured encoding and final asset verification.
+    |
+    */
+
+    Route::middleware('workspace:LAUNDRY')->group(function (): void {
+        Route::get('/laundry', [LaundryController::class, 'index'])
+            ->name('laundry.index');
+
+        Route::get('/laundry/{laundryJob}', [LaundryController::class, 'show'])
+            ->name('laundry.show');
+
+        Route::post('/laundry/{laundryJob}/upload-form', [LaundryController::class, 'upload'])
+            ->name('laundry.upload-form');
+
+        Route::post('/laundry/{laundryJob}/release-to-borrower', [LaundryController::class, 'releaseToBorrower'])
+            ->name('laundry.release-to-borrower');
+    });
+
+    Route::post('/laundry/{laundryJob}/verify-form', [LaundryController::class, 'verifyForm'])
+        ->middleware('workspace:SPMU')
+        ->name('laundry.verify-form');
+
+
     /*
     |--------------------------------------------------------------------------
     | Laundry Processing
     |--------------------------------------------------------------------------
     */
-
-    Route::post(
-        '/custody/{custody}/laundry-approve',
-        [ConditionalProcessingController::class, 'approveLaundryForm']
-    )
-        ->middleware('workspace:SPMU')
-        ->name('laundry.approve-form');
 
     Route::post(
         '/laundry/{laundry}/verify',
@@ -383,7 +432,7 @@ Route::middleware(['auth', 'active'])->group(function (): void {
     |--------------------------------------------------------------------------
     */
 
-    Route::middleware('workspace:SPMU,VPAF')->group(function (): void {
+    Route::middleware('workspace:SPMU')->group(function (): void {
 
         Route::get('/reports', [ReportController::class, 'index'])
             ->name('reports.index');

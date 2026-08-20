@@ -10,26 +10,19 @@
 <section class="page-heading inventory-page-heading">
     <div>
         <p class="eyebrow">
-            {{ $isBorrower ? 'Borrowable inventory' : 'Inventory monitoring' }}
+            {{ $isBorrower ? 'Available items' : 'Inventory monitoring' }}
         </p>
 
-        <h1>Inventory</h1>
+        <h1>{{ $isBorrower ? 'Available Items' : 'Inventory' }}</h1>
 
-        <p>
-            @if($isBorrower)
-                View current quantities that are eligible and suitable for borrowing.
-            @else
+        @if(!$isBorrower)
+            <p>
                 Monitor current stock, reservations, issued quantities, unavailable stock, and condition records.
-            @endif
-        </p>
+            </p>
+        @endif
     </div>
 
-    @if($isBorrower)
-        <a class="button primary ui-pressable" href="{{ route('requests.create') }}">
-            <x-icon name="plus" />
-            Create borrowing request
-        </a>
-    @elseif($isSpmu)
+    @if($isSpmu)
         <a class="button primary ui-pressable" href="{{ route('inventory.create') }}">
             <x-icon name="plus" />
             Add inventory item
@@ -38,18 +31,6 @@
 </section>
 
 <section class="content-area inventory-page">
-
-    @if($isBorrower)
-        <div class="inventory-reference-note" role="note">
-            <x-icon name="information" size="18" />
-            <div>
-                <strong>Availability is for reference only.</strong>
-                <p>
-                    Submission of a borrowing request does not reserve an item. Final availability and approval are subject to SPMU verification. Only approved reservations reduce the quantity shown as available.
-                </p>
-            </div>
-        </div>
-    @endif
 
     <form method="get" class="filter-bar inventory-search-filter" aria-label="Filter inventory">
         <label class="inventory-search-field">
@@ -106,12 +87,6 @@
     @endif
 
     @if($isBorrower)
-        <div class="inventory-legend" aria-label="Availability status legend">
-            <span><i class="inventory-dot is-available" aria-hidden="true"></i><strong>Available</strong> — full suitable quantity is currently available</span>
-            <span><i class="inventory-dot is-limited" aria-hidden="true"></i><strong>Limited</strong> — only part of the suitable quantity is currently available</span>
-            <span><i class="inventory-dot is-unavailable" aria-hidden="true"></i><strong>Unavailable</strong> — no suitable quantity is currently available</span>
-        </div>
-
         <div class="table-wrap borrower-inventory-table inventory-reference-table">
             <table>
                 <thead>
@@ -119,26 +94,25 @@
                         <th scope="col">Item</th>
                         <th scope="col">Category</th>
                         <th scope="col">Available Quantity</th>
-                        <th scope="col">Status</th>
                         <th scope="col"><span class="visually-hidden">Action</span></th>
                     </tr>
                 </thead>
+
                 <tbody>
                     @forelse($items as $item)
                         @php
-                            $balance = $balances[$item->id];
-                            $available = (float) ($balance['borrower_available'] ?? 0);
-                            $total = (float) ($balance['total'] ?? 0);
-
-                            $availabilityStatus = $available <= 0
-                                || $item->condition_code !== 'SERVICEABLE'
-                                    ? 'UNAVAILABLE'
-                                    : ($available < $total ? 'LIMITED' : 'AVAILABLE');
+                            $balance = $balances[$item->id] ?? [];
+                            $available = (float) (
+                                $balance['borrower_available']
+                                ?? $balance['available']
+                                ?? 0
+                            );
                         @endphp
 
                         <tr>
                             <td data-label="Item">
                                 <strong>{{ $item->unique_description }}</strong>
+
                                 @if($item->specification)
                                     <small>{{ $item->specification }}</small>
                                 @endif
@@ -156,34 +130,31 @@
                                 </span>
                             </td>
 
-                            <td data-label="Status">
-                                @if($availabilityStatus === 'AVAILABLE')
-                                    <x-status-badge status="AVAILABLE" label="Available" />
-                                @elseif($availabilityStatus === 'LIMITED')
-                                    <x-status-badge status="LOW_STOCK" label="Limited" />
-                                @else
-                                    <x-status-badge status="UNAVAILABLE" label="Unavailable" />
-                                @endif
-                            </td>
-
                             <td data-label="Action">
-                                <a class="table-action ui-pressable" href="{{ route('inventory.show', $item) }}">
+                                <a
+                                    class="table-action ui-pressable"
+                                    href="{{ route('inventory.show', $item) }}"
+                                >
                                     <x-icon name="eye" size="16" />
                                     View details
                                 </a>
                             </td>
                         </tr>
+
                     @empty
                         <tr>
-                            <td colspan="5" class="empty-state">
-                                <strong>No matching inventory items.</strong>
-                                <span>Try another search or category.</span>
+                            <td colspan="4" class="empty-state">
+                                <strong>No available items found.</strong>
+                                <span>
+                                    Try another search or category.
+                                </span>
                             </td>
                         </tr>
                     @endforelse
                 </tbody>
             </table>
         </div>
+
     @else
         <div class="availability-window" role="note">
             <strong>SPMU inventory breakdown</strong>
@@ -276,3 +247,4 @@
 </section>
 
 @endsection
+

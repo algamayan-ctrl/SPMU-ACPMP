@@ -1,24 +1,84 @@
 @extends('layouts.app', ['title' => session('active_workspace') === 'BORROWER' ? 'My Requests' : 'Borrowing Requests'])
+
 @section('content')
 @php
     $isBorrower = session('active_workspace') === 'BORROWER';
 @endphp
+
 <section class="page-heading">
     <div>
         <p class="eyebrow">Request tracking</p>
         <h1>{{ $isBorrower ? 'My Requests' : 'Borrowing request records' }}</h1>
+
+        @if($isBorrower)
+            <p>Review your borrowing requests, current status, required actions, and release progress.</p>
+        @endif
     </div>
-    @if($isBorrower)<a class="button primary ui-pressable" href="{{ route('requests.create') }}"><x-icon name="plus" size="17" />Create new request</a>@endif
+
+    @if($isBorrower)
+        <a class="button primary ui-pressable" href="{{ route('requests.create') }}">
+            <x-icon name="plus" size="17" />
+            Create new request
+        </a>
+    @endif
 </section>
 
 <section class="content-area">
 @if($isBorrower)
-    <div class="request-list" aria-label="My borrowing requests">
+
+    <section class="request-browser" aria-label="Borrowing request controls">
+        <div class="request-browser-copy">
+            <p class="eyebrow">Request history</p>
+            <h2>Track your requests</h2>
+            <p>Search by request number or purpose, then filter the records by their current stage.</p>
+        </div>
+
+        <div class="request-browser-controls">
+            <label class="request-search-field">
+                <span>Search requests</span>
+                <span class="request-control-shell">
+                    <x-icon name="search" size="17" />
+                    <input
+                        id="request-search"
+                        type="search"
+                        placeholder="Request no. or purpose"
+                        autocomplete="off"
+                    >
+                </span>
+            </label>
+
+            <label class="request-filter-field">
+                <span>Status</span>
+                <select id="request-status-filter">
+                    <option value="all">All requests</option>
+                    <option value="action">Action required</option>
+                    <option value="review">Under review</option>
+                    <option value="approved">Approved / release</option>
+                    <option value="custody">Released / on custody</option>
+                    <option value="completed">Completed</option>
+                    <option value="closed">Rejected / cancelled / inactive</option>
+                </select>
+            </label>
+        </div>
+    </section>
+
+    <div class="request-list" id="borrower-request-list" aria-label="My borrowing requests">
         @forelse($requests as $request)
-           @php
+            @php
                 $version = $request->currentVersion;
                 $custody = $request->custody;
                 $custodyStatus = $custody?->status;
+
+                /*
+                |--------------------------------------------------------------------------
+                | Borrower-facing status
+                |--------------------------------------------------------------------------
+                |
+                | Custody status takes priority after physical release.
+                | Legacy GSU/VPAF/final-download states remain readable for old records,
+                | but the borrower-facing wording follows the current SPMU-only flow.
+                |
+                */
 
                 $displayStatus = match($custodyStatus) {
                     'ACTIVE' => 'ACTIVE',
@@ -28,7 +88,17 @@
                     'INCIDENT_OPEN' => 'INCIDENT_OPEN',
                     'OBLIGATION_OPEN' => 'OBLIGATION_OPEN',
                     'CLOSED' => 'CLOSED',
-                    default => $request->status,
+
+                    default => match($request->status) {
+                        App\Enums\RequestStatus::UnderGsu,
+                        App\Enums\RequestStatus::UnderVpaf
+                            => App\Enums\RequestStatus::UnderSpmu,
+
+                        App\Enums\RequestStatus::FinalApprovedAwaitingDownload
+                            => App\Enums\RequestStatus::ApprovedReadyForRelease,
+
+                        default => $request->status,
+                    },
                 };
 
                 $displayStatusLabel = match($custodyStatus) {
@@ -39,204 +109,554 @@
                     'INCIDENT_OPEN' => 'Incident Open',
                     'OBLIGATION_OPEN' => 'Obligation Open',
                     'CLOSED' => 'Returned',
-                    default => null,
+
+                    default => match($request->status) {
+                        App\Enums\RequestStatus::UnderSpmu => 'Under SPMU Review',
+
+                        App\Enums\RequestStatus::UnderGsu,
+                        App\Enums\RequestStatus::UnderVpaf => 'Under Review',
+
+                        App\Enums\RequestStatus::FinalApprovedAwaitingDownload,
+                        App\Enums\RequestStatus::ApprovedReadyForRelease => 'Approved',
+
+                        default => null,
+                    },
                 };
+
+                /*
+                |--------------------------------------------------------------------------
+                | Borrower next action
+                |--------------------------------------------------------------------------
+                */
 
                 $action = match($custodyStatus) {
                     'ACTIVE' => [
                         'Open borrowing',
-                        'The approved items have been physically released and are currently under your custody.'
+                        'The items have been released and are currently under your custody.',
                     ],
 
                     'PARTIALLY_RETURNED' => [
                         'Open borrowing',
-                        'Some released items have already been returned. Review the remaining outstanding quantities.'
+                        'Some items have been returned. Review the remaining outstanding quantities and return status.',
                     ],
 
                     'OVERDUE' => [
                         'Review overdue borrowing',
-                        'The return deadline has passed. Open the borrowing record for the current return and accountability status.'
+                        'The return deadline has passed. Review the current return and accountability status.',
                     ],
 
                     'EARLY_RETURN' => [
                         'Open borrowing',
-                        'An Early Return process is currently recorded for this borrowing.'
+                        'An early-return process is recorded for this borrowing.',
                     ],
 
                     'INCIDENT_OPEN' => [
                         'Review incident',
-                        'An incident remains open for this borrowing.'
+                        'An incident remains open for this borrowing. Review the recorded details and next steps.',
                     ],
 
                     'OBLIGATION_OPEN' => [
                         'Review obligations',
-                        'The items have been returned, but an outstanding obligation still requires resolution.'
+                        'The items have been returned, but an outstanding obligation still requires resolution.',
                     ],
 
                     'CLOSED' => [
                         'View completed borrowing',
-                        'This borrowing has been completed and the custody record is closed.'
+                        'This borrowing is complete and its custody record is closed.',
                     ],
 
                     default => match($request->status) {
                         App\Enums\RequestStatus::Draft => [
-                            'Continue editing',
-                            'Complete the draft, review the request letter, then submit it.'
+                            'Continue request',
+                            'Complete the request details and prepare the required documents before submission.',
                         ],
 
                         App\Enums\RequestStatus::ReturnedForRevision => [
                             'Revise request',
-                            'Review the recorded remarks and submit a corrected version.'
-                        ],
-
-                        App\Enums\RequestStatus::FinalApprovedAwaitingDownload => [
-                            'Download approved letter',
-                            'Open the request and download the approved letter before the deadline.'
-                        ],
-
-                        App\Enums\RequestStatus::ApprovedReadyForRelease => [
-                            'View release status',
-                            'Your approved request is ready for SPMU release processing.'
+                            'Review the SPMU remarks, correct the request, and prepare it for resubmission.',
                         ],
 
                         App\Enums\RequestStatus::UnderSpmu => [
                             'View progress',
-                            'Waiting for SPMU review. No action is required right now.'
+                            'Submitted to SPMU for review. No action is required unless the request is returned for revision.',
                         ],
 
-                        App\Enums\RequestStatus::UnderGsu => [
-                            'View progress',
-                            'Waiting for GSU review. No action is required right now.'
-                        ],
-
+                        App\Enums\RequestStatus::UnderGsu,
                         App\Enums\RequestStatus::UnderVpaf => [
                             'View progress',
-                            'Waiting for VPAF review. No action is required right now.'
+                            'This legacy request is still being processed. Open the record to review its latest status.',
+                        ],
+
+                        App\Enums\RequestStatus::FinalApprovedAwaitingDownload,
+                        App\Enums\RequestStatus::ApprovedReadyForRelease => [
+                            'View release status',
+                            'Your request is approved. Review the request and follow the release instructions from SPMU.',
                         ],
 
                         App\Enums\RequestStatus::Rejected => [
                             'View decision',
-                            'Review the final decision and remarks.'
+                            'Review the SPMU decision and recorded remarks.',
                         ],
 
                         App\Enums\RequestStatus::Cancelled => [
                             'View record',
-                            'This request was cancelled.'
+                            'This request was cancelled.',
                         ],
 
                         App\Enums\RequestStatus::Expired => [
                             'View record',
-                            'The approved-letter download period expired.'
+                            'This request is no longer active. Open the record for its final status.',
                         ],
 
                         default => [
-                            'View progress',
-                            'Open the request for its latest status.'
+                            'View details',
+                            'Open the request to review its latest recorded status and next step.',
                         ],
                     },
                 };
 
-                $requiresAction = in_array($request->status, [
-                    App\Enums\RequestStatus::Draft,
-                    App\Enums\RequestStatus::ReturnedForRevision,
-                    App\Enums\RequestStatus::FinalApprovedAwaitingDownload,
-                ], true);
+                $requiresAction =
+                    ! $custody
+                    && in_array(
+                        $request->status,
+                        [
+                            App\Enums\RequestStatus::Draft,
+                            App\Enums\RequestStatus::ReturnedForRevision,
+                        ],
+                        true
+                    );
+
+                $statusGroup = match(true) {
+                    $custodyStatus === 'CLOSED' => 'completed',
+
+                    in_array(
+                        $custodyStatus,
+                        [
+                            'ACTIVE',
+                            'PARTIALLY_RETURNED',
+                            'OVERDUE',
+                            'EARLY_RETURN',
+                            'INCIDENT_OPEN',
+                            'OBLIGATION_OPEN',
+                        ],
+                        true
+                    ) => 'custody',
+
+                    $requiresAction => 'action',
+
+                    in_array(
+                        $request->status,
+                        [
+                            App\Enums\RequestStatus::UnderSpmu,
+                            App\Enums\RequestStatus::UnderGsu,
+                            App\Enums\RequestStatus::UnderVpaf,
+                        ],
+                        true
+                    ) => 'review',
+
+                    in_array(
+                        $request->status,
+                        [
+                            App\Enums\RequestStatus::FinalApprovedAwaitingDownload,
+                            App\Enums\RequestStatus::ApprovedReadyForRelease,
+                        ],
+                        true
+                    ) => 'approved',
+
+                    in_array(
+                        $request->status,
+                        [
+                            App\Enums\RequestStatus::Rejected,
+                            App\Enums\RequestStatus::Cancelled,
+                            App\Enums\RequestStatus::Expired,
+                        ],
+                        true
+                    ) => 'closed',
+
+                    default => 'review',
+                };
+
+                $searchText = strtolower(
+                    trim(
+                        ($request->request_no ?? '')
+                        .' '
+                        .($version?->purpose_event ?? '')
+                        .' '
+                        .($displayStatusLabel ?? '')
+                    )
+                );
+
+                $scheduleStart = optional($version?->needed_from)->format('d M Y');
+                $scheduleEnd = optional($version?->return_due_at)->format('d M Y');
             @endphp
-            <a class="request-list-item ui-pressable {{ $requiresAction ? 'is-action-required' : '' }}" href="{{ route('requests.show', $request) }}">
+
+            <a
+                class="request-list-item ui-pressable {{ $requiresAction ? 'is-action-required' : '' }}"
+                href="{{ route('requests.show', $request) }}"
+                data-request-card
+                data-status-group="{{ $statusGroup }}"
+                data-search="{{ $searchText }}"
+            >
                 <span class="request-list-main">
-                    <span class="request-list-purpose">{{ $version?->purpose_event ?: 'Borrowing request' }}</span>
-                    <span class="request-list-heading"><span class="record-reference">{{ $request->request_no }}</span><x-status-badge
-                        :status="$displayStatus"
-                        :label="$displayStatusLabel"/>
+                    <span class="request-list-purpose">
+                        {{ $version?->purpose_event ?: 'Borrowing request' }}
                     </span>
+
+                    <span class="request-list-heading">
+                        <span class="record-reference">{{ $request->request_no }}</span>
+
+                        <x-status-badge
+                            :status="$displayStatus"
+                            :label="$displayStatusLabel"
+                        />
+
+                        @if($requiresAction)
+                            <span class="request-attention-label">Action required</span>
+                        @endif
+                    </span>
+
                     <small>{{ $action[1] }}</small>
                 </span>
+
                 <span class="request-list-meta">
-                    <span>{{ optional($version?->needed_from)->format('d M Y, g:i A') ?: 'Schedule pending' }}</span>
-                    <small>to {{ optional($version?->return_due_at)->format('d M Y, g:i A') ?: 'Not set' }}</small>
-                    <small>{{ $version?->items->count() ?? 0 }} item type(s) · Updated {{ $request->updated_at->format('d M Y') }}</small>
+                    <span class="request-period-label">Borrowing period</span>
+
+                    <strong>
+                        {{ $scheduleStart ?: 'Schedule pending' }}
+                        @if($scheduleEnd)
+                            <span aria-hidden="true">→</span>
+                            {{ $scheduleEnd }}
+                        @endif
+                    </strong>
+
+                    <small>
+                        {{ $version?->items->count() ?? 0 }}
+                        {{ ($version?->items->count() ?? 0) === 1 ? 'item type' : 'item types' }}
+                        <span aria-hidden="true">·</span>
+                        Updated {{ $request->updated_at->format('d M Y') }}
+                    </small>
                 </span>
-                <span class="request-list-action {{ $requiresAction ? 'is-required' : '' }}">{{ $action[0] }}<x-icon name="chevron-right" /></span>
+
+                <span class="request-list-action {{ $requiresAction ? 'is-required' : '' }}">
+                    {{ $action[0] }}
+                    <x-icon name="chevron-right" />
+                </span>
             </a>
         @empty
             <div class="empty-state borrower-empty-state request-empty-state">
-                <div><strong>No borrowing requests yet.</strong><span>Create your first borrowing request when you need institutional property.</span></div>
-                <a class="button primary ui-pressable" href="{{ route('requests.create') }}"><x-icon name="plus" size="17" />Create new request</a>
+                <div>
+                    <strong>No borrowing requests yet.</strong>
+                    <span>Create your first request when you need to borrow institutional property.</span>
+                </div>
+
+                <a class="button primary ui-pressable" href="{{ route('requests.create') }}">
+                    <x-icon name="plus" size="17" />
+                    Create new request
+                </a>
             </div>
         @endforelse
     </div>
+
+    @if($requests->isNotEmpty())
+        <div
+            id="request-filter-empty"
+            class="empty-state borrower-empty-state request-empty-state request-filter-empty"
+            hidden
+        >
+            <div>
+                <strong>No matching requests.</strong>
+                <span>Try another search term or choose a different status filter.</span>
+            </div>
+
+            <button class="button secondary ui-pressable" type="button" id="request-filter-reset">
+                Clear filters
+            </button>
+        </div>
+    @endif
+
 @else
-    <div class="table-wrap"><table><thead><tr><th>Request</th><th>Borrower</th><th>Event and period</th><th>Items</th><th>Status</th><th></th></tr></thead><tbody>
-    @forelse($requests as $request)
-    <tr>
-        <td>
-            <strong>{{ $request->request_no }}</strong>
-            <small>Version {{ $request->current_version_no }}</small>
-        </td>
 
-        <td>{{ $request->borrower->full_name }}</td>
+    <div class="table-wrap">
+        <table>
+            <thead>
+                <tr>
+                    <th>Request</th>
+                    <th>Borrower</th>
+                    <th>Event and period</th>
+                    <th>Items</th>
+                    <th>Status</th>
+                    <th></th>
+                </tr>
+            </thead>
 
-        <td>
-            {{ $request->currentVersion?->purpose_event }}
-            <small>
-                {{ optional($request->currentVersion?->needed_from)->format('d M Y, g:i A') }}
-                to
-                {{ optional($request->currentVersion?->return_due_at)->format('d M Y, g:i A') }}
-            </small>
-        </td>
+            <tbody>
+            @forelse($requests as $request)
+                <tr>
+                    <td>
+                        <strong>{{ $request->request_no }}</strong>
+                        <small>Version {{ $request->current_version_no }}</small>
+                    </td>
 
-        <td>
-            {{ $request->currentVersion?->items->count() ?? 0 }} item type(s)
-        </td>
+                    <td>{{ $request->borrower->full_name }}</td>
 
-        <td>
-            @php
-                $custodyStatus = $request->custody?->status;
+                    <td>
+                        {{ $request->currentVersion?->purpose_event }}
 
-                $tableDisplayStatus = match($custodyStatus) {
-                    'ACTIVE' => 'ACTIVE',
-                    'PARTIALLY_RETURNED' => 'PARTIALLY_RETURNED',
-                    'OVERDUE' => 'OVERDUE',
-                    'EARLY_RETURN' => 'EARLY_RETURN',
-                    'INCIDENT_OPEN' => 'INCIDENT_OPEN',
-                    'OBLIGATION_OPEN' => 'OBLIGATION_OPEN',
-                    'CLOSED' => 'CLOSED',
-                    default => $request->status,
-                };
+                        <small>
+                            {{ optional($request->currentVersion?->needed_from)->format('d M Y, g:i A') }}
+                            to
+                            {{ optional($request->currentVersion?->return_due_at)->format('d M Y, g:i A') }}
+                        </small>
+                    </td>
 
-                $tableDisplayLabel = match($custodyStatus) {
-                    'ACTIVE' => 'Released',
-                    'PARTIALLY_RETURNED' => 'Partially Returned',
-                    'OVERDUE' => 'Overdue',
-                    'EARLY_RETURN' => 'Early Return',
-                    'INCIDENT_OPEN' => 'Incident Open',
-                    'OBLIGATION_OPEN' => 'Obligation Open',
-                    'CLOSED' => 'Returned',
-                    default => null,
-                };
-            @endphp
+                    <td>
+                        {{ $request->currentVersion?->items->count() ?? 0 }} item type(s)
+                    </td>
 
-            <x-status-badge
-                :status="$tableDisplayStatus"
-                :label="$tableDisplayLabel"
-            />
-        </td>
+                    <td>
+                        @php
+                            $custodyStatus = $request->custody?->status;
 
-        <td>
-            <a class="table-action" href="{{ route('requests.show', $request) }}">
-                View details
-            </a>
-        </td>
-    </tr>
+                            $tableDisplayStatus = match($custodyStatus) {
+                                'ACTIVE' => 'ACTIVE',
+                                'PARTIALLY_RETURNED' => 'PARTIALLY_RETURNED',
+                                'OVERDUE' => 'OVERDUE',
+                                'EARLY_RETURN' => 'EARLY_RETURN',
+                                'INCIDENT_OPEN' => 'INCIDENT_OPEN',
+                                'OBLIGATION_OPEN' => 'OBLIGATION_OPEN',
+                                'CLOSED' => 'CLOSED',
+                                default => $request->status,
+                            };
 
-    @empty
-    <tr>
-        <td colspan="6" class="empty-state">
-            No borrowing requests found.
-        </td>
-    </tr>
-    @endforelse
-    </tbody></table></div>
+                            $tableDisplayLabel = match($custodyStatus) {
+                                'ACTIVE' => 'Released',
+                                'PARTIALLY_RETURNED' => 'Partially Returned',
+                                'OVERDUE' => 'Overdue',
+                                'EARLY_RETURN' => 'Early Return',
+                                'INCIDENT_OPEN' => 'Incident Open',
+                                'OBLIGATION_OPEN' => 'Obligation Open',
+                                'CLOSED' => 'Returned',
+                                default => null,
+                            };
+                        @endphp
+
+                        <x-status-badge
+                            :status="$tableDisplayStatus"
+                            :label="$tableDisplayLabel"
+                        />
+                    </td>
+
+                    <td>
+                        <a class="table-action" href="{{ route('requests.show', $request) }}">
+                            View details
+                        </a>
+                    </td>
+                </tr>
+            @empty
+                <tr>
+                    <td colspan="6" class="empty-state">
+                        No borrowing requests found.
+                    </td>
+                </tr>
+            @endforelse
+            </tbody>
+        </table>
+    </div>
+
 @endif
 </section>
+
+@if($isBorrower)
+<style>
+    .request-browser {
+        display: flex;
+        align-items: end;
+        justify-content: space-between;
+        gap: 24px;
+        margin-bottom: 14px;
+        padding: 16px 17px;
+        background: var(--surface-elevated);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        box-shadow: var(--shadow-sm);
+    }
+
+    .request-browser-copy {
+        display: grid;
+        max-width: 520px;
+        gap: 3px;
+    }
+
+    .request-browser-copy h2,
+    .request-browser-copy p {
+        margin: 0;
+    }
+
+    .request-browser-copy p:last-child {
+        color: var(--text-muted);
+        font-size: 12px;
+    }
+
+    .request-browser-controls {
+        display: grid;
+        grid-template-columns: minmax(220px, 1fr) minmax(170px, .65fr);
+        gap: 10px;
+        width: min(540px, 100%);
+    }
+
+    .request-search-field,
+    .request-filter-field {
+        display: grid;
+        gap: 5px;
+        margin: 0;
+        color: var(--text-muted);
+        font-size: 11px;
+        font-weight: 750;
+    }
+
+    .request-control-shell {
+        display: flex;
+        min-height: 40px;
+        align-items: center;
+        gap: 8px;
+        padding: 0 11px;
+        background: var(--surface-elevated);
+        border: 1px solid var(--border);
+        border-radius: 7px;
+    }
+
+    .request-control-shell:focus-within {
+        border-color: var(--interactive);
+        box-shadow: var(--focus-ring);
+    }
+
+    .request-control-shell .ui-icon {
+        flex: 0 0 auto;
+        color: var(--text-muted);
+    }
+
+    .request-control-shell input {
+        width: 100%;
+        min-width: 0;
+        padding: 0;
+        background: transparent;
+        border: 0;
+        box-shadow: none;
+        outline: 0;
+    }
+
+    .request-filter-field select {
+        min-height: 40px;
+        margin: 0;
+    }
+
+    .request-attention-label {
+        display: inline-flex;
+        align-items: center;
+        min-height: 22px;
+        padding: 2px 7px;
+        color: var(--warning);
+        background: var(--warning-subtle, #fff8e7);
+        border: 1px solid var(--warning-border, #ead8a7);
+        border-radius: 999px;
+        font-size: 10px;
+        font-weight: 800;
+        white-space: nowrap;
+    }
+
+    .request-period-label {
+        color: var(--text-muted);
+        font-size: 10px;
+        font-weight: 800;
+        letter-spacing: .04em;
+        text-transform: uppercase;
+    }
+
+    .request-list-meta > strong {
+        color: var(--heading);
+        font-size: 12px;
+        font-weight: 750;
+    }
+
+    .request-filter-empty {
+        margin-top: 10px;
+    }
+
+    @media (max-width: 900px) {
+        .request-browser {
+            align-items: stretch;
+            flex-direction: column;
+        }
+
+        .request-browser-copy {
+            max-width: none;
+        }
+
+        .request-browser-controls {
+            width: 100%;
+        }
+    }
+
+    @media (max-width: 620px) {
+        .request-browser-controls {
+            grid-template-columns: 1fr;
+        }
+
+        .request-browser {
+            padding: 14px;
+        }
+
+        .request-list-purpose {
+            white-space: normal;
+        }
+    }
+</style>
+
+<script>
+document.addEventListener('DOMContentLoaded', () => {
+    const searchInput = document.getElementById('request-search');
+    const statusFilter = document.getElementById('request-status-filter');
+    const requestCards = Array.from(document.querySelectorAll('[data-request-card]'));
+    const emptyState = document.getElementById('request-filter-empty');
+    const resetButton = document.getElementById('request-filter-reset');
+
+    if (!searchInput || !statusFilter || requestCards.length === 0) {
+        return;
+    }
+
+    const applyFilters = () => {
+        const query = searchInput.value.trim().toLowerCase();
+        const status = statusFilter.value;
+        let visibleCount = 0;
+
+        requestCards.forEach((card) => {
+            const matchesSearch = !query || (card.dataset.search || '').includes(query);
+            const matchesStatus = status === 'all' || card.dataset.statusGroup === status;
+            const visible = matchesSearch && matchesStatus;
+
+            card.hidden = !visible;
+
+            if (visible) {
+                visibleCount++;
+            }
+        });
+
+        if (emptyState) {
+            emptyState.hidden = visibleCount !== 0;
+        }
+    };
+
+    searchInput.addEventListener('input', applyFilters);
+    statusFilter.addEventListener('change', applyFilters);
+
+    resetButton?.addEventListener('click', () => {
+        searchInput.value = '';
+        statusFilter.value = 'all';
+        applyFilters();
+        searchInput.focus();
+    });
+});
+</script>
+@endif
+
 @endsection

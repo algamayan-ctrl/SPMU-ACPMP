@@ -25,6 +25,316 @@
     );
 @endphp
 
+<style>
+    .borrow-request-ui {
+        grid-column: 1 / -1;
+        width: 100%;
+        --br-navy: #102a43;
+        --br-navy-2: #173f68;
+        --br-gold: #c99a2e;
+        --br-ink: #18324a;
+        --br-muted: #66788a;
+        --br-line: #d9e2ec;
+        --br-soft: #f6f8fb;
+        --br-selected: #f3f7fb;
+        --br-danger: #9f2f2f;
+    }
+
+    .borrow-request-ui .request-card {
+        overflow: hidden;
+        border: 1px solid var(--br-line);
+        border-radius: 16px;
+        background: #fff;
+        box-shadow: 0 8px 24px rgba(16, 42, 67, .05);
+    }
+
+    .borrow-request-ui .request-card + .request-card {
+        margin-top: 18px;
+    }
+
+    .borrow-request-ui .request-card-header {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 18px;
+        padding: 20px 22px 16px;
+        border-bottom: 1px solid var(--br-line);
+        background: linear-gradient(180deg, #fff 0%, #fbfcfe 100%);
+    }
+
+    .borrow-request-ui .request-card-title {
+        display: flex;
+        align-items: flex-start;
+        gap: 12px;
+    }
+
+    .borrow-request-ui .request-card-title .section-number {
+        position: static;
+        display: grid;
+        place-items: center;
+        flex: 0 0 34px;
+        width: 34px;
+        height: 34px;
+        border-radius: 10px;
+        background: var(--br-navy);
+        color: #fff;
+        font-size: .78rem;
+        font-weight: 800;
+    }
+
+    .borrow-request-ui .request-card-title h2 {
+        margin: 0;
+        color: var(--br-ink);
+        font-size: 1.02rem;
+    }
+
+    .borrow-request-ui .request-card-title .meta {
+        margin: 4px 0 0;
+        color: var(--br-muted);
+        font-size: .84rem;
+        line-height: 1.45;
+    }
+
+    .borrow-request-ui .request-card-body {
+        padding: 20px 22px 22px;
+    }
+
+    .borrow-request-ui .details-top-row {
+        display: grid;
+        grid-template-columns: minmax(0, 1.75fr) minmax(0, 1.1fr) minmax(165px, .5fr);
+        gap: 14px;
+        align-items: end;
+    }
+
+    .borrow-request-ui .details-two-col {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 14px;
+    }
+
+    .borrow-request-ui .field-group {
+        margin-top: 16px;
+    }
+
+    .borrow-request-ui label > input,
+    .borrow-request-ui label > select,
+    .borrow-request-ui label > textarea {
+        margin-top: 7px;
+    }
+
+    .borrow-request-ui .student-activity-box {
+        margin-top: 16px;
+        padding: 14px;
+        border: 1px solid var(--br-line);
+        border-radius: 12px;
+        background: var(--br-soft);
+    }
+
+    .borrow-request-ui .student-activity-box .checkbox {
+        margin: 0;
+    }
+
+    .borrow-request-ui .student-fields-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 14px;
+        margin-top: 14px;
+    }
+
+    .borrow-request-ui .items-toolbar {
+        display: flex;
+        align-items: end;
+        justify-content: space-between;
+        gap: 14px;
+        margin-bottom: 14px;
+    }
+
+    .borrow-request-ui .items-search-wrap {
+        display: flex;
+        align-items: end;
+        gap: 8px;
+        width: min(100%, 680px);
+    }
+
+    .borrow-request-ui .items-search-wrap label {
+        flex: 1 1 auto;
+    }
+
+    .borrow-request-ui .clear-search-button {
+        min-height: 42px;
+        white-space: nowrap;
+    }
+
+    .borrow-request-ui .items-summary {
+        display: flex;
+        align-items: center;
+        justify-content: flex-end;
+        gap: 8px;
+        flex-wrap: wrap;
+    }
+
+    .borrow-request-ui .summary-chip {
+        display: inline-flex;
+        align-items: center;
+        min-height: 32px;
+        padding: 6px 10px;
+        border: 1px solid var(--br-line);
+        border-radius: 999px;
+        background: #fff;
+        color: var(--br-ink);
+        font-size: .78rem;
+        font-weight: 700;
+    }
+
+    .borrow-request-ui .summary-chip.is-policy {
+        border-color: #ecd8a5;
+        background: #fff9e8;
+        color: #765814;
+    }
+
+    .borrow-request-ui .request-items-table table {
+        min-width: 820px;
+    }
+
+    .borrow-request-ui .request-items-table thead th {
+        padding-top: 11px;
+        padding-bottom: 11px;
+        background: var(--br-navy);
+        color: #fff;
+        font-size: .74rem;
+        letter-spacing: .025em;
+        text-transform: uppercase;
+    }
+
+    .borrow-request-ui .request-item-row {
+        transition: background-color .16s ease, box-shadow .16s ease;
+    }
+
+    .borrow-request-ui .request-item-row.is-selected {
+        background: var(--br-selected);
+        box-shadow: inset 3px 0 0 var(--br-gold);
+    }
+
+    .borrow-request-ui .request-item-row[hidden] {
+        display: none !important;
+    }
+
+    .borrow-request-ui .quantity-input {
+        min-width: 92px;
+        max-width: 110px;
+    }
+
+    .borrow-request-ui .item-availability {
+        display: block;
+        margin-top: 4px;
+        color: var(--br-muted);
+        white-space: nowrap;
+    }
+
+    .borrow-request-ui .review-grid {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(260px, .48fr);
+        gap: 16px;
+        align-items: stretch;
+    }
+
+    .borrow-request-ui .review-note,
+    .borrow-request-ui .review-summary-box {
+        margin: 0;
+        padding: 16px;
+        border: 1px solid var(--br-line);
+        border-radius: 12px;
+        background: var(--br-soft);
+    }
+
+    .borrow-request-ui .review-summary-box strong {
+        display: block;
+        color: var(--br-ink);
+        font-size: .85rem;
+    }
+
+    .borrow-request-ui .review-summary-box span {
+        display: block;
+        margin-top: 4px;
+        color: var(--br-muted);
+        font-size: .8rem;
+        line-height: 1.45;
+    }
+
+    .borrow-request-ui .sticky-actions {
+        position: sticky;
+        bottom: 12px;
+        z-index: 8;
+        display: flex;
+        justify-content: flex-end;
+        gap: 10px;
+        margin-top: 18px;
+        padding: 12px;
+        border: 1px solid var(--br-line);
+        border-radius: 14px;
+        background: rgba(255, 255, 255, .96);
+        box-shadow: 0 10px 28px rgba(16, 42, 67, .10);
+        backdrop-filter: blur(8px);
+    }
+
+    @media (max-width: 980px) {
+        .borrow-request-ui .details-top-row,
+        .borrow-request-ui .review-grid {
+            grid-template-columns: 1fr 1fr;
+        }
+
+        .borrow-request-ui .details-top-row > :first-child,
+        .borrow-request-ui .review-grid > :first-child {
+            grid-column: 1 / -1;
+        }
+
+        .borrow-request-ui .items-toolbar {
+            align-items: stretch;
+            flex-direction: column;
+        }
+
+        .borrow-request-ui .items-summary {
+            justify-content: flex-start;
+        }
+    }
+
+    @media (max-width: 720px) {
+        .borrow-request-ui .details-top-row,
+        .borrow-request-ui .details-two-col,
+        .borrow-request-ui .student-fields-grid,
+        .borrow-request-ui .review-grid {
+            grid-template-columns: 1fr;
+        }
+
+        .borrow-request-ui .details-top-row > :first-child,
+        .borrow-request-ui .review-grid > :first-child {
+            grid-column: auto;
+        }
+
+        .borrow-request-ui .request-card-header,
+        .borrow-request-ui .request-card-body {
+            padding-left: 16px;
+            padding-right: 16px;
+        }
+
+        .borrow-request-ui .items-search-wrap {
+            align-items: stretch;
+            flex-direction: column;
+            width: 100%;
+        }
+
+        .borrow-request-ui .sticky-actions {
+            position: static;
+            flex-direction: column;
+        }
+
+        .borrow-request-ui .sticky-actions .button {
+            width: 100%;
+            justify-content: center;
+        }
+    }
+</style>
+
 
 <section class="page-heading request-form-heading">
     <div>
@@ -39,10 +349,6 @@
             }}
         </h1>
 
-        <p>
-            Complete the borrowing details, schedule, and requested items below.
-            Availability applies to the entire selected period.
-        </p>
     </div>
 
     <div class="step-chip">Draft details</div>
@@ -97,594 +403,311 @@
     @endif
 
 
-    {{-- =========================================================
-         01 — BORROWING DETAILS
-    ========================================================== --}}
-    <section
-        class="card form-section"
-        aria-labelledby="borrowing-details-heading"
-    >
-        <div class="section-number" aria-hidden="true">01</div>
+    <div class="borrow-request-ui">
+        {{-- =========================================================
+             01 — REQUEST DETAILS
+        ========================================================== --}}
+        <section class="request-card" aria-labelledby="borrowing-details-heading">
+            <div class="request-card-header">
+                <div class="request-card-title">
+                    <div class="section-number" aria-hidden="true">01</div>
+                    <div>
+                        <h2 id="borrowing-details-heading">Borrowing details</h2>
+                        <p class="meta">Enter where, when, and why the property will be used. Premises applies to the whole request.</p>
+                    </div>
+                </div>
+            </div>
 
-        <div>
-            <h2 id="borrowing-details-heading">
-                Borrowing details
-            </h2>
+            <div class="request-card-body">
+                <div class="details-top-row">
+                    <label>
+                        Purpose of borrowing
+                        <input name="purpose_event" value="{{ old('purpose_event', $version->purpose_event) }}" required>
+                        @error('purpose_event')
+                            <small class="field-error">{{ $message }}</small>
+                        @enderror
+                    </label>
 
-            <p class="meta">
-                Describe the purpose and where the requested property will be used.
-            </p>
-        </div>
+                    <label>
+                        Location
+                        <input name="location" value="{{ old('location', $version->location) }}" required>
+                        @error('location')
+                            <small class="field-error">{{ $message }}</small>
+                        @enderror
+                    </label>
 
+                    <label>
+                        Premises
+                        <select id="premises" name="premises" required>
+                            <option value="ON_CAMPUS" @selected($premises === 'ON_CAMPUS')>On-campus</option>
+                            <option value="OFF_CAMPUS" @selected($premises === 'OFF_CAMPUS')>Off-campus</option>
+                        </select>
+                        @error('premises')
+                            <small class="field-error">{{ $message }}</small>
+                        @enderror
+                    </label>
+                </div>
 
-        <div
-            class="full-span"
-            style="
-                display: grid;
-                grid-template-columns: minmax(0, 1.7fr) minmax(0, 1.15fr) minmax(170px, 0.55fr);
-                gap: 14px;
-                align-items: end;
-            "
-        >
+                <div class="details-two-col field-group">
+                    <label>
+                        Items needed from
+                        <input
+                            id="needed_from"
+                            type="date"
+                            name="needed_from"
+                            value="{{ old('needed_from', optional($version->needed_from)->format('Y-m-d')) }}"
+                            required
+                        >
+                        @error('needed_from')
+                            <small class="field-error">{{ $message }}</small>
+                        @enderror
+                    </label>
 
-            <label>
-                Purpose of borrowing
+                    <label>
+                        Expected return date
+                        <input
+                            id="return_due_at"
+                            type="date"
+                            name="return_due_at"
+                            value="{{ old('return_due_at', optional($version->return_due_at)->format('Y-m-d')) }}"
+                            required
+                        >
+                        @error('return_due_at')
+                            <small class="field-error">{{ $message }}</small>
+                        @enderror
+                    </label>
+                </div>
 
-                <input
-                    name="purpose_event"
-                    value="{{ old('purpose_event', $version->purpose_event) }}"
-                    required
-                >
+                <div class="student-activity-box">
+                    <label class="checkbox">
+                        <input
+                            id="represents_students"
+                            type="checkbox"
+                            name="represents_student_activity"
+                            value="1"
+                            @checked(old('represents_student_activity', $version->represents_student_activity))
+                        >
+                        This request represents a student activity
+                    </label>
 
-                @error('purpose_event')
-                    <small class="field-error">
-                        {{ $message }}
-                    </small>
+                    <div id="student-fields" class="student-fields-grid">
+                        <label>
+                            Student organization <small>(optional)</small>
+                            <input
+                                name="student_organization"
+                                value="{{ old('student_organization', $version->student_organization) }}"
+                            >
+                        </label>
+
+                        <label>
+                            Program / Department / College
+                            <input
+                                name="represented_program_department"
+                                value="{{ old('represented_program_department', $version->represented_program_department) }}"
+                            >
+                            @error('represented_program_department')
+                                <small class="field-error">{{ $message }}</small>
+                            @enderror
+                        </label>
+                    </div>
+                </div>
+
+                <label class="field-group" style="display:block;">
+                    Additional note <small>(optional)</small>
+                    <textarea name="remarks" rows="3">{{ old('remarks', $version->remarks) }}</textarea>
+                    @error('remarks')
+                        <small class="field-error">{{ $message }}</small>
+                    @enderror
+                </label>
+            </div>
+        </section>
+
+        {{-- =========================================================
+             02 — REQUESTED ITEMS
+        ========================================================== --}}
+        <section class="request-card" aria-labelledby="items-heading">
+            <div class="request-card-header">
+                <div class="request-card-title">
+                    <div class="section-number" aria-hidden="true">02</div>
+                    <div>
+                        <h2 id="items-heading">Requested items</h2>
+                        <p class="meta" id="availability-message">Choose valid borrowing dates to calculate current availability.</p>
+                    </div>
+                </div>
+                <div class="items-summary" aria-live="polite">
+                    <span class="summary-chip"><span id="selected-item-count">0</span>&nbsp;selected</span>
+                    <span class="summary-chip is-policy" id="premises-policy-note">On-campus inventory</span>
+                </div>
+            </div>
+
+            <div class="request-card-body">
+                @error('item_ids')
+                    <p class="field-error">{{ $message }}</p>
                 @enderror
-            </label>
-
-
-            <label>
-                Location
-
-                <input
-                    name="location"
-                    value="{{ old('location', $version->location) }}"
-                    required
-                >
-
-                @error('location')
-                    <small class="field-error">
-                        {{ $message }}
-                    </small>
+                @error('items')
+                    <p class="field-error">{{ $message }}</p>
                 @enderror
-            </label>
-
-
-            <label>
-                Premises
-
-                <select
-                    id="premises"
-                    name="premises"
-                    required
-                >
-                    <option
-                        value="ON_CAMPUS"
-                        @selected($premises === 'ON_CAMPUS')
-                    >
-                        On-campus
-                    </option>
-
-                    <option
-                        value="OFF_CAMPUS"
-                        @selected($premises === 'OFF_CAMPUS')
-                    >
-                        Off-campus
-                    </option>
-                </select>
-
+                @error('quantities')
+                    <p class="field-error">{{ $message }}</p>
+                @enderror
                 @error('premises')
-                    <small class="field-error">
-                        {{ $message }}
-                    </small>
+                    <p class="field-error">{{ $message }}</p>
                 @enderror
-            </label>
 
-        </div>
-
-
-        <label class="full-span">
-            Additional note to reviewers
-            <small>(optional)</small>
-
-            <textarea name="remarks">{{ old('remarks', $version->remarks) }}</textarea>
-
-            @error('remarks')
-                <small class="field-error">
-                    {{ $message }}
-                </small>
-            @enderror
-        </label>
-    </section>
-
-
-    {{-- =========================================================
-         02 — BORROWING SCHEDULE
-    ========================================================== --}}
-    <section
-        class="card form-section"
-        aria-labelledby="schedule-heading"
-    >
-        <div class="section-number" aria-hidden="true">02</div>
-
-        <div>
-            <h2 id="schedule-heading">
-                Borrowing schedule
-            </h2>
-
-            <p class="meta">
-                Choose the complete period when the items will be needed.
-            </p>
-        </div>
-
-
-        <div class="form-columns full-span">
-
-            <label>
-                Items needed from
-
-                <input
-                    id="needed_from"
-                    type="datetime-local"
-                    name="needed_from"
-                    value="{{ old(
-                        'needed_from',
-                        optional($version->needed_from)->format('Y-m-d\TH:i')
-                    ) }}"
-                    required
-                >
-
-                @error('needed_from')
-                    <small class="field-error">
-                        {{ $message }}
-                    </small>
-                @enderror
-            </label>
-
-
-            <label>
-                Expected return date
-
-                <input
-                    id="return_due_at"
-                    type="datetime-local"
-                    name="return_due_at"
-                    value="{{ old(
-                        'return_due_at',
-                        optional($version->return_due_at)->format('Y-m-d\TH:i')
-                    ) }}"
-                    required
-                >
-
-                @error('return_due_at')
-                    <small class="field-error">
-                        {{ $message }}
-                    </small>
-                @enderror
-            </label>
-
-        </div>
-    </section>
-
-
-    {{-- =========================================================
-         03 — REPRESENTED ORGANIZATION / PROGRAM
-    ========================================================== --}}
-    <section
-        class="card form-section"
-        aria-labelledby="represented-activity-heading"
-    >
-        <div class="section-number" aria-hidden="true">03</div>
-
-        <div>
-            <h2 id="represented-activity-heading">
-                Represented organization or program
-            </h2>
-
-            <p class="meta">
-                Complete this only when borrowing on behalf of a student activity.
-                You remain the accountable borrower.
-            </p>
-        </div>
-
-
-        <label class="checkbox full-span">
-            <input
-                id="represents_students"
-                type="checkbox"
-                name="represents_student_activity"
-                value="1"
-                @checked(
-                    old(
-                        'represents_student_activity',
-                        $version->represents_student_activity
-                    )
-                )
-            >
-
-            This request represents a student activity
-        </label>
-
-
-        <div
-            id="student-fields"
-            class="form-columns full-span"
-        >
-            <label>
-                Student organization
-                <small>(optional)</small>
-
-                <input
-                    name="student_organization"
-                    value="{{ old(
-                        'student_organization',
-                        $version->student_organization
-                    ) }}"
-                >
-            </label>
-
-
-            <label>
-                Program or department
-
-                <input
-                    name="represented_program_department"
-                    value="{{ old(
-                        'represented_program_department',
-                        $version->represented_program_department
-                    ) }}"
-                >
-
-                @error('represented_program_department')
-                    <small class="field-error">
-                        {{ $message }}
-                    </small>
-                @enderror
-            </label>
-        </div>
-
-    </section>
-
-
-    {{-- =========================================================
-         04 — REQUESTED ITEMS
-    ========================================================== --}}
-    <section
-        class="card form-section item-selection-section"
-        aria-labelledby="items-heading"
-    >
-        <div class="section-number" aria-hidden="true">04</div>
-
-        <div>
-            <h2 id="items-heading">
-                Requested items
-            </h2>
-
-            <p
-                class="meta"
-                id="availability-message"
-            >
-                Choose valid borrowing dates to calculate current availability.
-            </p>
-        </div>
-
-
-        @error('item_ids')
-            <p class="field-error full-span">
-                {{ $message }}
-            </p>
-        @enderror
-
-        @error('items')
-            <p class="field-error full-span">
-                {{ $message }}
-            </p>
-        @enderror
-
-        @error('quantities')
-            <p class="field-error full-span">
-                {{ $message }}
-            </p>
-        @enderror
-
-        @error('premises')
-            <p class="field-error full-span">
-                {{ $message }}
-            </p>
-        @enderror
-
-
-        {{-- SEARCH --}}
-        <div class="full-span request-item-search">
-            <label for="item-search">
-                Search available item
-
-                <input
-                    id="item-search"
-                    type="search"
-                    placeholder="Search item name, description, or Item ID..."
-                    autocomplete="off"
-                >
-            </label>
-        </div>
-
-
-        <div class="table-wrap full-span request-items-table">
-
-            <table>
-                <thead>
-                    <tr>
-                        <th scope="col">Select</th>
-                        <th scope="col">Item</th>
-                        <th scope="col">Description</th>
-                        <th scope="col">Unit</th>
-                        <th scope="col">Qty</th>
-                        <th scope="col">Premises</th>
-                        <th scope="col">Actions</th>
-                    </tr>
-                </thead>
-
-
-                <tbody id="request-items-body">
-
-                @foreach($items as $item)
-
-                    @php
-                        $requestItem = $selected->get($item->id);
-
-                        $requestedQuantity = old(
-                            "quantities.$item->id",
-                            $requestItem?->requested_quantity ?? 0
-                        );
-
-                        $itemSearchText = strtolower(
-                            $item->id.' '.
-                            $item->unique_description.' '.
-                            ($item->specification ?? '')
-                        );
-
-                        $isBarricade = strcasecmp(
-                            trim($item->unique_description),
-                            'Barricade'
-                        ) === 0;
-                    @endphp
-
-
-                    <tr
-                        class="request-item-row"
-                        data-item-id="{{ $item->id }}"
-                        data-item-name="{{ strtolower($item->unique_description) }}"
-                        data-search="{{ $itemSearchText }}"
-                        data-barricade="{{ $isBarricade ? '1' : '0' }}"
-                    >
-
-                        {{-- SELECT --}}
-                        <td data-label="Select">
+                <div class="items-toolbar">
+                    <div class="items-search-wrap">
+                        <label for="item-search">
+                            Search available item
                             <input
-                                class="item-select-checkbox"
-                                type="checkbox"
-                                name="item_ids[]"
-                                value="{{ $item->id }}"
-                                aria-label="Select {{ $item->unique_description }}"
-                                @checked((float) $requestedQuantity > 0)
+                                id="item-search"
+                                type="search"
+                                placeholder="Search item name or description..."
+                                autocomplete="off"
                             >
-                        </td>
+                        </label>
+                        <button type="button" class="button secondary clear-search-button" id="clear-item-search">Clear</button>
+                    </div>
+                </div>
 
+                <div class="table-wrap request-items-table">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th scope="col">Select</th>
+                                <th scope="col">Item</th>
+                                <th scope="col">Description</th>
+                                <th scope="col">Unit</th>
+                                <th scope="col">Qty</th>
+                                <th scope="col">Condition</th>
+                            </tr>
+                        </thead>
 
-                        {{-- ITEM --}}
-                        <td data-label="Item">
-                            <strong>
-                                {{ $item->unique_description }}
-                            </strong>
+                        <tbody id="request-items-body">
+                        @foreach($items as $item)
+                            @php
+                                $requestItem = $selected->get($item->id);
+                                $requestedQuantity = old(
+                                    "quantities.$item->id",
+                                    $requestItem?->requested_quantity ?? 0
+                                );
+                                $itemSearchText = strtolower(
+                                    $item->unique_description.' '.
+                                    ($item->specification ?? '')
+                                );
+                                $isBarricade = strcasecmp(trim($item->unique_description), 'Barricade') === 0;
+                            @endphp
 
-                            <small>
-                                Item ID: {{ $item->id }}
-                            </small>
-
-                            @if($item->laundry_required)
-                                <span class="badge">
-                                    Laundry required
-                                </span>
-                            @endif
-                        </td>
-
-
-                        {{-- DESCRIPTION --}}
-                        <td data-label="Description">
-                            {{ $item->specification ?: '—' }}
-                        </td>
-
-
-                        {{-- UNIT --}}
-                        <td data-label="Unit">
-                            {{ $item->unit->unit_name }}
-                        </td>
-
-
-                        {{-- QTY --}}
-                        <td data-label="Qty">
-                            <input
-                                class="quantity-input"
-                                type="number"
-                                step="0.001"
-                                min="0"
-                                max="{{ $item->total_quantity }}"
-                                name="quantities[{{ $item->id }}]"
-                                aria-label="Requested quantity for {{ $item->unique_description }}"
-                                value="{{ $requestedQuantity }}"
+                            <tr
+                                class="request-item-row"
+                                data-item-id="{{ $item->id }}"
+                                data-item-name="{{ strtolower($item->unique_description) }}"
+                                data-search="{{ $itemSearchText }}"
+                                data-barricade="{{ $isBarricade ? '1' : '0' }}"
                             >
+                                <td data-label="Select">
+                                    <input
+                                        class="item-select-checkbox"
+                                        type="checkbox"
+                                        name="item_ids[]"
+                                        value="{{ $item->id }}"
+                                        aria-label="Select {{ $item->unique_description }}"
+                                        @checked((float) $requestedQuantity > 0)
+                                    >
+                                </td>
 
-                            <small
-                                class="item-availability"
-                                data-item="{{ $item->id }}"
-                            >
-                                Select dates
-                            </small>
-                        </td>
+                                <td data-label="Item">
+                                    <strong>{{ $item->unique_description }}</strong>
 
+                                    @if($item->laundry_required)
+                                        <span class="badge">Laundry required</span>
+                                    @endif
+                                </td>
 
-                        {{-- PREMISES --}}
-                        <td data-label="Premises">
-                            <span class="locked-value premises-display">
-                                {{ $premises === 'OFF_CAMPUS'
-                                    ? 'Off-campus'
-                                    : 'On-campus'
-                                }}
-                            </span>
-                        </td>
+                                <td data-label="Description">
+                                    {{ $item->specification ?: '—' }}
+                                </td>
 
+                                <td data-label="Unit">
+                                    {{ $item->unit->unit_name }}
+                                </td>
 
-                        {{-- ACTIONS --}}
-                        <td data-label="Actions">
-                            <div class="request-item-actions">
+                                <td data-label="Qty">
+                                    <input
+                                        class="quantity-input"
+                                        type="number"
+                                        step="0.001"
+                                        min="0"
+                                        max="{{ $item->total_quantity }}"
+                                        name="quantities[{{ $item->id }}]"
+                                        aria-label="Requested quantity for {{ $item->unique_description }}"
+                                        value="{{ $requestedQuantity }}"
+                                    >
 
-                                <button
-                                    type="button"
-                                    class="button secondary ui-pressable item-edit-button"
-                                    data-item="{{ $item->id }}"
-                                    title="Edit requested quantity"
-                                >
-                                    Edit
-                                </button>
+                                    <small
+                                        class="item-availability"
+                                        data-item="{{ $item->id }}"
+                                    >
+                                        Select dates
+                                    </small>
+                                </td>
 
+                                <td data-label="Condition">
+                                    <x-status-badge :status="$item->condition_code" />
+                                </td>
+                            </tr>
+                        @endforeach
+                        </tbody>
+                    </table>
+                </div>
 
-                                <button
-                                    type="button"
-                                    class="button danger ui-pressable item-delete-button"
-                                    data-item="{{ $item->id }}"
-                                    data-name="{{ $item->unique_description }}"
-                                    title="Remove item from this borrowing request"
-                                >
-                                    Delete
-                                </button>
+                <div id="no-items-found" class="empty-state" hidden>
+                    No eligible item matches the current premises and search.
+                </div>
+            </div>
+        </section>
 
+        {{-- =========================================================
+             03 — REVIEW AND SAVE
+        ========================================================== --}}
+        <section class="request-card" aria-labelledby="review-heading">
+            <div class="request-card-header">
+                <div class="request-card-title">
+                    <div class="section-number" aria-hidden="true">03</div>
+                    <div>
+                        <h2 id="review-heading">Review and save your draft</h2>
+                        <p class="meta">Saving creates the request draft and official preview. It does not submit the request for approval.</p>
+                    </div>
+                </div>
+            </div>
 
-                                <button
-                                    type="button"
-                                    class="button secondary ui-pressable item-history-button"
-                                    data-item="{{ $item->id }}"
-                                    data-name="{{ $item->unique_description }}"
-                                    title="View transaction history"
-                                >
-                                    Transaction History
-                                </button>
+            <div class="request-card-body">
+                <div class="review-grid">
+                    <div class="review-note">
+                        <strong>Before saving</strong>
+                        <ul>
+                            <li>Check the purpose, location, premises, and borrowing period.</li>
+                            <li>Only selected items with a quantity greater than zero are saved.</li>
+                            <li>Availability is checked again when the draft is saved.</li>
+                        </ul>
+                    </div>
 
+                    <div class="review-summary-box">
+                        <strong>What happens next?</strong>
+                        <span>The system generates the official request preview. Review that document on the next screen before continuing the request process.</span>
+                    </div>
+                </div>
+            </div>
+        </section>
 
-                                <button
-                                    type="button"
-                                    class="button secondary ui-pressable item-stock-card-button"
-                                    data-item="{{ $item->id }}"
-                                    data-name="{{ $item->unique_description }}"
-                                    title="View stock card"
-                                >
-                                    Stock Card
-                                </button>
-
-                            </div>
-                        </td>
-
-                    </tr>
-
-                @endforeach
-
-                </tbody>
-            </table>
-
+        <div class="actions sticky-actions">
+            <a class="button secondary" href="{{ route('requests.index') }}">Cancel</a>
+            <button type="submit" class="button primary ui-pressable">Save draft and generate preview</button>
         </div>
-
-
-        <div
-            id="no-items-found"
-            class="empty-state full-span"
-            hidden
-        >
-            No matching available item was found.
-        </div>
-
-    </section>
-
-
-    {{-- =========================================================
-         05 — REVIEW
-    ========================================================== --}}
-    <section
-        class="card form-section review-section"
-        aria-labelledby="review-heading"
-    >
-        <div class="section-number" aria-hidden="true">
-            05
-        </div>
-
-        <div>
-            <h2 id="review-heading">
-                Review and save your draft
-            </h2>
-
-            <p class="meta">
-                Saving does not submit the request for approval.
-            </p>
-        </div>
-
-
-        <div class="full-span review-note">
-
-            <p>
-                The system will save your request and generate an official preview.
-                Review the generated document on the next screen.
-            </p>
-
-            <ul>
-                <li>
-                    Availability will be checked again before the request is saved.
-                </li>
-
-                <li>
-                    Only selected items with a quantity greater than zero are saved.
-                </li>
-
-                <li>
-                    The selected Premises applies to the entire request.
-                </li>
-            </ul>
-
-        </div>
-
-    </section>
-
-
-    <div class="actions sticky-actions">
-
-        <button
-            type="submit"
-            class="button primary ui-pressable"
-        >
-            Save draft and generate preview
-        </button>
-
-        <a
-            class="button secondary"
-            href="{{ route('requests.index') }}"
-        >
-            Cancel
-        </a>
-
     </div>
 
 </form>
 
 </section>
-
 
 <script>
 document.addEventListener('DOMContentLoaded', () => {
@@ -733,8 +756,21 @@ document.addEventListener('DOMContentLoaded', () => {
     |--------------------------------------------------------------------------
     */
 
-    const premisesSelect = document.getElementById('premises');
+    const premisesSelect =
+        document.getElementById('premises');
 
+    const premisesPolicyNote =
+        document.getElementById('premises-policy-note');
+
+    /*
+     * Premises eligibility rule:
+     *
+     * ON_CAMPUS  = show all otherwise eligible inventory items.
+     * OFF_CAMPUS = show Barricade only.
+     *
+     * If the borrower switches to OFF_CAMPUS after selecting
+     * other items, those now-ineligible selections are cleared.
+     */
     function syncPremises() {
         if (!premisesSelect) {
             return;
@@ -743,24 +779,13 @@ document.addEventListener('DOMContentLoaded', () => {
         const isOffCampus =
             premisesSelect.value === 'OFF_CAMPUS';
 
-        const premisesLabel =
-            isOffCampus
-                ? 'Off-campus'
-                : 'On-campus';
+        if (premisesPolicyNote) {
+            premisesPolicyNote.textContent =
+                isOffCampus
+                    ? 'Off-campus: Barricade only'
+                    : 'On-campus: All eligible items';
+        }
 
-        document
-            .querySelectorAll('.premises-display')
-            .forEach((node) => {
-                node.textContent = premisesLabel;
-            });
-
-        /*
-         * OFF_CAMPUS:
-         * only Barricade remains visible/selectable.
-         *
-         * ON_CAMPUS:
-         * all valid borrowable items are visible.
-         */
         document
             .querySelectorAll('.request-item-row')
             .forEach((row) => {
@@ -768,10 +793,11 @@ document.addEventListener('DOMContentLoaded', () => {
                 const isBarricade =
                     row.dataset.barricade === '1';
 
+                /*
+                 * Clear any item that becomes invalid when the
+                 * borrower changes the request to off-campus.
+                 */
                 if (isOffCampus && !isBarricade) {
-
-                    row.hidden = true;
-
                     const checkbox =
                         row.querySelector('.item-select-checkbox');
 
@@ -785,14 +811,15 @@ document.addEventListener('DOMContentLoaded', () => {
                     if (quantity) {
                         quantity.value = 0;
                     }
-
-                } else {
-                    row.hidden = false;
                 }
-
             });
 
+        /*
+         * Visibility itself is handled together with the search
+         * filter so both rules always work at the same time.
+         */
         applySearchFilter();
+        updateSelectionUI();
     }
 
     if (premisesSelect) {
@@ -814,6 +841,34 @@ document.addEventListener('DOMContentLoaded', () => {
 
     const noItemsFound =
         document.getElementById('no-items-found');
+
+    const selectedItemCount =
+        document.getElementById('selected-item-count');
+
+    const clearItemSearch =
+        document.getElementById('clear-item-search');
+
+    function updateSelectionUI() {
+        let selectedCount = 0;
+
+        document
+            .querySelectorAll('.request-item-row')
+            .forEach((row) => {
+                const checkbox = row.querySelector('.item-select-checkbox');
+                const quantity = row.querySelector('.quantity-input');
+                const isSelected = Boolean(checkbox?.checked) && Number(quantity?.value || 0) > 0;
+
+                row.classList.toggle('is-selected', isSelected);
+
+                if (isSelected) {
+                    selectedCount++;
+                }
+            });
+
+        if (selectedItemCount) {
+            selectedItemCount.textContent = String(selectedCount);
+        }
+    }
 
     function applySearchFilter() {
 
@@ -841,6 +896,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 const matchesSearch =
                     !query || searchable.includes(query);
 
+                /*
+                 * On-campus: every item may pass this premises rule.
+                 * Off-campus: Barricade is the only item allowed.
+                 */
                 const matchesPremises =
                     !isOffCampus || isBarricade;
 
@@ -865,6 +924,19 @@ document.addEventListener('DOMContentLoaded', () => {
             'input',
             applySearchFilter
         );
+    }
+
+
+    if (clearItemSearch) {
+        clearItemSearch.addEventListener('click', () => {
+            if (!searchInput) {
+                return;
+            }
+
+            searchInput.value = '';
+            applySearchFilter();
+            searchInput.focus();
+        });
     }
 
 
@@ -908,6 +980,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         quantity.value = 0;
                     }
 
+                    updateSelectionUI();
                 }
             );
 
@@ -935,175 +1008,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     checkbox.checked =
                         Number(quantity.value) > 0;
 
-                }
-            );
-
-        });
-
-
-    /*
-    |--------------------------------------------------------------------------
-    | Edit button
-    |--------------------------------------------------------------------------
-    |
-    | Edit affects only the requested quantity.
-    | It does NOT edit the inventory master record.
-    |
-    */
-
-    document
-        .querySelectorAll('.item-edit-button')
-        .forEach((button) => {
-
-            button.addEventListener(
-                'click',
-                () => {
-
-                    const row =
-                        button.closest('.request-item-row');
-
-                    const checkbox =
-                        row?.querySelector('.item-select-checkbox');
-
-                    const quantity =
-                        row?.querySelector('.quantity-input');
-
-                    if (!quantity || !checkbox) {
-                        return;
-                    }
-
-                    checkbox.checked = true;
-
-                    if (
-                        !quantity.value ||
-                        Number(quantity.value) <= 0
-                    ) {
-                        quantity.value = 1;
-                    }
-
-                    quantity.focus();
-                    quantity.select();
-
-                }
-            );
-
-        });
-
-
-    /*
-    |--------------------------------------------------------------------------
-    | Delete button
-    |--------------------------------------------------------------------------
-    |
-    | Removes the item only from the current borrowing request.
-    | It does NOT delete the InventoryItem record.
-    |
-    */
-
-    document
-        .querySelectorAll('.item-delete-button')
-        .forEach((button) => {
-
-            button.addEventListener(
-                'click',
-                () => {
-
-                    const itemName =
-                        button.dataset.name || 'this item';
-
-                    const confirmed =
-                        window.confirm(
-                            `Remove ${itemName} from this borrowing request?`
-                        );
-
-                    if (!confirmed) {
-                        return;
-                    }
-
-                    const row =
-                        button.closest('.request-item-row');
-
-                    const checkbox =
-                        row?.querySelector('.item-select-checkbox');
-
-                    const quantity =
-                        row?.querySelector('.quantity-input');
-
-                    if (checkbox) {
-                        checkbox.checked = false;
-                    }
-
-                    if (quantity) {
-                        quantity.value = 0;
-                    }
-
-                }
-            );
-
-        });
-
-
-    /*
-    |--------------------------------------------------------------------------
-    | Transaction History / Stock Card
-    |--------------------------------------------------------------------------
-    |
-    | The buttons are intentionally real <button> controls.
-    |
-    | Their real transaction-ledger / stock-card backend will be connected
-    | to dedicated read-only endpoints. Do not point these buttons to
-    | inventory.edit because borrowers must never edit inventory master data.
-    |
-    */
-
-    document
-        .querySelectorAll('.item-history-button')
-        .forEach((button) => {
-
-            button.addEventListener(
-                'click',
-                () => {
-
-                    const event =
-                        new CustomEvent(
-                            'request:item-history',
-                            {
-                                detail: {
-                                    itemId: button.dataset.item,
-                                    itemName: button.dataset.name
-                                }
-                            }
-                        );
-
-                    document.dispatchEvent(event);
-
-                }
-            );
-
-        });
-
-
-    document
-        .querySelectorAll('.item-stock-card-button')
-        .forEach((button) => {
-
-            button.addEventListener(
-                'click',
-                () => {
-
-                    const event =
-                        new CustomEvent(
-                            'request:item-stock-card',
-                            {
-                                detail: {
-                                    itemId: button.dataset.item,
-                                    itemName: button.dataset.name
-                                }
-                            }
-                        );
-
-                    document.dispatchEvent(event);
-
+                    updateSelectionUI();
                 }
             );
 
@@ -1247,6 +1152,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     syncPremises();
     applySearchFilter();
+    updateSelectionUI();
     refreshAvailability();
 
 });

@@ -7,12 +7,13 @@
 
     /*
     |--------------------------------------------------------------------------
-    | Effective display status
+    | Effective operational status
     |--------------------------------------------------------------------------
     |
-    | The borrowing request keeps APPROVED_READY_FOR_RELEASE as its request
-    | workflow status even after physical release. Once custody exists, the
-    | custody status is the more accurate operational status to show to users.
+    | Once physical custody exists, custody status is the most useful status
+    | to display. Legacy request states are retained by the backend for
+    | compatibility, but the Borrower UI below presents the current SPMU-only
+    | workflow terminology.
     |
     */
 
@@ -45,6 +46,41 @@
         session('active_workspace') === 'BORROWER'
         && $borrowingRequest->borrower_user_id === auth()->id();
 
+    /*
+     * Borrower-facing compatibility labels.
+     *
+     * Historical UNDER_GSU / UNDER_VPAF records are shown as "Under Review".
+     * Historical FINAL_APPROVED_AWAITING_DOWNLOAD records are shown as
+     * "Approved" because approved-letter download is no longer a workflow gate.
+     */
+    $borrowerDisplayStatus = $displayStatus;
+    $borrowerDisplayStatusLabel = $displayStatusLabel;
+
+    if (!$custodyStatus) {
+        $borrowerDisplayStatus = match($borrowingRequest->status) {
+            App\Enums\RequestStatus::UnderGsu,
+            App\Enums\RequestStatus::UnderVpaf
+                => App\Enums\RequestStatus::UnderSpmu,
+
+            App\Enums\RequestStatus::FinalApprovedAwaitingDownload
+                => App\Enums\RequestStatus::ApprovedReadyForRelease,
+
+            default => $borrowingRequest->status,
+        };
+
+        $borrowerDisplayStatusLabel = match($borrowingRequest->status) {
+            App\Enums\RequestStatus::UnderSpmu => 'Under SPMU Review',
+
+            App\Enums\RequestStatus::UnderGsu,
+            App\Enums\RequestStatus::UnderVpaf => 'Under Review',
+
+            App\Enums\RequestStatus::FinalApprovedAwaitingDownload,
+            App\Enums\RequestStatus::ApprovedReadyForRelease => 'Approved',
+
+            default => null,
+        };
+    }
+
     $hasActiveDraftPreview = $version->documents->contains(
         fn($document) =>
             $document->document_type === 'REQUEST_LETTER'
@@ -57,27 +93,267 @@
             && $document->status === 'DRAFT'
     );
 
-    $approvedLetter = $version->documents->first(
-        fn($document) =>
-            $document->document_type === 'APPROVED_REQUEST_LETTER'
-            && $document->status === 'FINAL'
-    );
-
     $documentNames = [
         'REQUEST_LETTER' => 'Borrowing Request Letter',
-        'APPROVED_REQUEST_LETTER' => 'Approved Request Letter',
         'BORROWER_SLIP' => "Borrower’s Slip",
         'GATE_PASS' => 'Gate Pass',
         'LAUNDRY_FORM' => 'Laundry Form',
         'BILLING_STATEMENT' => 'Billing Statement',
     ];
+
+    /*
+    |--------------------------------------------------------------------------
+    | Borrower supporting documents
+    |--------------------------------------------------------------------------
+    |
+    | Batch 1 introduced RequestVersion::supportingDocuments(). These guards
+    | allow the UI file to remain render-safe while the workflow developer
+    | connects the upload/download routes.
+    |
+    */
+
+    $supportingDocuments = collect();
+    $supportingDocumentModelReady = method_exists($version, 'supportingDocuments');
+
+    if ($isBorrower && $supportingDocumentModelReady) {
+        $supportingDocuments = $version->relationLoaded('supportingDocuments')
+            ? $version->supportingDocuments
+                ->where('status', 'ACTIVE')
+                ->sortByDesc('uploaded_at')
+                ->values()
+            : $version->supportingDocuments()
+                ->where('status', 'ACTIVE')
+                ->with('file')
+                ->latest('uploaded_at')
+                ->get();
+    }
+
+    $signedRequestLetter = $supportingDocuments->first(
+        fn($document) => $document->document_type === 'SIGNED_REQUEST_LETTER'
+    );
+
+    $ptcDocument = $supportingDocuments->first(
+        fn($document) => $document->document_type === 'PTC'
+    );
+
+    $hasRequiredSupportingDocuments =
+        (bool) $signedRequestLetter
+        && (bool) $ptcDocument;
+
+    $supportingUploadRouteReady =
+        \Illuminate\Support\Facades\Route::has('requests.supporting-documents.store');
+
+    $supportingDownloadRouteName =
+        \Illuminate\Support\Facades\Route::has('requests.supporting-documents.download')
+            ? 'requests.supporting-documents.download'
+            : (
+                \Illuminate\Support\Facades\Route::has('request-supporting-documents.download')
+                    ? 'request-supporting-documents.download'
+                    : null
+            );
+
+    $supportingDownloadRouteReady =
+        (bool) $supportingDownloadRouteName;
+
+    $borrowerGeneratedDocuments = $version->documents
+        ->reject(
+            fn($document) =>
+                $document->document_type === 'APPROVED_REQUEST_LETTER'
+        )
+        ->sortByDesc('generated_at');
+
+    $spmuApprovalSteps = $version->approvalSteps
+        ->filter(function ($step) {
+            $stage = $step->stage_code instanceof \BackedEnum
+                ? $step->stage_code->value
+                : (string) $step->stage_code;
+
+            return $stage === 'SPMU';
+        })
+        ->sortBy('sequence_no')
+        ->values();
+
+    $requestStatusValue =
+        $borrowingRequest->status instanceof \BackedEnum
+            ? $borrowingRequest->status->value
+            : (string) $borrowingRequest->status;
+
+    $requestIsUnderReview = in_array(
+        $requestStatusValue,
+        [
+            'SIGNED',
+            'SUBMITTED',
+            'UNDER_SPMU',
+            'UNDER_GSU',
+            'UNDER_VPAF',
+        ],
+        true
+    );
+
+    $requestIsApproved = in_array(
+        $requestStatusValue,
+        [
+            'FINAL_APPROVED_AWAITING_DOWNLOAD',
+            'APPROVED_READY_FOR_RELEASE',
+        ],
+        true
+    ) || (bool) $custody;
+
+    $reviewProgressStatus = match($requestStatusValue) {
+        'RETURNED_FOR_REVISION' => 'RETURNED_FOR_REVISION',
+        'REJECTED' => 'REJECTED',
+        'CANCELLED' => 'CANCELLED',
+        'EXPIRED' => 'EXPIRED',
+        default => $requestIsApproved ? 'APPROVED' : 'PENDING',
+    };
+
+    $reviewProgressLabel = match($requestStatusValue) {
+        'RETURNED_FOR_REVISION' => 'Returned for Revision',
+        'REJECTED' => 'Rejected',
+        'CANCELLED' => 'Cancelled',
+        'EXPIRED' => 'Closed',
+        default => $requestIsApproved
+            ? 'Approved'
+            : ($requestIsUnderReview ? 'Under SPMU Review' : 'Waiting for submission'),
+    };
 @endphp
 
 
 @if($isBorrower)
 
 {{-- ========================================================= --}}
-{{-- BORROWER VIEW                                             --}}
+{{-- BORROWER REQUEST DETAILS                                  --}}
+{{-- ========================================================= --}}
+
+<style>
+    .borrower-request-docs {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 12px;
+    }
+
+    .borrower-document-slot {
+        display: grid;
+        gap: 10px;
+        padding: 15px;
+        background: var(--surface-subtle);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+    }
+
+    .borrower-document-slot.is-complete {
+        border-left: 3px solid var(--success);
+    }
+
+    .borrower-document-slot.is-missing {
+        border-left: 3px solid var(--warning);
+    }
+
+    .borrower-document-slot-header {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 12px;
+    }
+
+    .borrower-document-slot-header > div {
+        min-width: 0;
+    }
+
+    .borrower-document-slot h3,
+    .borrower-document-slot p {
+        margin: 0;
+    }
+
+    .borrower-document-slot p,
+    .borrower-document-slot small {
+        color: var(--text-muted);
+    }
+
+    .borrower-document-slot form {
+        display: grid;
+        gap: 8px;
+    }
+
+    .borrower-document-slot input[type="file"] {
+        width: 100%;
+    }
+
+    .borrower-required-note {
+        margin-top: 12px;
+    }
+
+    .borrower-submit-checks {
+        display: grid;
+        gap: 7px;
+        margin: 13px 0 0;
+        padding: 0;
+        list-style: none;
+    }
+
+    .borrower-submit-checks li {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        color: var(--text-muted);
+        font-size: 12px;
+    }
+
+    .borrower-submit-checks strong {
+        color: var(--heading);
+    }
+
+    .borrower-check-mark {
+        display: grid;
+        width: 22px;
+        height: 22px;
+        flex: 0 0 22px;
+        place-items: center;
+        border-radius: 999px;
+        font-size: 11px;
+        font-weight: 850;
+    }
+
+    .borrower-check-mark.is-complete {
+        color: var(--success);
+        background: var(--success-subtle, #edf8f1);
+        border: 1px solid var(--success-border, #b9ddc5);
+    }
+
+    .borrower-check-mark.is-missing {
+        color: var(--warning);
+        background: var(--warning-subtle, #fff8e7);
+        border: 1px solid var(--warning-border, #ead8a7);
+    }
+
+    .borrower-readonly-condition {
+        display: inline-flex;
+        align-items: center;
+        min-height: 26px;
+        padding: 3px 8px;
+        border: 1px solid var(--border);
+        border-radius: 999px;
+        color: var(--text);
+        background: var(--surface-subtle);
+        font-size: 11px;
+        font-weight: 750;
+        white-space: nowrap;
+    }
+
+    @media (max-width: 760px) {
+        .borrower-request-docs {
+            grid-template-columns: 1fr;
+        }
+
+        .borrower-document-slot-header {
+            flex-direction: column;
+        }
+    }
+</style>
+
+
+{{-- ========================================================= --}}
+{{-- PAGE HEADING                                              --}}
 {{-- ========================================================= --}}
 
 <section class="page-heading request-detail-heading">
@@ -87,12 +363,12 @@
             · Version {{ $version->version_no }}
         </p>
 
-        <h1>{{ $version->purpose_event }}</h1>
+        <h1>{{ $version->purpose_event ?: 'Borrowing request' }}</h1>
 
         <p class="heading-status">
             <x-status-badge
-                :status="$displayStatus"
-                :label="$displayStatusLabel"
+                :status="$borrowerDisplayStatus"
+                :label="$borrowerDisplayStatusLabel"
             />
 
             <span>
@@ -130,14 +406,14 @@
             class="button ghost"
             href="{{ route('requests.index') }}"
         >
-            Back to requests
+            Back to My Requests
         </a>
     </div>
 </section>
 
 
 {{-- ========================================================= --}}
-{{-- CURRENT REQUEST / CUSTODY ACTION                          --}}
+{{-- CURRENT ACTION                                            --}}
 {{-- ========================================================= --}}
 
 <section class="content-area">
@@ -149,12 +425,12 @@
             <div class="action-panel action-primary">
                 <div>
                     <p class="eyebrow">Action required</p>
-
-                    <h2>Review and submit your request</h2>
+                    <h2>Complete the required documents</h2>
 
                     <p>
-                        Confirm the request details and official preview,
-                        then certify and e-sign the saved draft below.
+                        Download and print the Borrowing Request Letter, obtain the
+                        required handwritten signatures, then upload the fully signed
+                        letter together with the Permission to Conduct (PTC) Letter.
                     </p>
                 </div>
 
@@ -164,15 +440,15 @@
                             class="button secondary ui-pressable"
                             href="{{ route('documents.download', $draftPreview) }}"
                         >
-                            Download draft preview
+                            Download / Print BR Letter
                         </a>
                     @endif
 
                     <a
                         class="button primary ui-pressable"
-                        href="#certify-request"
+                        href="#required-documents"
                     >
-                        Review certification
+                        Required documents
                     </a>
                 </div>
             </div>
@@ -185,12 +461,12 @@
             <div class="action-panel action-warning">
                 <div>
                     <p class="eyebrow">Action required</p>
-
                     <h2>Revise this request</h2>
 
                     <p>
-                        Review the approval remarks, correct the request,
-                        and save the next version before submitting again.
+                        Review the SPMU remarks, correct the request, and save the
+                        revised version. Generate and complete the required physical
+                        documents again before resubmitting.
                     </p>
                 </div>
 
@@ -206,54 +482,20 @@
 
 
         @case(App\Enums\RequestStatus::FinalApprovedAwaitingDownload)
-
-            <div class="action-panel action-warning">
-                <div>
-                    <p class="eyebrow">Action required</p>
-
-                    <h2>Download the approved request letter</h2>
-
-                    <p>
-                        Download the final approved letter by
-                        {{ optional($borrowingRequest->download_deadline_at)->format('d F Y, g:i A') }}.
-                        This unlocks the Borrower’s Slip and release processing.
-                    </p>
-                </div>
-
-                @if($approvedLetter)
-                    <a
-                        class="button primary ui-pressable"
-                        href="{{ route('documents.download', $approvedLetter) }}"
-                    >
-                        Download approved letter
-                    </a>
-                @endif
-            </div>
-
-            @break
-
-
         @case(App\Enums\RequestStatus::ApprovedReadyForRelease)
 
             @switch($custodyStatus)
 
-                {{-- ----------------------------------------- --}}
-                {{-- PHYSICALLY RELEASED                       --}}
-                {{-- ----------------------------------------- --}}
-
                 @case('ACTIVE')
-
                     <div class="action-panel action-success">
                         <div>
                             <p class="eyebrow">Physical release completed</p>
-
                             <h2>Items released</h2>
 
                             <p>
-                                Your approved items have been physically released
-                                by SPMU and are now under your custody.
-                                Review the borrowing record for actual issued
-                                quantities and the return deadline.
+                                Your approved items have been physically released by
+                                SPMU and are now under your custody. Review the actual
+                                issued quantities and return deadline.
                             </p>
                         </div>
 
@@ -266,26 +508,17 @@
                             </a>
                         @endif
                     </div>
-
                     @break
 
-
-                {{-- ----------------------------------------- --}}
-                {{-- PARTIALLY RETURNED                        --}}
-                {{-- ----------------------------------------- --}}
-
                 @case('PARTIALLY_RETURNED')
-
                     <div class="action-panel action-warning">
                         <div>
                             <p class="eyebrow">Return in progress</p>
-
                             <h2>Partially returned</h2>
 
                             <p>
                                 Some released quantities have already been returned.
-                                Review the borrowing record to see which quantities
-                                are still under your custody.
+                                Review the remaining quantities still under your custody.
                             </p>
                         </div>
 
@@ -298,26 +531,17 @@
                             </a>
                         @endif
                     </div>
-
                     @break
 
-
-                {{-- ----------------------------------------- --}}
-                {{-- OVERDUE                                   --}}
-                {{-- ----------------------------------------- --}}
-
                 @case('OVERDUE')
-
                     <div class="action-panel action-warning">
                         <div>
                             <p class="eyebrow">Return required</p>
-
                             <h2>Borrowing overdue</h2>
 
                             <p>
-                                The return deadline has passed.
-                                Review your borrowing record and coordinate the
-                                physical return with SPMU.
+                                The return deadline has passed. Review your borrowing
+                                record and coordinate the physical return with SPMU.
                             </p>
                         </div>
 
@@ -330,26 +554,18 @@
                             </a>
                         @endif
                     </div>
-
                     @break
 
-
-                {{-- ----------------------------------------- --}}
-                {{-- EARLY RETURN                              --}}
-                {{-- ----------------------------------------- --}}
-
                 @case('EARLY_RETURN')
-
                     <div class="action-panel action-primary">
                         <div>
                             <p class="eyebrow">Return coordination</p>
-
-                            <h2>Early Return in progress</h2>
+                            <h2>Early return in progress</h2>
 
                             <p>
-                                An Early Return process is recorded for this
-                                borrowing. Inventory quantities will change only
-                                after SPMU physically receives and inspects the items.
+                                An early-return process is recorded for this borrowing.
+                                Inventory quantities change only after SPMU physically
+                                receives and inspects the items.
                             </p>
                         </div>
 
@@ -362,26 +578,18 @@
                             </a>
                         @endif
                     </div>
-
                     @break
 
-
-                {{-- ----------------------------------------- --}}
-                {{-- INCIDENT OPEN                             --}}
-                {{-- ----------------------------------------- --}}
-
                 @case('INCIDENT_OPEN')
-
                     <div class="action-panel action-warning">
                         <div>
                             <p class="eyebrow">Accountability review</p>
-
                             <h2>Incident remains open</h2>
 
                             <p>
-                                An incident or accountability issue remains open
-                                for this borrowing. Review the custody record for
-                                the latest condition and required action.
+                                An incident or accountability issue remains open for
+                                this borrowing. Review the custody record for the
+                                latest details and required action.
                             </p>
                         </div>
 
@@ -394,26 +602,18 @@
                             </a>
                         @endif
                     </div>
-
                     @break
 
-
-                {{-- ----------------------------------------- --}}
-                {{-- ITEMS RETURNED, OBLIGATION STILL OPEN     --}}
-                {{-- ----------------------------------------- --}}
-
                 @case('OBLIGATION_OPEN')
-
                     <div class="action-panel action-warning">
                         <div>
                             <p class="eyebrow">Items returned</p>
-
                             <h2>Outstanding obligation remains</h2>
 
                             <p>
                                 The physical items have been returned, but an
                                 outstanding obligation still requires completion
-                                before the custody record can be fully closed.
+                                before the custody record can be closed.
                             </p>
                         </div>
 
@@ -426,20 +626,12 @@
                             </a>
                         @endif
                     </div>
-
                     @break
 
-
-                {{-- ----------------------------------------- --}}
-                {{-- FULLY COMPLETED                           --}}
-                {{-- ----------------------------------------- --}}
-
                 @case('CLOSED')
-
                     <div class="action-panel action-success">
                         <div>
                             <p class="eyebrow">Borrowing completed</p>
-
                             <h2>Items returned</h2>
 
                             <p>
@@ -457,27 +649,19 @@
                             </a>
                         @endif
                     </div>
-
                     @break
 
-
-                {{-- ----------------------------------------- --}}
-                {{-- STILL PREPARING FOR RELEASE               --}}
-                {{-- ----------------------------------------- --}}
-
                 @default
-
                     <div class="action-panel action-success">
                         <div>
                             <p class="eyebrow">Approved request</p>
-
-                            <h2>Ready for release processing</h2>
+                            <h2>Ready for SPMU release processing</h2>
 
                             <p>
                                 {{
                                     $custody
-                                        ? 'Open your Borrower’s Slip to review preparation, acknowledgement, and release details.'
-                                        : 'SPMU is preparing the Borrower’s Slip and release record. No action is required yet.'
+                                        ? 'SPMU is preparing the release record. Open your borrowing to review the latest release status.'
+                                        : 'Your request is approved. SPMU will prepare the release record and pickup instructions.'
                                 }}
                             </p>
                         </div>
@@ -487,7 +671,7 @@
                                 class="button primary ui-pressable"
                                 href="{{ route('custody.show', $custody) }}"
                             >
-                                Open Borrower’s Slip
+                                View release status
                             </a>
                         @endif
                     </div>
@@ -504,17 +688,70 @@
             <div class="action-panel action-neutral">
                 <div>
                     <p class="eyebrow">No action required</p>
-
                     <h2>Your request is under review</h2>
 
                     <p>
-                        The approval progress below shows the current stage.
-                        You will be notified if a revision or another action
-                        is required.
+                        Your request has been submitted for review. You will be
+                        notified if SPMU returns it for revision or records a decision.
                     </p>
                 </div>
 
-                <x-status-badge :status="$borrowingRequest->status" />
+                <x-status-badge
+                    :status="$borrowerDisplayStatus"
+                    :label="$borrowerDisplayStatusLabel"
+                />
+            </div>
+
+            @break
+
+
+        @case(App\Enums\RequestStatus::Rejected)
+
+            <div class="action-panel action-warning">
+                <div>
+                    <p class="eyebrow">Decision recorded</p>
+                    <h2>Request rejected</h2>
+
+                    <p>
+                        Review the recorded SPMU remarks and request history below.
+                    </p>
+                </div>
+
+                <a
+                    class="button secondary ui-pressable"
+                    href="#request-history"
+                >
+                    View decision history
+                </a>
+            </div>
+
+            @break
+
+
+        @case(App\Enums\RequestStatus::Cancelled)
+
+            <div class="action-panel action-neutral">
+                <div>
+                    <p class="eyebrow">Request closed</p>
+                    <h2>Request cancelled</h2>
+                    <p>This request is no longer active.</p>
+                </div>
+            </div>
+
+            @break
+
+
+        @case(App\Enums\RequestStatus::Expired)
+
+            <div class="action-panel action-neutral">
+                <div>
+                    <p class="eyebrow">Request record</p>
+                    <h2>Request no longer active</h2>
+
+                    <p>
+                        Review the request history below for the final recorded status.
+                    </p>
+                </div>
             </div>
 
             @break
@@ -525,24 +762,138 @@
             <div class="action-panel action-neutral">
                 <div>
                     <p class="eyebrow">Request record</p>
-
-                    <h2>No action is currently available</h2>
+                    <h2>Review the latest request status</h2>
 
                     <p>
-                        Review the status, approval remarks,
-                        documents, and history below.
+                        Review the request details, required documents, SPMU review,
+                        and history below.
                     </p>
                 </div>
 
                 <x-status-badge
-                    :status="$displayStatus"
-                    :label="$displayStatusLabel"
+                    :status="$borrowerDisplayStatus"
+                    :label="$borrowerDisplayStatusLabel"
                 />
             </div>
 
     @endswitch
 
 </section>
+
+
+{{-- ========================================================= --}}
+{{-- BORROWER WORKFLOW PROGRESS                                --}}
+{{-- ========================================================= --}}
+
+<section class="content-area">
+    <article class="card">
+
+        <div class="card-header">
+            <div>
+                <p class="eyebrow">Request progress</p>
+                <h2>Borrowing request workflow</h2>
+            </div>
+        </div>
+
+        <ol class="approval-progress">
+
+            <li>
+                <span class="approval-marker" aria-hidden="true">1</span>
+
+                <div>
+                    <span class="approval-stage">Request details</span>
+
+                    <x-status-badge
+                        status="VERIFIED"
+                        label="Saved"
+                    />
+
+                    <p>
+                        Request details, borrowing schedule, premises,
+                        and requested items are recorded.
+                    </p>
+                </div>
+            </li>
+
+            <li>
+                <span class="approval-marker" aria-hidden="true">2</span>
+
+                <div>
+                    <span class="approval-stage">Print and sign BR Letter</span>
+
+                    <x-status-badge
+                        :status="$signedRequestLetter ? 'VERIFIED' : ($draftPreview ? 'PENDING' : 'PENDING')"
+                        :label="$signedRequestLetter ? 'Signed copy uploaded' : ($draftPreview ? 'Ready to print' : 'Preview pending')"
+                    />
+
+                    <p>
+                        Print the generated Borrowing Request Letter and obtain
+                        the required handwritten signatures.
+                    </p>
+                </div>
+            </li>
+
+            <li>
+                <span class="approval-marker" aria-hidden="true">3</span>
+
+                <div>
+                    <span class="approval-stage">Required documents</span>
+
+                    <x-status-badge
+                        :status="$hasRequiredSupportingDocuments ? 'VERIFIED' : 'PENDING'"
+                        :label="$hasRequiredSupportingDocuments ? 'Complete' : 'Signed BR Letter + PTC required'"
+                    />
+
+                    <p>
+                        Both the fully signed Borrowing Request Letter and
+                        Permission to Conduct (PTC) Letter are required.
+                    </p>
+                </div>
+            </li>
+
+            <li>
+                <span class="approval-marker" aria-hidden="true">4</span>
+
+                <div>
+                    <span class="approval-stage">SPMU review</span>
+
+                    <x-status-badge
+                        :status="$reviewProgressStatus"
+                        :label="$reviewProgressLabel"
+                    />
+
+                    <p>
+                        SPMU may approve, reject, or return the request for revision.
+                        Inventory is reserved only when SPMU approves.
+                    </p>
+                </div>
+            </li>
+
+            <li>
+                <span class="approval-marker" aria-hidden="true">5</span>
+
+                <div>
+                    <span class="approval-stage">Release / pickup</span>
+
+                    <x-status-badge
+                        :status="$custodyStatus ?: ($requestIsApproved ? 'VERIFIED' : 'PENDING')"
+                        :label="$custodyStatus
+                            ? $borrowerDisplayStatusLabel
+                            : ($requestIsApproved ? 'Ready for Release' : 'After SPMU approval')"
+                    />
+
+                    <p>
+                        After approval, SPMU prepares the release record and
+                        coordinates physical pickup of the approved items.
+                    </p>
+                </div>
+            </li>
+
+        </ol>
+
+    </article>
+</section>
+
 
 
 {{-- ========================================================= --}}
@@ -573,12 +924,12 @@
 
             <div>
                 <dt>Items needed from</dt>
-                <dd>{{ $version->needed_from->format('d F Y, g:i A') }}</dd>
+                <dd>{{ $version->needed_from->format('d F Y') }}</dd>
             </div>
 
             <div>
-                <dt>Expected return</dt>
-                <dd>{{ $version->return_due_at->format('d F Y, g:i A') }}</dd>
+                <dt>Expected return date</dt>
+                <dd>{{ $version->return_due_at->format('d F Y') }}</dd>
             </div>
 
             <div>
@@ -587,20 +938,22 @@
             </div>
 
             <div>
-                <dt>Campus use</dt>
+                <dt>Premises</dt>
                 <dd>
                     {{
                         $version->off_campus
-                            ? 'Includes approved off-campus item use'
-                            : 'On-campus use only'
+                            ? 'Off-campus'
+                            : 'On-campus'
                     }}
                 </dd>
             </div>
 
-            <div class="summary-wide">
-                <dt>Event or activity details</dt>
-                <dd>{{ $version->event_details }}</dd>
-            </div>
+            @if($version->event_details)
+                <div class="summary-wide">
+                    <dt>Event or activity details</dt>
+                    <dd>{{ $version->event_details }}</dd>
+                </div>
+            @endif
 
             @if($version->represents_student_activity)
                 <div class="summary-wide">
@@ -633,11 +986,12 @@
         <div class="card-header">
             <div>
                 <p class="eyebrow">Requested items</p>
-                <h2>Property and quantities</h2>
+                <h2>Items included in this request</h2>
             </div>
 
             <span class="meta">
-                {{ $version->items->count() }} item type(s)
+                {{ $version->items->count() }}
+                {{ $version->items->count() === 1 ? 'item type' : 'item types' }}
             </span>
         </div>
 
@@ -647,45 +1001,63 @@
                 <thead>
                     <tr>
                         <th scope="col">Item</th>
-                        <th scope="col">Use location</th>
-                        <th scope="col">Requested</th>
-                        <th scope="col">Approved</th>
+                        <th scope="col">Description</th>
+                        <th scope="col">Unit</th>
+                        <th scope="col">Qty</th>
+                        <th scope="col">Condition</th>
                     </tr>
                 </thead>
 
                 <tbody>
-
                     @foreach($version->items as $item)
+                        @php
+                            $inventoryItem = $item->inventoryItem;
+
+                            $itemName =
+                                $inventoryItem?->unique_description
+                                ?: $item->description_snapshot;
+
+                            $itemDescription =
+                                $inventoryItem?->specification
+                                ?: '—';
+
+                            $conditionCode =
+                                $inventoryItem?->condition_code;
+
+                            $conditionLabel = match($conditionCode) {
+                                'SERVICEABLE' => 'Serviceable',
+                                'DAMAGED_MAINTENANCE' => 'Damaged / Maintenance',
+                                'CONDEMNED' => 'Condemned',
+                                default => $conditionCode
+                                    ? str($conditionCode)->replace('_', ' ')->lower()->title()
+                                    : 'Not recorded',
+                            };
+                        @endphp
+
                         <tr>
                             <td data-label="Item">
-                                <strong>{{ $item->description_snapshot }}</strong>
-                                <small>{{ $item->unit_snapshot }}</small>
+                                <strong>{{ $itemName }}</strong>
                             </td>
 
-                            <td data-label="Use location">
-                                {{
-                                    str($item->use_location)
-                                        ->replace('_', ' ')
-                                        ->lower()
-                                        ->title()
-                                }}
+                            <td data-label="Description">
+                                {{ $itemDescription }}
                             </td>
 
-                            <td data-label="Requested">
-                                {{ $item->requested_quantity + 0 }}
+                            <td data-label="Unit">
                                 {{ $item->unit_snapshot }}
                             </td>
 
-                            <td data-label="Approved">
-                                {{
-                                    $item->approved_quantity !== null
-                                        ? ($item->approved_quantity + 0).' '.$item->unit_snapshot
-                                        : 'Pending review'
-                                }}
+                            <td data-label="Qty">
+                                {{ $item->requested_quantity + 0 }}
+                            </td>
+
+                            <td data-label="Condition">
+                                <span class="borrower-readonly-condition">
+                                    {{ $conditionLabel }}
+                                </span>
                             </td>
                         </tr>
                     @endforeach
-
                 </tbody>
 
             </table>
@@ -696,7 +1068,198 @@
 
 
 {{-- ========================================================= --}}
-{{-- APPROVAL PROGRESS + DOCUMENTS                             --}}
+{{-- REQUIRED DOCUMENTS                                        --}}
+{{-- ========================================================= --}}
+
+<section
+    class="content-area"
+    id="required-documents"
+>
+    <article class="card">
+
+        <div class="card-header">
+            <div>
+                <p class="eyebrow">Required before submission</p>
+                <h2>Signed BR Letter and PTC</h2>
+            </div>
+
+            <x-status-badge
+                :status="$hasRequiredSupportingDocuments ? 'VERIFIED' : 'PENDING'"
+                :label="$hasRequiredSupportingDocuments ? 'Complete' : 'Incomplete'"
+            />
+        </div>
+
+        <p class="meta">
+            Print the generated Borrowing Request Letter and obtain the required
+            handwritten signatures. Upload the fully signed copy together with
+            the Permission to Conduct (PTC) Letter. Required signatures must be
+            completed on the printed document.
+        </p>
+
+        <div class="borrower-request-docs top-gap">
+
+            @foreach([
+                'SIGNED_REQUEST_LETTER' => [
+                    'Signed Borrowing Request Letter',
+                    'Upload the fully signed copy of the generated Borrowing Request Letter.'
+                ],
+                'PTC' => [
+                    'Permission to Conduct (PTC) Letter',
+                    'Upload the supporting Permission to Conduct Letter for this request.'
+                ],
+            ] as $documentType => [$documentLabel, $documentHelp])
+
+                @php
+                    $supportingDocument =
+                        $documentType === 'SIGNED_REQUEST_LETTER'
+                            ? $signedRequestLetter
+                            : $ptcDocument;
+                @endphp
+
+                <section
+                    class="
+                        borrower-document-slot
+                        {{ $supportingDocument ? 'is-complete' : 'is-missing' }}
+                    "
+                >
+                    <div class="borrower-document-slot-header">
+                        <div>
+                            <h3>{{ $documentLabel }}</h3>
+                            <p>{{ $documentHelp }}</p>
+                        </div>
+
+                        <x-status-badge
+                            :status="$supportingDocument ? 'VERIFIED' : 'PENDING'"
+                            :label="$supportingDocument ? 'Uploaded' : 'Required'"
+                        />
+                    </div>
+
+                    @if($supportingDocument)
+
+                        <div>
+                            <strong>
+                                {{ $supportingDocument->file?->original_name ?: $documentLabel }}
+                            </strong>
+
+                            <small>
+                                Uploaded
+                                {{
+                                    optional($supportingDocument->uploaded_at)
+                                        ->format('d M Y, g:i A')
+                                    ?: 'recently'
+                                }}
+                            </small>
+                        </div>
+
+                        <div class="actions">
+                            @if($supportingDownloadRouteReady)
+                                <a
+                                    class="button secondary small ui-pressable"
+                                    href="{{ route($supportingDownloadRouteName, $supportingDocument) }}"
+                                >
+                                    View uploaded file
+                                </a>
+                            @endif
+
+                            @if(
+                                $supportingUploadRouteReady
+                                && in_array(
+                                    $borrowingRequest->status,
+                                    [
+                                        App\Enums\RequestStatus::Draft,
+                                        App\Enums\RequestStatus::ReturnedForRevision
+                                    ],
+                                    true
+                                )
+                            )
+                                <span class="meta">
+                                    Upload another file to replace this copy.
+                                </span>
+                            @endif
+                        </div>
+
+                    @endif
+
+
+                    @if(in_array(
+                        $borrowingRequest->status,
+                        [
+                            App\Enums\RequestStatus::Draft,
+                            App\Enums\RequestStatus::ReturnedForRevision
+                        ],
+                        true
+                    ))
+
+                        @if($supportingUploadRouteReady)
+
+                            <form
+                                method="post"
+                                action="{{ route('requests.supporting-documents.store', $borrowingRequest) }}"
+                                enctype="multipart/form-data"
+                            >
+                                @csrf
+
+                                <input
+                                    type="hidden"
+                                    name="document_type"
+                                    value="{{ $documentType }}"
+                                >
+
+                                <label>
+                                    {{ $supportingDocument ? 'Replace file' : 'Choose file' }}
+
+                                    <input
+                                        type="file"
+                                        name="document"
+                                        accept=".pdf,.png,.jpg,.jpeg,.webp"
+                                        required
+                                    >
+                                </label>
+
+                                <button
+                                    type="submit"
+                                    class="button secondary small ui-pressable"
+                                >
+                                    {{ $supportingDocument ? 'Replace upload' : 'Upload document' }}
+                                </button>
+                            </form>
+
+                        @else
+
+                            <div class="callout">
+                                <strong>Upload not available yet</strong>
+
+                                <p>
+                                    This document will be uploaded here once the
+                                    supporting-document upload function is enabled.
+                                </p>
+                            </div>
+
+                        @endif
+
+                    @endif
+
+                </section>
+
+            @endforeach
+
+        </div>
+
+        <div class="callout borrower-required-note">
+            <strong>Important</strong>
+
+            <p>
+                Uploading these documents does not reserve inventory.
+                Inventory is reserved only after SPMU approves the request.
+            </p>
+        </div>
+
+    </article>
+</section>
+
+
+{{-- ========================================================= --}}
+{{-- SPMU REVIEW + GENERATED DOCUMENTS                          --}}
 {{-- ========================================================= --}}
 
 <section class="content-grid request-progress-grid">
@@ -705,80 +1268,16 @@
 
         <div class="card-header">
             <div>
-                <p class="eyebrow">Approval progress</p>
-                <h2>SPMU → GSU → VPAF</h2>
+                <p class="eyebrow">Review progress</p>
+                <h2>SPMU review</h2>
             </div>
         </div>
 
         <ol class="approval-progress">
 
-            @forelse($version->approvalSteps->sortBy('sequence_no') as $step)
-
-                @php
-                    $decision = $step->decision ?: 'PENDING';
-                @endphp
+            @forelse($spmuApprovalSteps as $step)
 
                 <li>
-
-                    <span
-                        class="approval-marker"
-                        aria-hidden="true"
-                    >
-                        {{ $step->sequence_no }}
-                    </span>
-
-                    <div>
-
-                        <span class="approval-stage">
-                            {{ $step->stage_code->value }} review
-                        </span>
-
-                        <x-status-badge :status="$decision" />
-
-                        <p>
-                            {{
-                                $step->approver?->full_name
-                                    ?: 'Awaiting authorized reviewer'
-                            }}
-                        </p>
-
-                        <small>
-
-                            @if($step->decided_at)
-
-                                Decided
-                                {{ $step->decided_at->format('d M Y, g:i A') }}
-
-                            @elseif($step->received_at)
-
-                                Received
-                                {{ $step->received_at->format('d M Y, g:i A') }}
-
-                            @else
-
-                                Not yet reached
-
-                            @endif
-
-                        </small>
-
-                        @if($step->remarks)
-
-                            <div class="review-remarks">
-                                <strong>Reviewer remarks</strong>
-                                <p>{{ $step->remarks }}</p>
-                            </div>
-
-                        @endif
-
-                    </div>
-
-                </li>
-
-            @empty
-
-                <li class="approval-empty">
-
                     <span
                         class="approval-marker"
                         aria-hidden="true"
@@ -787,14 +1286,58 @@
                     </span>
 
                     <div>
-                        <strong>Approval begins after submission</strong>
+                        <span class="approval-stage">
+                            SPMU review
+                        </span>
+
+                        <x-status-badge
+                            :status="$step->decision ?: 'PENDING'"
+                        />
 
                         <p>
-                            Save, review, certify, and submit the draft
-                            to start SPMU review.
+                            {{
+                                $step->approver?->full_name
+                                    ?: 'Awaiting authorized SPMU reviewer'
+                            }}
+                        </p>
+
+                        <small>
+                            @if($step->decided_at)
+                                Decided {{ $step->decided_at->format('d M Y, g:i A') }}
+                            @elseif($step->received_at)
+                                Received {{ $step->received_at->format('d M Y, g:i A') }}
+                            @else
+                                Not yet received
+                            @endif
+                        </small>
+
+                        @if($step->remarks)
+                            <div class="review-remarks">
+                                <strong>SPMU remarks</strong>
+                                <p>{{ $step->remarks }}</p>
+                            </div>
+                        @endif
+                    </div>
+                </li>
+
+            @empty
+
+                <li class="approval-empty">
+                    <span
+                        class="approval-marker"
+                        aria-hidden="true"
+                    >
+                        1
+                    </span>
+
+                    <div>
+                        <strong>SPMU review begins after submission</strong>
+
+                        <p>
+                            Complete the signed Borrowing Request Letter and PTC,
+                            then submit the request to SPMU.
                         </p>
                     </div>
-
                 </li>
 
             @endforelse
@@ -811,17 +1354,14 @@
 
         <div class="card-header">
             <div>
-                <p class="eyebrow">Documents</p>
-                <h2>Controlled documents</h2>
+                <p class="eyebrow">Generated document</p>
+                <h2>Borrowing Request Letter</h2>
             </div>
         </div>
 
         <div class="document-list borrower-document-list">
 
-            @forelse(
-                $version->documents->sortByDesc('generated_at')
-                as $document
-            )
+            @forelse($borrowerGeneratedDocuments as $document)
 
                 @php
                     $historical = in_array(
@@ -836,9 +1376,7 @@
                 @endphp
 
                 <article>
-
                     <div>
-
                         <strong>
                             {{
                                 $documentNames[$document->document_type]
@@ -859,30 +1397,25 @@
                             :status="$document->status"
                             :label="$historical ? 'Historical record' : null"
                         />
-
                     </div>
 
                     @if(!$historical)
-
                         <a
                             class="button secondary small ui-pressable"
                             href="{{ route('documents.download', $document) }}"
                         >
                             Download
                         </a>
-
                     @endif
-
                 </article>
 
             @empty
 
                 <div class="empty-state">
-                    <strong>No documents available yet.</strong>
+                    <strong>No generated document available yet.</strong>
 
                     <span>
-                        Generated request and approval documents
-                        will appear here.
+                        The Borrowing Request Letter will appear after the draft is saved.
                     </span>
                 </div>
 
@@ -897,12 +1430,11 @@
         )
 
             <div class="callout warning">
-
-                <strong>Draft preview missing</strong>
+                <strong>Borrowing Request Letter preview missing</strong>
 
                 <p>
                     Your saved request and item lines are intact.
-                    Regenerate only the missing request-letter preview.
+                    Regenerate only the missing printable preview.
                 </p>
 
                 <form
@@ -912,10 +1444,9 @@
                     @csrf
 
                     <button class="button secondary">
-                        Regenerate missing preview
+                        Regenerate preview
                     </button>
                 </form>
-
             </div>
 
         @endif
@@ -923,6 +1454,83 @@
     </article>
 
 </section>
+
+
+{{-- ========================================================= --}}
+{{-- SUBMIT TO SPMU                                            --}}
+{{-- ========================================================= --}}
+
+@if($borrowingRequest->status === App\Enums\RequestStatus::Draft)
+
+    <section class="content-area narrow">
+
+        <form
+            method="post"
+            action="{{ route('requests.submit', $borrowingRequest) }}"
+            class="card certification-panel"
+        >
+            @csrf
+
+            <p class="eyebrow">Submit request</p>
+            <h2>Submit to SPMU</h2>
+
+            <p>
+                Submit only after the fully signed Borrowing Request Letter and
+                PTC have been uploaded. Submission sends the request to SPMU for
+                review and does not reserve inventory.
+            </p>
+
+            <ul class="borrower-submit-checks">
+                <li>
+                    <span class="borrower-check-mark {{ $signedRequestLetter ? 'is-complete' : 'is-missing' }}">
+                        {{ $signedRequestLetter ? '✓' : '!' }}
+                    </span>
+
+                    <span>
+                        <strong>Signed BR Letter:</strong>
+                        {{ $signedRequestLetter ? 'Uploaded' : 'Required' }}
+                    </span>
+                </li>
+
+                <li>
+                    <span class="borrower-check-mark {{ $ptcDocument ? 'is-complete' : 'is-missing' }}">
+                        {{ $ptcDocument ? '✓' : '!' }}
+                    </span>
+
+                    <span>
+                        <strong>PTC Letter:</strong>
+                        {{ $ptcDocument ? 'Uploaded' : 'Required' }}
+                    </span>
+                </li>
+            </ul>
+
+            <div class="actions top-gap">
+                <button
+                    class="button primary ui-pressable"
+                    @disabled(!$hasRequiredSupportingDocuments)
+                >
+                    Submit to SPMU
+                </button>
+
+                <a
+                    class="button secondary"
+                    href="{{ route('requests.edit', $borrowingRequest) }}"
+                >
+                    Edit request
+                </a>
+            </div>
+
+            @if(!$hasRequiredSupportingDocuments)
+                <p class="field-help">
+                    Upload both required documents before submission.
+                </p>
+            @endif
+
+        </form>
+
+    </section>
+
+@endif
 
 
 {{-- ========================================================= --}}
@@ -943,8 +1551,8 @@
                     <h2>Items currently under custody</h2>
 
                     <p>
-                        Review actual released quantities,
-                        return deadlines, and current item status.
+                        Review actual released quantities, return deadlines,
+                        and current item status.
                     </p>
 
                 @elseif($custodyStatus === 'CLOSED')
@@ -957,16 +1565,14 @@
 
                 @else
 
-                    <h2>Borrower’s Slip available</h2>
+                    <h2>Release record available</h2>
 
                     <p>
-                        Review actual issued quantities,
-                        required documents, acknowledgement,
+                        Review the latest release preparation, issued quantities,
                         and return status.
                     </p>
 
                 @endif
-
             </div>
 
             <a
@@ -977,57 +1583,6 @@
             </a>
 
         </div>
-
-    </section>
-
-@endif
-
-
-{{-- ========================================================= --}}
-{{-- CERTIFY DRAFT                                             --}}
-{{-- ========================================================= --}}
-
-@if($borrowingRequest->status === App\Enums\RequestStatus::Draft)
-
-    <section
-        class="content-area narrow"
-        id="certify-request"
-    >
-
-        <form
-            method="post"
-            action="{{ route('requests.submit', $borrowingRequest) }}"
-            class="card certification-panel"
-        >
-
-            @csrf
-
-            <p class="eyebrow">Official certification</p>
-
-            <h2>Certify, e-sign, and submit</h2>
-
-            <p>
-                I certify that the request data and item quantities are accurate.
-                Submitting records an immutable snapshot of my current profile
-                e-signature and sends the request to SPMU for review.
-            </p>
-
-            <div class="actions">
-
-                <button class="button primary ui-pressable">
-                    Sign and submit to SPMU
-                </button>
-
-                <a
-                    class="button secondary"
-                    href="{{ route('requests.edit', $borrowingRequest) }}"
-                >
-                    Edit before submitting
-                </a>
-
-            </div>
-
-        </form>
 
     </section>
 
@@ -1062,7 +1617,6 @@
                 action="{{ route('requests.cancel', $borrowingRequest) }}"
                 class="form-grid top-gap"
             >
-
                 @csrf
 
                 <label>
@@ -1075,14 +1629,13 @@
                 </label>
 
                 <p class="meta">
-                    Cancellation is recorded in the request history
-                    and restores any unreleased allocation.
+                    Cancellation is recorded in the request history.
+                    Any unreleased reservation, if one exists, is restored.
                 </p>
 
                 <button class="button danger">
                     Cancel request
                 </button>
-
             </form>
 
         </details>
@@ -1096,7 +1649,10 @@
 {{-- BORROWER REQUEST HISTORY                                  --}}
 {{-- ========================================================= --}}
 
-<section class="content-area">
+<section
+    class="content-area"
+    id="request-history"
+>
 
     <article class="card">
 
@@ -1111,6 +1667,46 @@
 
             @forelse($borrowingRequest->statusHistory as $history)
 
+                @php
+                    $historyStatusValue =
+                        $history->to_status instanceof \BackedEnum
+                            ? $history->to_status->value
+                            : (string) $history->to_status;
+
+                    $historyDisplayStatus = match($historyStatusValue) {
+                        'UNDER_GSU',
+                        'UNDER_VPAF' => 'UNDER_SPMU',
+
+                        'FINAL_APPROVED_AWAITING_DOWNLOAD'
+                            => 'APPROVED_READY_FOR_RELEASE',
+
+                        default => $history->to_status,
+                    };
+
+                    $historyDisplayLabel = match($historyStatusValue) {
+                        'UNDER_GSU',
+                        'UNDER_VPAF' => 'Under Review',
+
+                        'UNDER_SPMU' => 'Under SPMU Review',
+
+                        'FINAL_APPROVED_AWAITING_DOWNLOAD'
+                            => 'Approved',
+
+                        default => null,
+                    };
+
+                    $historyReason = match($historyStatusValue) {
+                        'UNDER_GSU',
+                        'UNDER_VPAF'
+                            => 'Request review status updated.',
+
+                        'FINAL_APPROVED_AWAITING_DOWNLOAD'
+                            => 'Request approved and prepared for release processing.',
+
+                        default => $history->reason ?: 'Status updated.',
+                    };
+                @endphp
+
                 <article>
 
                     <span>
@@ -1119,11 +1715,12 @@
 
                     <div>
 
-                        <x-status-badge :status="$history->to_status" />
+                        <x-status-badge
+                            :status="$historyDisplayStatus"
+                            :label="$historyDisplayLabel"
+                        />
 
-                        <p>
-                            {{ $history->reason ?: 'Status updated.' }}
-                        </p>
+                        <p>{{ $historyReason }}</p>
 
                         <small>
                             {{ $history->actor?->full_name ?: 'System' }}

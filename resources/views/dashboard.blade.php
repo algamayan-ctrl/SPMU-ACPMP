@@ -161,8 +161,12 @@
         @if($workspace === 'BORROWER')
 
             <h1>
-                Dashboard
+                Welcome, {{ $firstName }}
             </h1>
+
+            <p>
+                Track your requests, active borrowings, return deadlines, and accountability records in one place.
+            </p>
 
         @else
 
@@ -174,7 +178,7 @@
                 {{
                     match($workspace) {
                         'SPMU' =>
-                            'See the requests, releases, returns, and inventory tasks that need attention.',
+                            'Review borrowing requests, prepare approved items for release, process returns, and monitor inventory operations.',
 
                         'GSU' =>
                             'Review the requests waiting for GSU approval.',
@@ -191,6 +195,22 @@
         @endif
 
     </div>
+
+    @if($workspace === 'BORROWER')
+
+        <a
+            class="button primary ui-pressable"
+            href="{{ route('requests.create') }}"
+        >
+            <x-icon
+                name="plus"
+                size="16"
+            />
+
+            New borrowing request
+        </a>
+
+    @endif
 
 </section>
 
@@ -332,14 +352,18 @@
             <div>
 
                 <p class="eyebrow">
-                    Your task list
+                    {{ $workspace === 'SPMU' ? 'SPMU operations' : 'Your task list' }}
                 </p>
 
                 <h2>
                     {{
                         $workspace === 'ICTU'
                             ? 'Recently added accounts'
-                            : 'What needs your attention'
+                            : (
+                                $workspace === 'SPMU'
+                                    ? 'Operational tasks requiring attention'
+                                    : 'What needs your attention'
+                            )
                     }}
                 </h2>
 
@@ -479,8 +503,47 @@
                             'CLOSED' =>
                                 'Returned',
 
-                            default =>
-                                null,
+                            default => match($record->status) {
+
+                                App\Enums\RequestStatus::Draft =>
+                                    'Draft',
+
+                                App\Enums\RequestStatus::ReturnedForRevision =>
+                                    'Needs Revision',
+
+                                /*
+                                 * Legacy compatibility only. The revised borrower UI
+                                 * no longer requires an approved-letter download step.
+                                 */
+                                App\Enums\RequestStatus::FinalApprovedAwaitingDownload =>
+                                    'Approved',
+
+                                App\Enums\RequestStatus::ApprovedReadyForRelease =>
+                                    'Ready for Release',
+
+                                App\Enums\RequestStatus::UnderSpmu =>
+                                    'Under SPMU Review',
+
+                                /*
+                                 * Hide retired approval-stage names from the borrower UI
+                                 * while older records are still present in the database.
+                                 */
+                                App\Enums\RequestStatus::UnderGsu,
+                                App\Enums\RequestStatus::UnderVpaf =>
+                                    'Under Review',
+
+                                App\Enums\RequestStatus::Rejected =>
+                                    'Rejected',
+
+                                App\Enums\RequestStatus::Cancelled =>
+                                    'Cancelled',
+
+                                App\Enums\RequestStatus::Expired =>
+                                    'Closed',
+
+                                default =>
+                                    $record->status->label(),
+                            },
                         };
 
 
@@ -567,42 +630,42 @@
                             default => match($record->status) {
 
                                 App\Enums\RequestStatus::Draft => [
-                                    'Action required — review your draft and submit it when ready.',
-                                    'Continue draft',
+                                    'Action required — complete the required documents, then submit your request to SPMU.',
+                                    'Continue request',
                                 ],
 
                                 App\Enums\RequestStatus::ReturnedForRevision => [
-                                    'Action required — review the remarks and update your request.',
+                                    'Action required — review the SPMU remarks, update the request, and resubmit when ready.',
                                     'Revise request',
                                 ],
 
+                                /*
+                                 * Legacy compatibility only. Treat older records in this
+                                 * state as approved without showing a download requirement.
+                                 */
                                 App\Enums\RequestStatus::FinalApprovedAwaitingDownload => [
-                                    'Action required — download the approved letter before the deadline.',
-                                    'Open documents',
+                                    'Your request has been approved. SPMU will continue the release preparation.',
+                                    'View approval',
                                 ],
 
                                 App\Enums\RequestStatus::ApprovedReadyForRelease => [
-                                    'Follow the release instructions from SPMU.',
+                                    'Approved by SPMU. Review the release status and pickup instructions.',
                                     'View release status',
                                 ],
 
                                 App\Enums\RequestStatus::UnderSpmu => [
-                                    'No action required — waiting for SPMU review.',
+                                    'Submitted successfully. Waiting for SPMU review.',
                                     'View progress',
                                 ],
 
-                                App\Enums\RequestStatus::UnderGsu => [
-                                    'No action required — waiting for GSU review.',
-                                    'View progress',
-                                ],
-
+                                App\Enums\RequestStatus::UnderGsu,
                                 App\Enums\RequestStatus::UnderVpaf => [
-                                    'No action required — waiting for VPAF review.',
+                                    'Your submitted request is still under review. No borrower action is required.',
                                     'View progress',
                                 ],
 
                                 App\Enums\RequestStatus::Rejected => [
-                                    'Review the decision and recorded remarks.',
+                                    'SPMU rejected this request. Review the decision and recorded remarks.',
                                     'View decision',
                                 ],
 
@@ -612,12 +675,12 @@
                                 ],
 
                                 App\Enums\RequestStatus::Expired => [
-                                    'The approved-letter download period expired.',
+                                    'This request is no longer active. Open the record for details.',
                                     'View record',
                                 ],
 
                                 default => [
-                                    'Your request is moving through the approval process.',
+                                    'Open the request to review its current status and next step.',
                                     'View progress',
                                 ],
                             },
@@ -641,7 +704,6 @@
                                 [
                                     App\Enums\RequestStatus::Draft,
                                     App\Enums\RequestStatus::ReturnedForRevision,
-                                    App\Enums\RequestStatus::FinalApprovedAwaitingDownload,
                                 ],
                                 true
                             );
@@ -831,98 +893,263 @@
 
 
                 {{-- ========================================= --}}
-                {{-- SPMU / GSU / VPAF TASK                    --}}
+                {{-- SPMU TASK                                  --}}
+                {{-- ========================================= --}}
+
+                @elseif($workspace === 'SPMU')
+
+                    @php
+                        $recordCustody = $record->custody;
+                        $recordCustodyStatus = $recordCustody?->status;
+
+                        $recordDisplayStatus = match($recordCustodyStatus) {
+                            'PREPARING_RELEASE' => 'PREPARING_RELEASE',
+                            'ACTIVE' => 'ACTIVE',
+                            'PARTIALLY_RETURNED' => 'PARTIALLY_RETURNED',
+                            'OVERDUE' => 'OVERDUE',
+                            'EARLY_RETURN' => 'EARLY_RETURN',
+                            'INCIDENT_OPEN' => 'INCIDENT_OPEN',
+                            'OBLIGATION_OPEN' => 'OBLIGATION_OPEN',
+                            'CLOSED' => 'CLOSED',
+                            default => $record->status,
+                        };
+
+                        $recordDisplayLabel = match($recordCustodyStatus) {
+                            'PREPARING_RELEASE' => 'Preparing for Release',
+                            'ACTIVE' => 'On Custody',
+                            'PARTIALLY_RETURNED' => 'Partially Returned',
+                            'OVERDUE' => 'Overdue',
+                            'EARLY_RETURN' => 'Early Return',
+                            'INCIDENT_OPEN' => 'Incident Open',
+                            'OBLIGATION_OPEN' => 'Obligation Open',
+                            'CLOSED' => 'Returned',
+                            default => match($record->status) {
+                                App\Enums\RequestStatus::UnderSpmu => 'For SPMU Review',
+                                App\Enums\RequestStatus::ApprovedReadyForRelease => 'Approved / Reserved',
+                                App\Enums\RequestStatus::ReturnedForRevision => 'Returned for Revision',
+                                App\Enums\RequestStatus::Rejected => 'Rejected',
+                                App\Enums\RequestStatus::Cancelled => 'Cancelled',
+                                App\Enums\RequestStatus::Expired => 'Closed',
+                                App\Enums\RequestStatus::FinalApprovedAwaitingDownload => 'Approved',
+                                App\Enums\RequestStatus::UnderGsu,
+                                App\Enums\RequestStatus::UnderVpaf => 'Legacy Review',
+                                default => $record->status->label(),
+                            },
+                        };
+
+                        [$spmuTaskMessage, $spmuTaskAction] = match($recordCustodyStatus) {
+                            'PREPARING_RELEASE' => [
+                                'Approved quantities are reserved. Prepare and verify the items for physical release.',
+                                'Open release preparation',
+                            ],
+
+                            'ACTIVE' => [
+                                'The items have been physically released and are currently under borrower custody.',
+                                'View custody',
+                            ],
+
+                            'PARTIALLY_RETURNED' => [
+                                'A partial return has been recorded. Continue processing the remaining outstanding quantities.',
+                                'Continue return',
+                            ],
+
+                            'OVERDUE' => [
+                                'The return deadline has passed. Review the custody record and process the required return or accountability action.',
+                                'Review overdue case',
+                            ],
+
+                            'EARLY_RETURN' => [
+                                'The borrower submitted an early-return notice. Coordinate physical handover and inspection.',
+                                'Process early return',
+                            ],
+
+                            'INCIDENT_OPEN',
+                            'OBLIGATION_OPEN' => [
+                                'An accountability issue remains open for this borrowing.',
+                                'Review obligation',
+                            ],
+
+                            'CLOSED' => [
+                                'The borrowing and recorded return requirements are complete.',
+                                'View completed record',
+                            ],
+
+                            default => match($record->status) {
+                                App\Enums\RequestStatus::UnderSpmu => [
+                                    'Review the submitted request, supporting documents, requested quantities, and availability.',
+                                    'Review request',
+                                ],
+
+                                App\Enums\RequestStatus::ApprovedReadyForRelease,
+                                App\Enums\RequestStatus::FinalApprovedAwaitingDownload => [
+                                    'SPMU approval has reserved the approved quantities. Continue with release preparation.',
+                                    'Prepare release',
+                                ],
+
+                                App\Enums\RequestStatus::ReturnedForRevision => [
+                                    'This request was returned to the borrower for revision.',
+                                    'View request',
+                                ],
+
+                                App\Enums\RequestStatus::Rejected => [
+                                    'This request has been rejected. The recorded decision remains available for reference.',
+                                    'View decision',
+                                ],
+
+                                App\Enums\RequestStatus::Cancelled,
+                                App\Enums\RequestStatus::Expired => [
+                                    'This request is no longer active.',
+                                    'View record',
+                                ],
+
+                                App\Enums\RequestStatus::UnderGsu,
+                                App\Enums\RequestStatus::UnderVpaf => [
+                                    'This is a legacy workflow record. Review it for migration or closeout as applicable.',
+                                    'Review legacy record',
+                                ],
+
+                                default => [
+                                    'Open the request to review its current operational status.',
+                                    'View request',
+                                ],
+                            },
+                        };
+
+                        $spmuUseCustodyPage =
+                            $recordCustody
+                            && in_array(
+                                $recordCustodyStatus,
+                                [
+                                    'PREPARING_RELEASE',
+                                    'ACTIVE',
+                                    'PARTIALLY_RETURNED',
+                                    'OVERDUE',
+                                    'EARLY_RETURN',
+                                    'INCIDENT_OPEN',
+                                    'OBLIGATION_OPEN',
+                                    'CLOSED',
+                                ],
+                                true
+                            );
+
+                        $spmuTaskUrl = $spmuUseCustodyPage
+                            ? route('custody.show', $recordCustody)
+                            : route('requests.show', $record);
+
+                        $spmuTaskDateLabel = $spmuUseCustodyPage
+                            ? 'Return due'
+                            : 'Needed';
+
+                        $spmuTaskDate = $spmuUseCustodyPage
+                            ? optional($recordCustody?->due_at)->format('d M Y')
+                            : optional($record->currentVersion?->needed_from)->format('d M Y');
+
+                        $spmuTaskDate = $spmuTaskDate ?: 'date pending';
+                    @endphp
+
+                    <article class="dashboard-task-row">
+
+                        <a
+                            class="dashboard-task-link ui-pressable"
+                            href="{{ $spmuTaskUrl }}"
+                        >
+                            <span class="dashboard-task-copy">
+
+                                <span class="dashboard-task-purpose">
+                                    {{
+                                        $record->currentVersion?->purpose_event
+                                            ?: 'Borrowing request'
+                                    }}
+                                </span>
+
+                                <span class="dashboard-task-heading">
+
+                                    <span class="record-reference">
+                                        {{ $record->request_no }}
+                                    </span>
+
+                                    <x-status-badge
+                                        :status="$recordDisplayStatus"
+                                        :label="$recordDisplayLabel"
+                                    />
+
+                                </span>
+
+                                <small>
+                                    {{ $record->borrower?->full_name }}
+                                    @if($record->borrower?->organizationalUnit?->unit_name)
+                                        · {{ $record->borrower->organizationalUnit->unit_name }}
+                                    @endif
+                                </small>
+
+                                <small>
+                                    {{ $spmuTaskMessage }}
+                                </small>
+
+                                <span class="dashboard-task-footer">
+
+                                    <span class="dashboard-task-date">
+                                        {{ $spmuTaskDateLabel }}
+                                        {{ $spmuTaskDate }}
+                                    </span>
+
+                                    <span class="dashboard-task-action">
+                                        {{ $spmuTaskAction }}
+                                    </span>
+
+                                </span>
+
+                            </span>
+
+                            <x-icon name="chevron-right" />
+                        </a>
+
+                    </article>
+
+
+                {{-- ========================================= --}}
+                {{-- LEGACY GSU / VPAF TASK                    --}}
                 {{-- ========================================= --}}
 
                 @else
 
                     @php
-                        /*
-                         * Also keep operational custody-aware status available
-                         * to other authorized dashboards when a record already
-                         * has custody.
-                         */
-
-                        $recordCustody =
-                            $record->custody;
-
-                        $recordCustodyStatus =
-                            $recordCustody?->status;
-
+                        $recordCustody = $record->custody;
+                        $recordCustodyStatus = $recordCustody?->status;
 
                         $recordDisplayStatus = match($recordCustodyStatus) {
-
-                            'ACTIVE' =>
-                                'ACTIVE',
-
-                            'PARTIALLY_RETURNED' =>
-                                'PARTIALLY_RETURNED',
-
-                            'OVERDUE' =>
-                                'OVERDUE',
-
-                            'EARLY_RETURN' =>
-                                'EARLY_RETURN',
-
-                            'INCIDENT_OPEN' =>
-                                'INCIDENT_OPEN',
-
-                            'OBLIGATION_OPEN' =>
-                                'OBLIGATION_OPEN',
-
-                            'CLOSED' =>
-                                'CLOSED',
-
-                            default =>
-                                $record->status,
+                            'ACTIVE' => 'ACTIVE',
+                            'PARTIALLY_RETURNED' => 'PARTIALLY_RETURNED',
+                            'OVERDUE' => 'OVERDUE',
+                            'EARLY_RETURN' => 'EARLY_RETURN',
+                            'INCIDENT_OPEN' => 'INCIDENT_OPEN',
+                            'OBLIGATION_OPEN' => 'OBLIGATION_OPEN',
+                            'CLOSED' => 'CLOSED',
+                            default => $record->status,
                         };
 
-
                         $recordDisplayLabel = match($recordCustodyStatus) {
-
-                            'ACTIVE' =>
-                                'Released',
-
-                            'PARTIALLY_RETURNED' =>
-                                'Partially Returned',
-
-                            'OVERDUE' =>
-                                'Overdue',
-
-                            'EARLY_RETURN' =>
-                                'Early Return',
-
-                            'INCIDENT_OPEN' =>
-                                'Incident Open',
-
-                            'OBLIGATION_OPEN' =>
-                                'Obligation Open',
-
-                            'CLOSED' =>
-                                'Returned',
-
-                            default =>
-                                $record->status->label(),
+                            'ACTIVE' => 'Released',
+                            'PARTIALLY_RETURNED' => 'Partially Returned',
+                            'OVERDUE' => 'Overdue',
+                            'EARLY_RETURN' => 'Early Return',
+                            'INCIDENT_OPEN' => 'Incident Open',
+                            'OBLIGATION_OPEN' => 'Obligation Open',
+                            'CLOSED' => 'Returned',
+                            default => $record->status->label(),
                         };
                     @endphp
 
-
                     <article>
-
                         <div>
 
                             <a
-                                class="
-                                    ui-pressable
-                                    dashboard-record-link
-                                "
+                                class="ui-pressable dashboard-record-link"
                                 href="{{ route('requests.show', $record) }}"
                             >
-
                                 <strong>
                                     {{ $record->request_no }}
                                 </strong>
-
                             </a>
 
                             <small>
@@ -1027,7 +1254,7 @@
                         </strong>
 
                         <small>
-                            Choose items and borrowing dates.
+                            Enter request details and select the items you need.
                         </small>
 
                     </span>
@@ -1062,7 +1289,7 @@
                         </strong>
 
                         <small>
-                            Track approvals, remarks, and documents.
+                            Track SPMU review, remarks, and required documents.
                         </small>
 
                     </span>
@@ -1132,7 +1359,7 @@
                         </strong>
 
                         <small>
-                            Review inventory available to request.
+                            Check current serviceable quantities before requesting.
                         </small>
 
                     </span>
@@ -1191,20 +1418,20 @@
                     href="{{ route('approvals.index') }}"
                 >
 
-                    <span>
+                    <span class="quick-action-icon" aria-hidden="true">
+                        <x-icon name="approval" size="18" />
+                    </span>
 
-                        <strong>
-                            Review requests
-                        </strong>
+                    <span>
+                        <strong>Review borrowing requests</strong>
 
                         <small>
-                            Open the SPMU approval queue.
+                            Review submitted documents, requested quantities,
+                            and availability before the SPMU decision.
                         </small>
-
                     </span>
 
                     <x-icon name="chevron-right" />
-
                 </a>
 
 
@@ -1216,20 +1443,20 @@
                     href="{{ route('custody.index') }}"
                 >
 
-                    <span>
+                    <span class="quick-action-icon" aria-hidden="true">
+                        <x-icon name="custody" size="18" />
+                    </span>
 
-                        <strong>
-                            Process a release or return
-                        </strong>
+                    <span>
+                        <strong>Release and return</strong>
 
                         <small>
-                            Record quantities, signatures, and inspection.
+                            Prepare approved items, record physical release,
+                            and process returned quantities and condition.
                         </small>
-
                     </span>
 
                     <x-icon name="chevron-right" />
-
                 </a>
 
 
@@ -1241,20 +1468,70 @@
                     href="{{ route('inventory.index') }}"
                 >
 
-                    <span>
+                    <span class="quick-action-icon" aria-hidden="true">
+                        <x-icon name="inventory" size="18" />
+                    </span>
 
-                        <strong>
-                            Update inventory
-                        </strong>
+                    <span>
+                        <strong>Manage inventory</strong>
 
                         <small>
-                            Maintain descriptions, quantities, and availability.
+                            Review stock, reservations, issued quantities,
+                            condition, and item records.
                         </small>
-
                     </span>
 
                     <x-icon name="chevron-right" />
+                </a>
 
+
+                <a
+                    class="
+                        interactive
+                        ui-pressable
+                    "
+                    href="{{ route('accountability.index') }}"
+                >
+
+                    <span class="quick-action-icon" aria-hidden="true">
+                        <x-icon name="accountability" size="18" />
+                    </span>
+
+                    <span>
+                        <strong>Review accountability</strong>
+
+                        <small>
+                            Review overdue cases, incidents, billings,
+                            payments, and borrowing restrictions.
+                        </small>
+                    </span>
+
+                    <x-icon name="chevron-right" />
+                </a>
+
+
+                <a
+                    class="
+                        interactive
+                        ui-pressable
+                    "
+                    href="{{ route('calendar.index') }}"
+                >
+
+                    <span class="quick-action-icon" aria-hidden="true">
+                        <x-icon name="calendar" size="18" />
+                    </span>
+
+                    <span>
+                        <strong>View borrowing calendar</strong>
+
+                        <small>
+                            Review approved borrowing periods and upcoming
+                            return deadlines.
+                        </small>
+                    </span>
+
+                    <x-icon name="chevron-right" />
                 </a>
 
 
@@ -1434,7 +1711,11 @@
                         {{
                             $workspace === 'BORROWER'
                                 ? 'My upcoming deadlines'
-                                : 'Upcoming custody deadlines'
+                                : (
+                                    $workspace === 'SPMU'
+                                        ? 'Upcoming return deadlines'
+                                        : 'Upcoming custody deadlines'
+                                )
                         }}
                     </h2>
 

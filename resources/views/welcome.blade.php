@@ -1,107 +1,1045 @@
 @extends('layouts.app', ['title' => 'Welcome'])
 
 @section('content')
-<section class="hero" aria-labelledby="landing-title">
-    <div class="hero-content">
-        <h1 id="landing-title">Supply and Property Management Unit</h1>
-        <p class="hero-statement">Borrow CSPC property with a clear, guided process.</p>
-        <div class="actions">
-            <a class="button primary" href="{{ route('login') }}">Sign in</a>
-            <a class="button secondary" href="#how-it-works">Learn more</a>
-        </div>
-    </div>
-</section>
 
-<section id="how-it-works" class="section-block">
-    <p class="eyebrow">How borrowing works</p>
-    <h2>How borrowing works</h2>
-    <p class="section-intro">Four clear stages from request to return.</p>
-    <div class="feature-grid landing-workflow">
-        <article class="workflow-step" data-step="01">
-            <span class="step-number">01</span>
+<style>
+    .landing-shell {
+        --landing-navy: #071b35;
+        --landing-blue: #0d63d8;
+        --landing-blue-strong: #0758c9;
+        --landing-blue-soft: #eef5ff;
+        --landing-ink: #0f2545;
+        --landing-muted: #60708a;
+        --landing-border: #dfe8f4;
+        --landing-surface: #ffffff;
+        --landing-soft: #f7faff;
+        --landing-success: #16875b;
+        --landing-danger: #cf3d4f;
+        width: 100%;
+        color: var(--landing-ink);
+        background:
+            radial-gradient(circle at 88% 4%, rgba(25, 107, 219, .10), transparent 25rem),
+            linear-gradient(180deg, #fbfdff 0%, #ffffff 32%, #f8fbff 100%);
+    }
+
+    .landing-shell *,
+    .landing-shell *::before,
+    .landing-shell *::after {
+        box-sizing: border-box;
+    }
+
+    .landing-container {
+        width: min(1280px, calc(100% - 80px));
+        margin-inline: auto;
+    }
+
+    .landing-hero {
+        position: relative;
+        overflow: hidden;
+        padding: 0;
+        border-bottom: 1px solid var(--landing-border);
+        background:
+            linear-gradient(
+                90deg,
+                rgba(255,255,255,.98) 0%,
+                rgba(255,255,255,.96) 30%,
+                rgba(255,255,255,.84) 48%,
+                rgba(255,255,255,.42) 66%,
+                rgba(255,255,255,.10) 100%
+            ),
+            url("{{ asset('images/cspc-campus-hero.png') }}") center right / cover no-repeat;
+    }
+
+    .landing-hero-grid {
+        position: relative;
+        width: min(1280px, calc(100% - 80px));
+        margin-inline: auto;
+        display: block;
+        min-height: 500px;
+        padding: 72px 0 154px;
+    }
+
+    .landing-hero-grid > div:first-child {
+        width: min(590px, 100%);
+        padding: 0;
+    }
+
+    .landing-hero h1 {
+        max-width: 620px;
+        margin: 0;
+        color: var(--landing-navy);
+        font-size: clamp(2.45rem, 4.5vw, 4.15rem);
+        line-height: .98;
+        letter-spacing: -.055em;
+        font-weight: 850;
+    }
+
+    .landing-hero h1 .accent {
+        display: block;
+        margin-top: 8px;
+        color: var(--landing-blue);
+    }
+
+    .landing-hero-copy {
+        max-width: 620px;
+        margin: 18px 0 0;
+        color: var(--landing-muted);
+        font-size: .94rem;
+        line-height: 1.8;
+    }
+
+    .landing-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        margin-top: 22px;
+    }
+
+    .landing-actions .button,
+    .landing-cta .button {
+        min-height: 46px;
+        padding-inline: 22px;
+        border-radius: 10px;
+    }
+
+    .landing-learn-more {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 9px;
+        min-height: 46px;
+        padding: 0 20px;
+        border: 1px solid #1769e0;
+        border-radius: 10px;
+        background: rgba(255,255,255,.88);
+        color: #1769e0;
+        font-weight: 700;
+        text-decoration: none;
+        box-shadow: 0 8px 20px rgba(23,105,224,.08);
+        transition:
+            transform .16s ease,
+            background-color .16s ease,
+            color .16s ease,
+            box-shadow .16s ease;
+    }
+
+    .landing-learn-more:hover {
+        color: #0758c9;
+        background: #ffffff;
+        box-shadow: 0 10px 24px rgba(23,105,224,.12);
+        transform: translateY(-1px);
+        text-decoration: none;
+    }
+
+    .landing-learn-more:active {
+        transform: scale(.98);
+    }
+
+    .landing-learn-more__arrow {
+        display: inline-block;
+        font-size: 1.05rem;
+        line-height: 1;
+        transition: transform .16s ease;
+    }
+
+    .landing-learn-more:hover .landing-learn-more__arrow {
+        transform: translateX(3px);
+    }
+
+
+
+
+
+
+    .landing-feature-strip {
+        position: relative;
+        z-index: 8;
+        width: min(900px, calc(100% - 80px));
+        margin: -82px auto 0;
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        border: 1px solid rgba(214,225,240,.95);
+        border-radius: 18px;
+        background: rgba(255,255,255,.97);
+        box-shadow:
+            0 24px 54px rgba(7,27,53,.12),
+            0 2px 8px rgba(7,27,53,.04);
+        overflow: hidden;
+        backdrop-filter: blur(12px);
+    }
+
+    .landing-feature-strip article {
+        position: relative;
+        min-height: 154px;
+        padding: 24px 20px 22px;
+        text-align: center;
+        background: transparent;
+        border: 0;
+        box-shadow: none;
+    }
+
+    .landing-feature-strip article + article::before {
+        content: "";
+        position: absolute;
+        left: 0;
+        top: 24px;
+        bottom: 24px;
+        width: 1px;
+        background: #e2eaf4;
+    }
+
+    .landing-icon {
+        width: 46px;
+        height: 46px;
+        display: inline-grid;
+        place-items: center;
+        border-radius: 50%;
+        color: var(--landing-blue);
+        background: var(--landing-blue-soft);
+        margin-bottom: 12px;
+        box-shadow: inset 0 0 0 1px rgba(23,105,224,.04);
+    }
+
+    .landing-feature-strip h3,
+    .landing-feature-card h3,
+    .landing-process h3 {
+        margin: 0;
+        color: var(--landing-navy);
+        font-size: .95rem;
+    }
+
+    .landing-feature-strip p {
+        margin: 7px 0 0;
+        color: var(--landing-muted);
+        font-size: .76rem;
+        line-height: 1.55;
+    }
+
+    .landing-section {
+        padding: 76px 0;
+    }
+
+    .landing-section.alt {
+        background:
+            linear-gradient(180deg, rgba(238,245,255,.58), rgba(255,255,255,.35));
+        border-block: 1px solid #edf2f8;
+    }
+
+    .landing-section-heading {
+        max-width: 720px;
+        margin: 0 auto 42px;
+        text-align: center;
+    }
+
+    .landing-section-heading.align-left {
+        margin-inline: 0;
+        text-align: left;
+    }
+
+    .landing-section-heading .mini {
+        display: inline-block;
+        margin-bottom: 8px;
+        color: var(--landing-blue);
+        font-size: .78rem;
+        font-weight: 800;
+    }
+
+    .landing-section-heading h2 {
+        margin: 0;
+        color: var(--landing-navy);
+        font-size: clamp(1.9rem, 3vw, 2.9rem);
+        letter-spacing: -.035em;
+        line-height: 1.1;
+    }
+
+    .landing-section-heading p {
+        margin: 14px 0 0;
+        color: var(--landing-muted);
+        line-height: 1.75;
+    }
+
+    .landing-about-grid {
+        display: grid;
+        grid-template-columns: .92fr 1.08fr;
+        gap: 46px;
+        align-items: center;
+    }
+
+    .landing-about-copy p {
+        color: var(--landing-muted);
+        line-height: 1.8;
+    }
+
+    .landing-about-pair {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 18px;
+    }
+
+    .landing-compare-card {
+        min-height: 280px;
+        padding: 26px;
+        border: 1px solid var(--landing-border);
+        border-radius: 18px;
+        background: #fff;
+        box-shadow: 0 14px 34px rgba(13, 54, 100, .06);
+    }
+
+    .landing-compare-card.problem {
+        background: linear-gradient(180deg, #fff9fa, #fff);
+    }
+
+    .landing-compare-card.solution {
+        background: linear-gradient(180deg, #f7fff9, #fff);
+    }
+
+    .landing-compare-card h3 {
+        margin: 0 0 18px;
+        font-size: .95rem;
+    }
+
+    .landing-compare-card.problem h3 {
+        color: var(--landing-danger);
+    }
+
+    .landing-compare-card.solution h3 {
+        color: var(--landing-success);
+    }
+
+    .landing-check-list {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+        display: grid;
+        gap: 13px;
+    }
+
+    .landing-check-list li {
+        display: flex;
+        gap: 10px;
+        align-items: flex-start;
+        color: var(--landing-muted);
+        font-size: .83rem;
+        line-height: 1.45;
+    }
+
+    .landing-check-list li::before {
+        content: "\2022";
+        width: 20px;
+        height: 20px;
+        display: inline-grid;
+        place-items: center;
+        flex: 0 0 20px;
+        border-radius: 50%;
+        font-weight: 800;
+    }
+
+    .problem .landing-check-list li::before {
+        color: var(--landing-danger);
+        background: #fff0f3;
+    }
+
+    .solution .landing-check-list li::before {
+        color: var(--landing-success);
+        background: #eaf9f1;
+    }
+
+    .landing-process {
+        display: grid;
+        grid-template-columns: repeat(6, 1fr);
+        gap: 18px;
+        position: relative;
+    }
+
+    .landing-process::before {
+        content: "";
+        position: absolute;
+        top: 32px;
+        left: 8%;
+        right: 8%;
+        border-top: 1px dashed #a9c9f3;
+        z-index: 0;
+    }
+
+    .landing-process article {
+        position: relative;
+        z-index: 1;
+        text-align: center;
+    }
+
+    .landing-process-icon {
+        width: 66px;
+        height: 66px;
+        display: grid;
+        place-items: center;
+        margin: 0 auto 15px;
+        border: 1px solid #cfe0f6;
+        border-radius: 50%;
+        color: var(--landing-blue);
+        background: #fff;
+        box-shadow: 0 10px 25px rgba(13, 99, 216, .10);
+    }
+
+    .landing-step-no {
+        width: 22px;
+        height: 22px;
+        display: inline-grid;
+        place-items: center;
+        margin-right: 5px;
+        border-radius: 50%;
+        color: #fff;
+        background: var(--landing-blue);
+        font-size: .68rem;
+        font-weight: 800;
+    }
+
+    .landing-process p {
+        margin: 8px auto 0;
+        max-width: 150px;
+        color: var(--landing-muted);
+        font-size: .75rem;
+        line-height: 1.55;
+    }
+
+    .landing-feature-grid {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 16px;
+    }
+
+    .landing-feature-card {
+        min-height: 180px;
+        padding: 22px;
+        border: 1px solid var(--landing-border);
+        border-radius: 16px;
+        background: #fff;
+        box-shadow: 0 10px 26px rgba(13, 54, 100, .045);
+        transition: transform .18s ease, box-shadow .18s ease, border-color .18s ease;
+    }
+
+    .landing-feature-card:hover {
+        transform: translateY(-3px);
+        border-color: #bad4f4;
+        box-shadow: 0 16px 32px rgba(13, 54, 100, .08);
+    }
+
+    .landing-feature-card p {
+        margin: 9px 0 0;
+        color: var(--landing-muted);
+        font-size: .8rem;
+        line-height: 1.6;
+    }
+
+    .landing-impact {
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        overflow: hidden;
+        border-radius: 18px;
+        background:
+            radial-gradient(circle at 90% 10%, rgba(37,118,225,.35), transparent 20rem),
+            linear-gradient(135deg, #073566, #071b35 72%);
+        box-shadow: 0 22px 45px rgba(7,27,53,.14);
+    }
+
+    .landing-impact article {
+        position: relative;
+        min-height: 150px;
+        padding: 28px;
+        color: #fff;
+    }
+
+    .landing-impact article + article::before {
+        content: "";
+        position: absolute;
+        left: 0;
+        top: 24px;
+        bottom: 24px;
+        width: 1px;
+        background: rgba(255,255,255,.14);
+    }
+
+    .landing-impact strong {
+        display: block;
+        margin-top: 10px;
+        font-size: 1.15rem;
+    }
+
+    .landing-impact p {
+        margin: 7px 0 0;
+        color: rgba(255,255,255,.70);
+        font-size: .76rem;
+        line-height: 1.55;
+    }
+
+    .landing-cta {
+        display: grid;
+        grid-template-columns: 1fr auto;
+        gap: 30px;
+        align-items: center;
+        padding: 42px 48px;
+        border: 1px solid var(--landing-border);
+        border-radius: 20px;
+        background:
+            radial-gradient(circle at 86% 50%, rgba(13,99,216,.12), transparent 18rem),
+            linear-gradient(135deg, #ffffff, #f3f8ff);
+        box-shadow: 0 14px 34px rgba(13,54,100,.06);
+    }
+
+    .landing-cta h2 {
+        margin: 0;
+        color: var(--landing-navy);
+        font-size: clamp(1.5rem, 2.6vw, 2.2rem);
+        letter-spacing: -.03em;
+    }
+
+    .landing-cta p {
+        margin: 10px 0 0;
+        color: var(--landing-muted);
+    }
+
+    .landing-footer {
+        margin-top: 82px;
+        background: linear-gradient(135deg, #061a33, #082c57);
+        color: rgba(255,255,255,.82);
+    }
+
+    .landing-footer-grid {
+        display: grid;
+        grid-template-columns: 1.4fr .8fr .8fr 1fr;
+        gap: 36px;
+        padding: 46px 0 36px;
+    }
+
+    .landing-footer h3 {
+        margin: 0 0 12px;
+        color: #fff;
+        font-size: .9rem;
+    }
+
+    .landing-footer p,
+    .landing-footer a {
+        color: rgba(255,255,255,.72);
+        font-size: .78rem;
+        line-height: 1.75;
+    }
+
+    .landing-footer a {
+        display: block;
+        text-decoration: none;
+    }
+
+    .landing-footer a:hover {
+        color: #fff;
+    }
+
+    .landing-footer-brand strong {
+        display: block;
+        margin-bottom: 7px;
+        color: #fff;
+        font-size: .94rem;
+    }
+
+    .landing-footer-bottom {
+        display: flex;
+        justify-content: space-between;
+        gap: 20px;
+        padding: 18px 0 24px;
+        border-top: 1px solid rgba(255,255,255,.10);
+        font-size: .72rem;
+    }
+
+    @media (max-width: 1050px) {
+        .landing-about-grid {
+            grid-template-columns: 1fr;
+        }
+
+        .landing-hero-grid {
+            width: min(100% - 40px, 1180px);
+            min-height: 450px;
+            padding: 58px 0 126px;
+        }
+
+        .landing-feature-strip {
+            width: min(100% - 40px, 900px);
+            margin: -48px auto 0;
+            border-radius: 18px;
+        }
+
+        .landing-process {
+            grid-template-columns: repeat(3, 1fr);
+            gap: 32px 18px;
+        }
+
+        .landing-process::before {
+            display: none;
+        }
+
+        .landing-feature-grid {
+            grid-template-columns: repeat(2, 1fr);
+        }
+
+        .landing-footer-grid {
+            grid-template-columns: repeat(2, 1fr);
+        }
+    }
+
+    @media (max-width: 720px) {
+        .landing-container {
+            width: min(100% - 28px, 1180px);
+        }
+
+        .landing-hero {
+            background:
+                linear-gradient(
+                    180deg,
+                    rgba(255,255,255,.97) 0%,
+                    rgba(255,255,255,.92) 58%,
+                    rgba(255,255,255,.72) 100%
+                ),
+                url("{{ asset('images/cspc-campus-hero.png') }}") center / cover no-repeat;
+        }
+
+        .landing-hero h1 {
+            font-size: clamp(2.15rem, 11vw, 3.15rem);
+        }
+
+        .landing-hero-grid {
+            gap: 32px;
+            min-height: auto;
+        }
+
+
+
+        .landing-feature-strip {
+            width: min(100% - 28px, 900px);
+            margin: -42px auto 0;
+            grid-template-columns: repeat(2, 1fr);
+        }
+
+        .landing-feature-strip article + article::before {
+            display: none;
+        }
+
+        .landing-feature-strip article {
+            min-height: 142px;
+            padding: 20px 16px;
+            border-bottom: 1px solid #e8eef6;
+        }
+
+        .landing-feature-strip article:nth-last-child(-n+2) {
+            border-bottom: 0;
+        }
+
+        .landing-about-pair,
+        .landing-feature-grid,
+        .landing-impact,
+        .landing-footer-grid,
+        .landing-cta {
+            grid-template-columns: 1fr;
+        }
+
+        .landing-process {
+            grid-template-columns: repeat(2, 1fr);
+        }
+
+        .landing-impact article + article::before {
+            top: 0;
+            left: 22px;
+            right: 22px;
+            width: auto;
+            height: 1px;
+        }
+
+        .landing-cta {
+            padding: 30px 24px;
+        }
+
+        .landing-footer-bottom {
+            flex-direction: column;
+        }
+    }
+
+    @media (max-width: 460px) {
+        .landing-feature-strip,
+        .landing-process {
+            grid-template-columns: 1fr;
+        }
+
+        .landing-feature-strip article {
+            border-bottom: 1px solid #e8eef6;
+        }
+
+        .landing-feature-strip article:last-child {
+            border-bottom: 0;
+        }
+
+        .landing-section {
+            padding: 64px 0;
+        }
+
+        .landing-about-pair {
+            grid-template-columns: 1fr;
+        }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+        .landing-feature-card {
+            transition: none;
+        }
+    }
+</style>
+
+<div class="landing-shell">
+
+    {{-- HERO --}}
+    <section class="landing-hero" aria-labelledby="landing-title">
+        <div class="landing-container landing-hero-grid">
+
+            <div>
+                <h1 id="landing-title">
+                    Smarter Asset Management.
+                    <span class="accent">Stronger Accountability.</span>
+                </h1>
+
+                <p class="landing-hero-copy">
+                    A centralized platform for borrowing, release, return,
+                    inventory monitoring, and accountability of CSPC institutional property.
+                </p>
+
+                <div class="landing-actions">
+                    <a class="button primary ui-pressable" href="{{ route('login') }}">
+                        Sign in
+                    </a>
+
+                    <a class="landing-learn-more ui-pressable" href="#about">
+                        <span>Learn more</span>
+                        <span class="landing-learn-more__arrow" aria-hidden="true">&rarr;</span>
+                    </a>
+                </div>
+            </div>
+</div>
+
+        {{-- QUICK STRIP --}}
+        <div class="landing-container">
+            <div class="landing-feature-strip " aria-label="Core system functions">
+
+        <article>
+            <span class="landing-icon" aria-hidden="true">
+                <x-icon name="requests" size="22" />
+            </span>
             <h3>Request</h3>
-            <p>Check item availability and submit a borrowing request for the approved use period.</p>
+            <p>Submit borrowing details and required supporting documents.</p>
         </article>
-        <article class="workflow-step" data-step="02">
-            <span class="step-number">02</span>
-            <h3>Approval</h3>
-            <p>Track the request through the required SPMU, GSU, and VPAF review stages.</p>
-        </article>
-        <article class="workflow-step" data-step="03">
-            <span class="step-number">03</span>
-            <h3>Release</h3>
-            <p>Complete required documentation and receive the approved items from custody.</p>
-        </article>
-        <article class="workflow-step" data-step="04">
-            <span class="step-number">04</span>
-            <h3>Return</h3>
-            <p>Return the items on schedule and complete the inspection and accountability process.</p>
-        </article>
-    </div>
-</section>
 
-<section class="section-block public-section">
-    <p class="eyebrow">Borrowing tools</p>
-    <h2>Built for accountable resource use</h2>
-    <div class="capability-grid">
-        <article class="capability-card">
-            <h3>Item availability</h3>
-            <p>View currently available property and check borrowing eligibility before requesting.</p>
+        <article>
+            <span class="landing-icon" aria-hidden="true">
+                <x-icon name="approval" size="22" />
+            </span>
+            <h3>Review</h3>
+            <p>SPMU verifies the request and records the official decision.</p>
         </article>
-        <article class="capability-card">
-            <h3>Request tracking</h3>
-            <p>Monitor each request through approval and release status updates.</p>
-        </article>
-        <article class="capability-card">
-            <h3>Borrowing calendar</h3>
-            <p>Review schedules and understand active borrowing periods for planned use.</p>
-        </article>
-        <article class="capability-card">
-            <h3>Release records</h3>
-            <p>Confirm custody actions, conditions, and documentation for each approved release.</p>
-        </article>
-        <article class="capability-card">
-            <h3>Return compliance</h3>
-            <p>Track due dates, return requirements, and follow-up conditions after release.</p>
-        </article>
-        <article class="capability-card">
-            <h3>Operational accountability</h3>
-            <p>Maintain an auditable trail for institutional property custody and reporting.</p>
-        </article>
-    </div>
-</section>
 
-<section id="help" class="section-block info-grid-section">
-    <div class="info-grid">
-        <article class="info-card info-card--green">
-            <div class="info-card__header">
-                <span class="info-card__icon" aria-hidden="true"><x-icon name="success" size="16" /></span>
-                <h2>Before you borrow</h2>
+        <article>
+            <span class="landing-icon" aria-hidden="true">
+                <x-icon name="custody" size="22" />
+            </span>
+            <h3>Track</h3>
+            <p>Follow release, custody, return, and accountability status.</p>
+        </article>
+
+        <article>
+            <span class="landing-icon" aria-hidden="true">
+                <x-icon name="inventory" size="22" />
+            </span>
+            <h3>Monitor</h3>
+            <p>Maintain reliable inventory and operational records.</p>
+        </article>
+
             </div>
-            <ul>
-                <li>Make sure your account information is current.</li>
-                <li>Prepare your e-signature.</li>
-                <li>Check item availability and required dates.</li>
-                <li>Provide the correct purpose or event information.</li>
-                <li>Return borrowed property within the approved schedule.</li>
-            </ul>
-        </article>
-        <article class="info-card info-card--amber">
-            <div class="info-card__header">
-                <span class="info-card__icon" aria-hidden="true"><x-icon name="accountability" size="16" /></span>
-                <h2>Accountability notice</h2>
-            </div>
-            <p class="accountability-copy">Borrowers are responsible for property released under their custody until the items are properly returned and acknowledged by SPMU.</p>
-        </article>
-    </div>
-</section>
+        </div>
+    </section>
 
-<section class="section-block cta-panel" aria-labelledby="cta-heading">
-    <div class="cta-panel__icon" aria-hidden="true"><x-icon name="profile" size="22" /></div>
-    <div class="cta-panel__content">
-        <h2 id="cta-heading">Ready to submit a borrowing request?</h2>
-        <p>Sign in using your authorized CSPC account to get started.</p>
-    </div>
-    <a class="button primary" href="{{ route('login') }}">Sign in</a>
-</section>
+    {{-- ABOUT --}}
+    <section id="about" class="landing-section">
+        <div class="landing-container landing-about-grid">
+
+            <div class="landing-about-copy">
+                <div class="landing-section-heading align-left">
+                    <span class="mini">About SPMU-ACPMP</span>
+                    <h2>Building transparency. Driving accountability.</h2>
+                </div>
+
+                <p>
+                    SPMU-ACPMP is designed for the CSPC Supply and Property Management Unit
+                    to centralize borrowing records, property custody, release, return,
+                    and accountability processes.
+                </p>
+
+                <p>
+                    It gives borrowers a clearer transaction experience while giving
+                    authorized SPMU personnel the operational controls and audit history
+                    needed to manage institutional property responsibly.
+                </p>
+            </div>
+
+            <div class="landing-about-pair">
+
+                <article class="landing-compare-card problem">
+                    <h3>The Problem</h3>
+                    <ul class="landing-check-list">
+                        <li>Manual and paper-heavy transaction tracking</li>
+                        <li>Fragmented borrowing and custody records</li>
+                        <li>Limited visibility of available inventory</li>
+                        <li>Difficult return and accountability follow-up</li>
+                        <li>Scattered operational history and reporting</li>
+                    </ul>
+                </article>
+
+                <article class="landing-compare-card solution">
+                    <h3>Our Solution</h3>
+                    <ul class="landing-check-list">
+                        <li>Centralized institutional property records</li>
+                        <li>Structured request and SPMU review workflow</li>
+                        <li>Current inventory and reservation monitoring</li>
+                        <li>Traceable release, return, and inspection records</li>
+                        <li>Auditable accountability and reporting</li>
+                    </ul>
+                </article>
+
+            </div>
+        </div>
+    </section>
+
+    {{-- HOW IT WORKS --}}
+    <section id="how-it-works" class="landing-section alt">
+        <div class="landing-container">
+
+            <div class="landing-section-heading">
+                <span class="mini">Process</span>
+                <h2>How It Works</h2>
+                <p>
+                    A clear end-to-end process from borrowing request to completed return.
+                </p>
+            </div>
+
+            <div class="landing-process">
+
+                <article>
+                    <span class="landing-process-icon">
+                        <x-icon name="profile" size="25" />
+                    </span>
+                    <h3><span class="landing-step-no">1</span>Login</h3>
+                    <p>Access the system using an authorized CSPC account.</p>
+                </article>
+
+                <article>
+                    <span class="landing-process-icon">
+                        <x-icon name="requests" size="25" />
+                    </span>
+                    <h3><span class="landing-step-no">2</span>Submit Request</h3>
+                    <p>Provide borrowing details, items, schedule, and required documents.</p>
+                </article>
+
+                <article>
+                    <span class="landing-process-icon">
+                        <x-icon name="approval" size="25" />
+                    </span>
+                    <h3><span class="landing-step-no">3</span>SPMU Review</h3>
+                    <p>SPMU verifies the request and approves, returns, or rejects it.</p>
+                </article>
+
+                <article>
+                    <span class="landing-process-icon">
+                        <x-icon name="inventory" size="25" />
+                    </span>
+                    <h3><span class="landing-step-no">4</span>Release</h3>
+                    <p>Approved inventory is reserved, prepared, and physically released.</p>
+                </article>
+
+                <article>
+                    <span class="landing-process-icon">
+                        <x-icon name="custody" size="25" />
+                    </span>
+                    <h3><span class="landing-step-no">5</span>Return</h3>
+                    <p>Returned property is counted, inspected, and condition-recorded.</p>
+                </article>
+
+                <article>
+                    <span class="landing-process-icon">
+                        <x-icon name="accountability" size="25" />
+                    </span>
+                    <h3><span class="landing-step-no">6</span>Monitor</h3>
+                    <p>Track completed records, accountability, and institutional reporting.</p>
+                </article>
+
+            </div>
+        </div>
+    </section>
+
+    {{-- FEATURES --}}
+    <section id="features" class="landing-section">
+        <div class="landing-container">
+
+            <div class="landing-section-heading">
+                <span class="mini">Core capabilities</span>
+                <h2>Key Features</h2>
+            </div>
+
+            <div class="landing-feature-grid">
+
+                <article class="landing-feature-card">
+                    <span class="landing-icon"><x-icon name="inventory" size="22" /></span>
+                    <h3>Asset Inventory</h3>
+                    <p>Maintain property details, quantities, availability, reservation, and custody status.</p>
+                </article>
+
+                <article class="landing-feature-card">
+                    <span class="landing-icon"><x-icon name="requests" size="22" /></span>
+                    <h3>Borrowing Requests</h3>
+                    <p>Create and track borrowing requests with required request details and items.</p>
+                </article>
+
+                <article class="landing-feature-card">
+                    <span class="landing-icon"><x-icon name="success" size="22" /></span>
+                    <h3>Supporting Documents</h3>
+                    <p>Maintain signed borrowing documents and applicable supporting files for verification.</p>
+                </article>
+
+                <article class="landing-feature-card">
+                    <span class="landing-icon"><x-icon name="approval" size="22" /></span>
+                    <h3>SPMU Review</h3>
+                    <p>Review requests, verify documents, and record approval, revision, or rejection decisions.</p>
+                </article>
+
+                <article class="landing-feature-card">
+                    <span class="landing-icon"><x-icon name="custody" size="22" /></span>
+                    <h3>Release & Custody</h3>
+                    <p>Record prepared quantities, physical release, borrower custody, and final issuance.</p>
+                </article>
+
+                <article class="landing-feature-card">
+                    <span class="landing-icon"><x-icon name="calendar" size="22" /></span>
+                    <h3>Borrowing Calendar</h3>
+                    <p>View confirmed borrowing schedules and upcoming return deadlines.</p>
+                </article>
+
+                <article class="landing-feature-card">
+                    <span class="landing-icon"><x-icon name="accountability" size="22" /></span>
+                    <h3>Return & Accountability</h3>
+                    <p>Record return condition, incidents, obligations, fees, and accountability follow-up.</p>
+                </article>
+
+                <article class="landing-feature-card">
+                    <span class="landing-icon"><x-icon name="inventory" size="22" /></span>
+                    <h3>Reports & Monitoring</h3>
+                    <p>Support auditable operational reporting and institutional inventory monitoring.</p>
+                </article>
+
+            </div>
+        </div>
+    </section>
+
+    {{-- IMPACT BAND --}}
+    <section class="landing-section alt">
+        <div class="landing-container">
+
+            <div class="landing-section-heading">
+                <span class="mini">Built for institutional control</span>
+                <h2>One system. Complete transaction visibility.</h2>
+            </div>
+
+            <div class="landing-impact">
+
+                <article>
+                    <span class="landing-icon"><x-icon name="inventory" size="20" /></span>
+                    <strong>Centralized Records</strong>
+                    <p>Inventory and borrowing information are kept in one managed system.</p>
+                </article>
+
+                <article>
+                    <span class="landing-icon"><x-icon name="profile" size="20" /></span>
+                    <strong>Role-based Access</strong>
+                    <p>Users see only the functions and records appropriate to their responsibilities.</p>
+                </article>
+
+                <article>
+                    <span class="landing-icon"><x-icon name="success" size="20" /></span>
+                    <strong>Audit-ready</strong>
+                    <p>Important decisions and operational actions remain attributable and traceable.</p>
+                </article>
+
+                <article>
+                    <span class="landing-icon"><x-icon name="accountability" size="20" /></span>
+                    <strong>Accountability-focused</strong>
+                    <p>Release, return, inspection, and unresolved obligations stay connected to each transaction.</p>
+                </article>
+
+            </div>
+        </div>
+    </section>
+
+    {{-- CTA --}}
+    <section class="landing-section">
+        <div class="landing-container">
+
+            <div class="landing-cta">
+                <div>
+                    <h2>Ready to manage borrowing more efficiently?</h2>
+                    <p>Sign in using your authorized CSPC account to access SPMU-ACPMP.</p>
+                </div>
+
+                <a class="button primary ui-pressable" href="{{ route('login') }}">
+                    Sign in
+                </a>
+            </div>
+
+        </div>
+    </section>
+
+    {{-- FOOTER --}}
+    <footer class="landing-footer">
+        <div class="landing-container">
+
+            <div class="landing-footer-grid">
+
+                <div class="landing-footer-brand">
+                    <strong>SPMU-ACPMP</strong>
+                    <p>Supply and Property Management Unit<br>Asset Custody and Monitoring</p>
+                    <p>Camarines Sur Polytechnic Colleges<br>Nabua, Camarines Sur, Philippines</p>
+                </div>
+
+                <div>
+                    <h3>Quick Links</h3>
+                    <a href="#">Home</a>
+                    <a href="#about">About</a>
+                    <a href="#features">Features</a>
+                    <a href="#how-it-works">How It Works</a>
+                </div>
+
+                <div>
+                    <h3>Resources</h3>
+                    <a href="#features">System Features</a>
+                    <a href="#how-it-works">Borrowing Process</a>
+                    <a href="#about">About the System</a>
+                </div>
+
+                <div>
+                    <h3>Access</h3>
+                    <p>Authorized CSPC users can sign in to access their assigned system functions.</p>
+                    <a href="{{ route('login') }}">Sign in to SPMU-ACPMP</a>
+                </div>
+
+            </div>
+
+            <div class="landing-footer-bottom">
+                <span>&copy; {{ now()->year }} SPMU-ACPMP. All rights reserved.</span>
+                <span>Camarines Sur Polytechnic Colleges</span>
+            </div>
+
+        </div>
+    </footer>
+
+</div>
+
 @endsection
+
