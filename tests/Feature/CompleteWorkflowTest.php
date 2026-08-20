@@ -90,8 +90,22 @@ class CompleteWorkflowTest extends TestCase
         );
 
         /*
-         * Borrower Slip is generated during SPMU physical preparation,
-         * before issuance. No online borrower acknowledgement is required.
+         * After SPMU prepares the final quantities, the borrower reviews and
+         * confirms the Borrower's Slip in the system. This is not an electronic
+         * signature; handwritten/wet signatures remain part of physical release.
+         */
+        $this->withSession(['active_workspace' => 'BORROWER'])
+            ->actingAs($borrower)
+            ->post(route('custody.acknowledge', $custody))
+            ->assertSessionHasNoErrors();
+
+        $this->assertNotNull($custody->fresh()->acknowledged_at);
+
+        /*
+         * Borrower Slip is generated during SPMU physical preparation.
+         * The borrower then reviews and confirms the prepared quantities in
+         * the system before physical issuance. This confirmation is not an
+         * electronic signature.
          */
         $this->assertDatabaseHas('generated_documents', [
             'subject_type' => CustodyTransaction::class,
@@ -176,6 +190,18 @@ class CompleteWorkflowTest extends TestCase
             $version
         );
 
+        /*
+         * After SPMU prepares the final quantities, the borrower reviews and
+         * confirms the Borrower's Slip in the system. This is not an electronic
+         * signature; handwritten/wet signatures remain part of physical release.
+         */
+        $this->withSession(['active_workspace' => 'BORROWER'])
+            ->actingAs($borrower)
+            ->post(route('custody.acknowledge', $custody))
+            ->assertSessionHasNoErrors();
+
+        $this->assertNotNull($custody->fresh()->acknowledged_at);
+
         $this->withSession(['active_workspace' => 'SPMU'])
             ->actingAs($spmuOfficer)
             ->post(
@@ -226,6 +252,18 @@ class CompleteWorkflowTest extends TestCase
             $spmuOfficer,
             $version
         );
+
+        /*
+         * After SPMU prepares the final quantities, the borrower reviews and
+         * confirms the Borrower's Slip in the system. This is not an electronic
+         * signature; handwritten/wet signatures remain part of physical release.
+         */
+        $this->withSession(['active_workspace' => 'BORROWER'])
+            ->actingAs($borrower)
+            ->post(route('custody.acknowledge', $custody))
+            ->assertSessionHasNoErrors();
+
+        $this->assertNotNull($custody->fresh()->acknowledged_at);
 
         $this->withSession(['active_workspace' => 'SPMU'])
             ->actingAs($spmuOfficer)
@@ -470,6 +508,18 @@ class CompleteWorkflowTest extends TestCase
             $spmuOfficer,
             $version
         );
+
+        /*
+         * After SPMU prepares the final quantities, the borrower reviews and
+         * confirms the Borrower's Slip in the system. This is not an electronic
+         * signature; handwritten/wet signatures remain part of physical release.
+         */
+        $this->withSession(['active_workspace' => 'BORROWER'])
+            ->actingAs($borrower)
+            ->post(route('custody.acknowledge', $custody))
+            ->assertSessionHasNoErrors();
+
+        $this->assertNotNull($custody->fresh()->acknowledged_at);
 
         $this->withSession(['active_workspace' => 'SPMU'])
             ->actingAs($spmuOfficer)
