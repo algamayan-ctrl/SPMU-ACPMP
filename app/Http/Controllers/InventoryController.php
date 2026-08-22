@@ -61,11 +61,7 @@ class InventoryController extends Controller
             'balances',
             'from',
             'to',
-            'borrowerMode',
-            'search',
-            'categoryId',
-            'categories',
-            'workspace'
+            'borrowerMode'
         ));
     }
 
