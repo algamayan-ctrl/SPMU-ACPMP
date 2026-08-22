@@ -1,0 +1,36 @@
+@props(['job'])
+@php
+    $status = (string) $job->status;
+    $current = match($status) {
+        'FOR_LAUNDRY' => 1,
+        'IN_PROCESS', 'FORM_REPLACEMENT_REQUIRED' => 2,
+        'READY_FOR_PICKUP' => 3,
+        'FOR_SPMU_FINAL_CHECK', 'LAUNDRY_COMPLETED' => 4,
+        default => 1,
+    };
+    $steps = [
+        1 => ['Awaiting Drop-off', 'Borrower brings used linen and the printed Laundry Form.'],
+        2 => ['In Process', 'Laundry confirms receipt, processes the linen, and completes the physical form.'],
+        3 => ['Ready for Pickup', 'Accomplished form is uploaded and the borrower is notified to collect the cleaned linen.'],
+        4 => ['Released to Borrower', 'Borrower collected the cleaned linen and will return it to SPMU for final inspection.'],
+    ];
+@endphp
+
+<article class="card laundry-progress-card" aria-label="Laundry progress">
+    <div class="card-header">
+        <div>
+            <p class="eyebrow">Laundry tracker</p>
+            <h2>Where this linen is now</h2>
+        </div>
+        <x-status-badge :status="$job->status" />
+    </div>
+    <ol class="laundry-progress-rail">
+        @foreach($steps as $index => [$label, $description])
+            @php($state = $index < $current ? 'complete' : ($index === $current ? 'current' : 'pending'))
+            <li class="laundry-progress-step is-{{ $state }}" @if($state === 'current') aria-current="step" @endif>
+                <span class="laundry-progress-marker">{{ $state === 'complete' ? '✓' : $index }}</span>
+                <div><strong>{{ $label }}</strong><small>{{ $description }}</small></div>
+            </li>
+        @endforeach
+    </ol>
+</article>

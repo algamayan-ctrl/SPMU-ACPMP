@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Enums\AccessClassification;
 use App\Enums\UserRole;
 use App\Models\BillingStatement;
+use App\Models\BorrowerViolation;
 use App\Models\BorrowerRestriction;
 use App\Models\CustodyTransaction;
 use App\Models\Incident;
@@ -12,11 +13,13 @@ use App\Models\LaundryRecord;
 use App\Models\OverdueCase;
 use App\Models\Payment;
 use App\Models\Penalty;
+use App\Models\Sanction;
 use App\Models\User;
 use App\Services\AuditService;
 use App\Services\DocumentService;
 use App\Services\NotificationService;
 use App\Services\ProtectedFileService;
+use App\Services\PolicyService;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Collection;
@@ -31,12 +34,18 @@ class AccountabilityController extends Controller
         $billingQuery = BillingStatement::with(['borrower', 'lines', 'payments', 'documents'])->latest('issued_at');
         $restrictionQuery = BorrowerRestriction::latest('effective_from');
         $overdueQuery = OverdueCase::with(['borrower', 'custody.lines', 'penalties'])->latest('overdue_started_at');
+        $violationQuery = BorrowerViolation::with(['borrower', 'custody.request', 'academicPeriod', 'sanction'])
+            ->latest('detected_at');
+        $sanctionQuery = Sanction::with(['borrower', 'academicPeriod', 'violation', 'confirmedBy'])
+            ->latest('confirmed_at');
 
         if (strtoupper((string) $request->session()->get('active_workspace')) === 'BORROWER') {
             $incidentQuery->where('borrower_user_id', $request->user()->id);
             $billingQuery->where('borrower_user_id', $request->user()->id);
             $restrictionQuery->where('borrower_user_id', $request->user()->id);
             $overdueQuery->where('borrower_user_id', $request->user()->id);
+            $violationQuery->where('borrower_user_id', $request->user()->id);
+            $sanctionQuery->where('borrower_user_id', $request->user()->id);
         }
 
         return view('accountability.index', [
@@ -44,6 +53,8 @@ class AccountabilityController extends Controller
             'billings' => $billingQuery->get(),
             'restrictions' => $restrictionQuery->get(),
             'overdueCases' => $overdueQuery->get(),
+            'violations' => $violationQuery->get(),
+            'sanctions' => $sanctionQuery->get(),
         ]);
     }
 
@@ -458,6 +469,45 @@ class AccountabilityController extends Controller
         return back()->with('status', 'Authorized waiver recorded and related financial restriction re-evaluated.');
     }
 
+    public function reviewViolation(
+        Request $request,
+        BorrowerViolation $violation,
+        PolicyService $policy
+    ): RedirectResponse {
+        abort_unless(
+            $request->user()->access_classification === AccessClassification::SpmuHead,
+            403,
+            'Only the SPMU Head may review violations and record sanctions.'
+        );
+
+        $data = $request->validate([
+            'decision' => ['required', 'in:CONFIRMED,DISMISSED'],
+            'sanction_code' => ['nullable', 'required_if:decision,CONFIRMED', 'in:NOTICE,WRITTEN_REPRIMAND,BORROWING_SUSPENSION,OTHER'],
+            'custom_sanction_label' => ['nullable', 'string', 'max:255'],
+            'effective_to' => ['nullable', 'date', 'after_or_equal:today'],
+            'remarks' => ['nullable', 'string', 'max:2000'],
+        ]);
+
+        $sanction = $policy->reviewViolation(
+            $violation,
+            $request->user(),
+            $data['decision'],
+            $data['remarks'] ?? null,
+            $data['sanction_code'] ?? null,
+            $data['custom_sanction_label'] ?? null,
+            $data['effective_to'] ?? null
+        );
+
+        if ($data['decision'] === 'DISMISSED') {
+            return back()->with('status', 'Violation dismissed. No sanction was recorded.');
+        }
+
+        return back()->with(
+            'status',
+            "Violation confirmed. {$sanction->sanction_label} was recorded by the SPMU Head."
+        );
+    }
+
     private function attemptCloseCustody(int $custodyId): void
     {
         $custody = CustodyTransaction::query()->with('lines')->find($custodyId);
@@ -486,7 +536,7 @@ class AccountabilityController extends Controller
             ->where('status', '!=', 'RESOLVED')
             ->exists();
 
-        $openGatePass = $custody->gatePass()->where('status', '!=', 'VERIFIED')->exists();
+        $openGatePass = $custody->gatePass()->whereNotIn('status', ['VERIFIED', 'VOID'])->exists();
 
         if (! $openIncident && ! $openLaundry && ! $openOverdue && ! $openGatePass) {
             $custody->update([

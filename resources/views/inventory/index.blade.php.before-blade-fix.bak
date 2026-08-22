@@ -42,9 +42,7 @@
             <thead><tr><th>Item</th><th>Available for selected dates</th><th>Unit</th><th>Use</th><th>Condition</th></tr></thead>
             <tbody>
             @forelse($items as $item)
-                @php
-    $available = (float) ($balances[$item->id]['available'] ?? 0);
-@endphp
+                @php($available = (float)($balances[$item->id]['available'] ?? 0))
                 <tr>
                     <td data-label="Item"><strong>{{ $item->unique_description }}</strong>@if($item->specification)<small>{{ $item->specification }}</small>@endif<small>{{ $item->category->category_name }}</small></td>
                     <td data-label="Available"><strong class="availability-number">{{ $available + 0 }}</strong><x-status-badge :status="$available > 0 ? 'AVAILABLE' : 'UNAVAILABLE'" :label="$available > 0 ? 'Available' : 'Unavailable'" /></td>

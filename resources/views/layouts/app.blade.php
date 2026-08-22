@@ -34,36 +34,48 @@
     @php
         $activeWorkspace = auth()->user()->primaryWorkspace();
         $unread = App\Models\NotificationDelivery::where('recipient_user_id', auth()->id())->where('channel', 'SYSTEM')->whereNull('read_at')->count();
+        $classification = auth()->user()->access_classification;
         $navigation = match ($activeWorkspace) {
             'BORROWER' => [
                 ['dashboard', 'dashboard', 'Dashboard', 'dashboard'],
-                ['inventory.index', 'inventory.*', 'Inventory', 'inventory'],
+                ['inventory.index', 'inventory.*', 'Available Items', 'inventory'],
                 ['requests.index', 'requests.*', 'My Requests', 'requests'],
-                ['calendar.index', 'calendar.*', 'Borrowing Calendar', 'calendar'],
                 ['custody.index', 'custody.*', 'My Borrowings', 'custody'],
-                ['accountability.index', 'accountability.*', 'Accountability', 'accountability'],
-            ],
-            'SPMU' => [
-                ['dashboard', 'dashboard', 'Dashboard', 'dashboard'],
-                ['approvals.index', 'approvals.*', 'Approval Queue', 'approval'],
-                ['requests.index', 'requests.*', 'All Requests', 'requests'],
-                ['inventory.index', 'inventory.*', 'Inventory', 'inventory'],
                 ['calendar.index', 'calendar.*', 'Borrowing Calendar', 'calendar'],
-                ['custody.index', 'custody.*', 'Release and Return', 'custody'],
-                ['accountability.index', 'accountability.*', 'Accountability', 'accountability'],
-                ['reports.index', 'reports.index', 'Reports', 'reports'],
-                ['administration.index', 'administration.*', 'Configuration', 'settings'],
+                ['accountability.index', 'accountability.*', 'My Obligations', 'accountability'],
             ],
+            'SPMU' => $classification === App\Enums\AccessClassification::SpmuHead
+                ? [
+                    ['dashboard', 'dashboard', 'Dashboard', 'dashboard'],
+                    ['approvals.index', 'approvals.*', 'For Approval', 'approval'],
+                    ['requests.index', 'requests.*', 'Request Records', 'requests'],
+                    ['custody.index', 'custody.*', 'Release & Return Oversight', 'custody'],
+                    ['inventory.index', 'inventory.*', 'Inventory Overview', 'inventory'],
+                    ['accountability.index', 'accountability.*', 'Accountability Oversight', 'accountability'],
+                    ['reports.index', 'reports.index', 'Reports & Analytics', 'reports'],
+                    ['policies.index', 'policies.*', 'Operational Configuration', 'settings'],
+                ]
+                : [
+                    ['dashboard', 'dashboard', 'Dashboard', 'dashboard'],
+                    ['requests.index', 'requests.*', 'Approved Requests', 'requests'],
+                    ['custody.release.index', 'custody.release.*', 'Release', 'custody'],
+                    ['custody.return.index', 'custody.return.*', 'Return', 'custody'],
+                    ['laundry.spmu.index', 'laundry.spmu.*', 'Laundry Final Acceptance', 'custody'],
+                    ['inventory.index', 'inventory.*', 'Inventory', 'inventory'],
+                    ['calendar.index', 'calendar.*', 'Borrowing Calendar', 'calendar'],
+                    ['accountability.index', 'accountability.*', 'Return Issues', 'accountability'],
+                ],
             'ICTU' => [
                 ['dashboard', 'dashboard', 'Dashboard', 'dashboard'],
                 ['administration.users.index', 'administration.users.*', 'User Accounts', 'users'],
-                ['administration.delegations.index', 'administration.delegations.*', 'Delegated Approvers', 'delegation'],
                 ['administration.settings.index', 'administration.settings.*', 'System Settings', 'settings'],
                 ['reports.audit', 'reports.audit', 'Audit Trail', 'reports'],
                 ['reports.notifications', 'reports.notifications', 'Delivery Records', 'notifications'],
             ],
             'LAUNDRY' => [
-                ['laundry.index', 'laundry.*', 'Laundry Requests', 'custody'],
+                ['dashboard', 'dashboard', 'Dashboard', 'dashboard'],
+                ['laundry.index', 'laundry.index', 'Laundry Requests', 'custody'],
+                ['laundry.completed', 'laundry.completed', 'Completed', 'success'],
             ],
             default => [],
         };

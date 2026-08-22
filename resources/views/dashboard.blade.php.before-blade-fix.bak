@@ -14,21 +14,21 @@
         'SPMU_OFFICER' => [
             'eyebrow' => 'SPMU Action Officer',
             'title' => 'Welcome, '.$firstName,
-            'subtitle' => 'Process only requests already approved by the SPMU Head: schedule pickup, release items, inspect returns, and complete final Laundry acceptance when applicable.',
+            'subtitle' => 'Focus on the operational work that must be verified, scheduled, released, inspected, or reconciled today.',
             'taskEyebrow' => "Today's operations",
             'taskTitle' => 'Tasks requiring your action',
         ],
         'SPMU_HEAD' => [
             'eyebrow' => 'SPMU Head / Admin',
             'title' => 'Welcome, '.$firstName,
-            'subtitle' => 'Review submitted borrowing requests, make the final approval decision, and monitor borrowing, accountability, and inventory oversight.',
-            'taskEyebrow' => 'Approval queue',
-            'taskTitle' => 'Requests needing your approval decision',
+            'subtitle' => 'Review requests already verified by the Action Officer and monitor borrowing, accountability, and inventory oversight.',
+            'taskEyebrow' => 'Decision queue',
+            'taskTitle' => 'Requests needing your decision',
         ],
         'LAUNDRY' => [
             'eyebrow' => 'Laundry Worker',
             'title' => 'Welcome, '.$firstName,
-            'subtitle' => 'See which linen is awaiting borrower turnover, being processed, ready to bring to SPMU, or waiting for the final signed-form upload.',
+            'subtitle' => 'See which linen is expected, currently being processed, ready for borrower pickup, or already released.',
             'taskEyebrow' => 'Needs your action',
             'taskTitle' => 'Laundry cases to process',
         ],
@@ -56,13 +56,13 @@
             'Needs My Action' => ['information', 'warning', route('requests.index')],
         ],
         'SPMU_OFFICER' => [
-            'For Pickup Scheduling' => ['calendar', 'info', route('custody.index')],
+            'For Verification' => ['requests', 'info', route('approvals.index')],
             'Ready for Release' => ['custody', 'success', route('custody.index')],
             'For Return Check' => ['custody', 'warning', route('custody.index')],
-            'Laundry Final Acceptance' => ['approval', 'info', route('laundry.spmu.index')],
+            'Laundry Verification' => ['approval', 'info', route('laundry.spmu.index')],
         ],
         'SPMU_HEAD' => [
-            'For Approval' => ['approval', 'warning', route('approvals.index')],
+            'For Final Decision' => ['approval', 'warning', route('approvals.index')],
             'Approved Today' => ['success', 'success', route('requests.index')],
             'Active Borrowings' => ['custody', 'info', route('custody.index')],
             'Overdue / Issues' => ['accountability', 'danger', route('accountability.index')],
@@ -70,8 +70,8 @@
         'LAUNDRY' => [
             'Awaiting Drop-off' => ['calendar', 'warning', route('laundry.index')],
             'In Process' => ['custody', 'info', route('laundry.index')],
-            'For SPMU Return' => ['success', 'success', route('laundry.index')],
-            'Final Form Upload' => ['approval', 'warning', route('laundry.index')],
+            'Ready for Pickup' => ['success', 'success', route('laundry.index')],
+            'Released Today' => ['approval', 'info', route('laundry.completed')],
         ],
         'ICTU' => [
             'Active Accounts' => ['users', 'success', route('administration.users.index')],
@@ -96,9 +96,9 @@
             New borrowing request
         </a>
     @elseif($dashboardMode === 'SPMU_OFFICER')
-        <a class="button primary ui-pressable" href="{{ route('custody.index') }}">Open Release &amp; Return</a>
+        <a class="button primary ui-pressable" href="{{ route('approvals.index') }}">Open Requests</a>
     @elseif($dashboardMode === 'SPMU_HEAD')
-        <a class="button primary ui-pressable" href="{{ route('approvals.index') }}">Open Approval Queue</a>
+        <a class="button primary ui-pressable" href="{{ route('approvals.index') }}">Open Decision Queue</a>
     @elseif($dashboardMode === 'LAUNDRY')
         <a class="button primary ui-pressable" href="{{ route('laundry.index') }}">Open Laundry Requests</a>
     @elseif($dashboardMode === 'ICTU')
@@ -109,12 +109,12 @@
 <section class="stat-grid dashboard-stat-grid" aria-label="Current totals">
     @foreach($statistics as $label => $value)
         @php
-            [$icon, $tone, $link] = $statMeta[$label] ?? [
-                'dashboard',
-                'neutral',
-                route('dashboard'),
-            ];
-        @endphp
+    [$icon, $tone, $link] = $statMeta[$label] ?? [
+        'dashboard',
+        'neutral',
+        route('dashboard'),
+    ];
+@endphp
         <a class="card stat-card stat-card-link kpi-card dashboard-kpi-card kpi-accent-{{ $tone }} ui-pressable" href="{{ $link }}">
             <span class="kpi-icon" aria-hidden="true"><x-icon :name="$icon" size="18" /></span>
             <strong class="kpi-value">{{ number_format($value) }}</strong>
@@ -137,9 +137,7 @@
             </div>
             @if($dashboardMode === 'BORROWER')
                 <a class="dashboard-view-all" href="{{ route('requests.index') }}">View all <x-icon name="chevron-right" size="16" /></a>
-            @elseif($dashboardMode === 'SPMU_OFFICER')
-                <a class="dashboard-view-all" href="{{ route('custody.index') }}">View all <x-icon name="chevron-right" size="16" /></a>
-            @elseif($dashboardMode === 'SPMU_HEAD')
+            @elseif($dashboardMode === 'SPMU_OFFICER' || $dashboardMode === 'SPMU_HEAD')
                 <a class="dashboard-view-all" href="{{ route('approvals.index') }}">View all <x-icon name="chevron-right" size="16" /></a>
             @elseif($dashboardMode === 'LAUNDRY')
                 <a class="dashboard-view-all" href="{{ route('laundry.index') }}">View all <x-icon name="chevron-right" size="16" /></a>
@@ -158,8 +156,8 @@
                             $record->status === App\Enums\RequestStatus::UnderSpmu => 'No action now. Your request is under SPMU review.',
                             $laundry?->status === 'FOR_LAUNDRY' => 'Bring the used linen and printed Laundry Form to the Laundry Worker.',
                             $laundry?->status === 'IN_PROCESS' => 'No action now. Laundry is processing your linen.',
-                            $laundry?->status === 'READY_FOR_SPMU_RETURN' => 'No action now. The Laundry Worker will bring the cleaned linen directly to SPMU.',
-                            $laundry?->status === 'AWAITING_FINAL_FORM_UPLOAD' => 'No action now. SPMU has accepted the linen; Laundry is uploading the fully signed form.',
+                            $laundry?->status === 'READY_FOR_PICKUP' => 'Collect the cleaned linen from Laundry, then return it to SPMU.',
+                            $laundry?->status === 'FOR_SPMU_FINAL_CHECK' => 'Bring the cleaned linen to SPMU for final return inspection.',
                             $custody?->scheduled_release_at && ! $custody?->released_at => 'Pick up the approved items on the scheduled pickup window.',
                             $custody?->released_at && $custody?->status !== 'CLOSED' => 'Keep track of the return deadline and return the items to SPMU.',
                             $custody?->status === 'CLOSED' => 'Completed. No further action is required.',
@@ -177,33 +175,29 @@
                 @elseif($dashboardMode === 'SPMU_OFFICER')
                     <article>
                         <div>
-                            <strong>{{ $record->request?->request_no ?: $record->custody_no }}</strong>
+                            <strong>{{ $record->request_no }}</strong>
                             <span>{{ $record->borrower?->full_name }}</span>
-                            <small>
-                                {{ $record->scheduled_release_at
-                                    ? 'Pickup is scheduled. Prepare the approved items and record physical release when claimed.'
-                                    : 'Approved by the SPMU Head. Set the pickup schedule and prepare any required Gate Pass.' }}
-                            </small>
+                            <small>Verify signed documents, quantities, dates, and availability, then forward to Head.</small>
                         </div>
-                        <a class="button primary small ui-pressable" href="{{ route('custody.show', $record) }}">Process</a>
+                        <a class="button primary small ui-pressable" href="{{ route('requests.show', $record) }}">Verify</a>
                     </article>
                 @elseif($dashboardMode === 'SPMU_HEAD')
+                    @php($verifiedBy = $record->currentVersion?->approvalSteps?->where('sequence_no', 1)->first()?->approver?->full_name)
                     <article>
                         <div>
                             <strong>{{ $record->request_no }}</strong>
                             <span>{{ $record->borrower?->full_name }}</span>
-                            <small>Review the signed request, required documents, quantities, dates, and current availability.</small>
+                            <small>Action Officer verified{{ $verifiedBy ? ' by '.$verifiedBy : '' }}. Final Head decision is required.</small>
                         </div>
-                        <a class="button primary small ui-pressable" href="{{ route('requests.show', $record) }}">Review</a>
+                        <a class="button primary small ui-pressable" href="{{ route('requests.show', $record) }}">Decide</a>
                     </article>
                 @elseif($dashboardMode === 'LAUNDRY')
                     @php
                         $jobLabel = match($record->status) {
-                            'FOR_LAUNDRY' => 'Wait for borrower turnover, confirm the signed physical form, and record actual linen received.',
-                            'IN_PROCESS' => 'Finish laundry, record completed quantities/condition, sign the form, then prepare to bring linen to SPMU.',
-                            'READY_FOR_SPMU_RETURN' => 'Bring the cleaned linen and same physical Laundry Form directly to SPMU for final acceptance.',
-                            'AWAITING_FINAL_FORM_UPLOAD' => 'SPMU final acceptance is complete. Upload the fully signed Laundry Form to settle the case.',
-                            'FORM_REPLACEMENT_REQUIRED' => 'Upload a clear replacement copy of the fully signed Laundry Form.',
+                            'FOR_LAUNDRY' => 'Wait for borrower drop-off, then confirm physical receipt.',
+                            'IN_PROCESS' => 'Complete laundry processing and upload the accomplished Laundry Form.',
+                            'FORM_REPLACEMENT_REQUIRED' => 'Upload a clear replacement Laundry Form scan.',
+                            'READY_FOR_PICKUP' => 'Clean linen is ready. Release it when the borrower collects it.',
                             default => 'Open the laundry case for the next required action.',
                         };
                     @endphp
@@ -252,32 +246,31 @@
                 @endforelse
             </div>
         @elseif($dashboardMode === 'SPMU_OFFICER')
-            <div class="card-header"><div><p class="eyebrow">Operational guide</p><h2>What happens after Head approval?</h2></div></div>
+            <div class="card-header"><div><p class="eyebrow">Operational guide</p><h2>What happens next?</h2></div></div>
             <div class="workflow-mini-list">
-                <span><strong>1</strong> Receive the verified and approved request</span>
-                <span><strong>2</strong> Schedule pickup and prepare Gate Pass when off-campus</span>
-                <span><strong>3</strong> Release approved items physically</span>
-                <span><strong>4</strong> Monitor custody and receive returns</span>
-                <span><strong>5</strong> Receive cleaned linen directly from Laundry and complete final physical acceptance</span>
-                <span><strong>6</strong> Complete final return reconciliation</span>
+                <span><strong>1</strong> Verify request & documents</span>
+                <span><strong>2</strong> Head makes final decision</span>
+                <span><strong>3</strong> Schedule pickup & prepare forms</span>
+                <span><strong>4</strong> Release items physically</span>
+                <span><strong>5</strong> Inspect return / verify Laundry evidence</span>
+                <span><strong>6</strong> Complete final reconciliation</span>
             </div>
         @elseif($dashboardMode === 'SPMU_HEAD')
-            <div class="card-header"><div><p class="eyebrow">Approval authority</p><h2>Head responsibility</h2></div></div>
+            <div class="card-header"><div><p class="eyebrow">Oversight</p><h2>Head responsibility</h2></div></div>
             <div class="workflow-mini-list">
-                <span><strong>1</strong> Review the submitted request and signed documents</span>
-                <span><strong>2</strong> Check requested quantities, dates, and current availability</span>
-                <span><strong>3</strong> Approve & reserve, return for revision, or reject</span>
-                <span><strong>4</strong> Monitor custody, issues, and inventory oversight</span>
+                <span><strong>1</strong> Review Action Officer verification</span>
+                <span><strong>2</strong> Approve, reject, or return for revision</span>
+                <span><strong>3</strong> Approval reserves the exact quantity</span>
+                <span><strong>4</strong> Monitor custody, issues, and inventory</span>
             </div>
-            <p class="meta top-gap">After approval, pickup scheduling, Gate Pass preparation, physical release, return inspection, and applicable Laundry final acceptance move to the Action Officer.</p>
+            <p class="meta top-gap">Pickup scheduling, physical release, return inspection, and Laundry Form encoding remain Action Officer operations.</p>
         @elseif($dashboardMode === 'LAUNDRY')
-            <div class="card-header"><div><p class="eyebrow">Laundry tracker</p><h2>Five-stage linen return process</h2></div></div>
+            <div class="card-header"><div><p class="eyebrow">Laundry tracker</p><h2>Simple four-stage process</h2></div></div>
             <ol class="laundry-dashboard-tracker" aria-label="Laundry process">
-                <li><span>1</span><strong>Borrower Turnover</strong><small>Borrower signs and hands used linen + physical Laundry Form to Laundry.</small></li>
-                <li><span>2</span><strong>Laundry Processing</strong><small>Laundry records receipt, processes the linen, completes quantities/condition, and signs.</small></li>
-                <li><span>3</span><strong>Return to SPMU</strong><small>Laundry Worker brings cleaned linen + the same physical form directly to SPMU.</small></li>
-                <li><span>4</span><strong>SPMU Final Acceptance</strong><small>SPMU checks the linen and signs the final receiving/acceptance portion.</small></li>
-                <li><span>5</span><strong>Final Form Upload</strong><small>Laundry uploads the fully signed form; the Laundry transaction is completed/settled.</small></li>
+                <li><span>1</span><strong>Awaiting Drop-off</strong><small>Borrower brings used linen + physical Laundry Form.</small></li>
+                <li><span>2</span><strong>In Process</strong><small>Confirm receipt, wash/process, and complete the physical form.</small></li>
+                <li><span>3</span><strong>Ready for Pickup</strong><small>Upload accomplished form; borrower is notified.</small></li>
+                <li><span>4</span><strong>Released to Borrower</strong><small>Borrower collects clean linen and returns it to SPMU.</small></li>
             </ol>
         @elseif($dashboardMode === 'ICTU')
             <div class="card-header"><div><p class="eyebrow">Technical scope</p><h2>ICTU responsibility</h2></div></div>

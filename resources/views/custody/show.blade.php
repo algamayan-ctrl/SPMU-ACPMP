@@ -8,6 +8,9 @@
     $isSpmu = $workspace === 'SPMU';
     $isSpmuOfficer = $isSpmu && $user?->access_classification === \App\Enums\AccessClassification::SpmuOfficer;
     $isSpmuHead = $isSpmu && $user?->access_classification === \App\Enums\AccessClassification::SpmuHead;
+    $spmuMode = $spmuMode ?? null;
+    $showReleaseWorkflow = ! ($isSpmuOfficer && $spmuMode === 'return');
+    $showReturnWorkflow = ! ($isSpmuOfficer && $spmuMode === 'release');
 
     $version = $custody->request?->currentVersion;
     $scheduleDateValue = $version?->getAttribute('schedule_date') ?: $version?->getAttribute('needed_from');
@@ -30,12 +33,74 @@
         && (bool) $custody->pickup_expires_at
         && ! $custody->pickup_expired_at;
 
+    $hasOffCampusItem = $custody->lines->contains(
+        fn ($line) => $line->requestItem?->use_location === 'OFF_CAMPUS'
+    );
+
+    $hasLaundryItem = $custody->lines->contains(
+        fn ($line) => (bool) $line->requestItem?->inventoryItem?->laundry_required
+    );
+
     $laundryJob = $custody->relationLoaded('laundryJob') ? $custody->laundryJob : null;
+
+    $operationalLabel = match (true) {
+        $custody->status === 'CLOSED' => 'Completed',
+        $custody->status === 'OBLIGATION_OPEN' => 'Return Reconciliation / Obligation Open',
+        $custody->status === 'RETURN_PROCESSING' => 'Return Processing',
+        $custody->status === 'OVERDUE' => 'Overdue',
+        (bool) $custody->released_at => 'Items Released / On Custody',
+        $preparationComplete && $hasPickupSchedule => 'Ready for Release',
+        ! $hasPickupSchedule && $custody->status === 'PREPARING_RELEASE' => 'For Pickup Scheduling',
+        $hasPickupSchedule && ! $preparationComplete => 'For Item Preparation',
+        $custody->status === 'PREPARING_RELEASE' => 'Preparing for Release',
+        default => null,
+    };
+
+    [$borrowerStateTitle, $borrowerStateCopy] = match (true) {
+        $custody->status === 'CLOSED' => [
+            'Borrowing completed',
+            'All issued items have been returned and reconciled. Use this page to review what was issued, returned, and any linen/laundry record.',
+        ],
+        $custody->status === 'OBLIGATION_OPEN' => [
+            'Return completed with an open obligation',
+            'The physical return has been recorded, but an accountability or billing obligation still needs resolution. Check My Obligations for the required action.',
+        ],
+        $custody->status === 'RETURN_PROCESSING' => [
+            'Return processing is in progress',
+            'SPMU is reconciling returned items. Review the outstanding quantities and linen/laundry status below; no split item-quantity returns are recorded.',
+        ],
+        $custody->status === 'OVERDUE' => [
+            'This borrowing is overdue',
+            'Review the expected return date and outstanding items below, then coordinate the return with SPMU.',
+        ],
+        (bool) $custody->released_at => [
+            'Items are currently on your custody',
+            'Use this record for your issued items, return due date, outstanding quantities, and linen/laundry progress when applicable.',
+        ],
+        $preparationComplete && $hasPickupSchedule => [
+            'Ready for scheduled release',
+            'Your pickup is scheduled and SPMU has confirmed item preparation. Go to SPMU during the pickup window for the physical handover and Borrower Slip.',
+        ],
+        $hasPickupSchedule => [
+            'Pickup scheduled — preparation in progress',
+            'SPMU has set your pickup window and is preparing the approved items. No quantity input is required from you.',
+        ],
+        default => [
+            'Waiting for pickup scheduling',
+            'SPMU will schedule the pickup after approval. Request approval and signed-document history remain under My Requests.',
+        ],
+    };
 @endphp
 
 <section class="page-heading">
     <div>
-        <p class="eyebrow">Pickup / custody transaction</p>
+        <p class="eyebrow">
+            {{ $isBorrower
+                ? 'My borrowing'
+                : ($isSpmuOfficer && $spmuMode === 'release'
+                    ? 'Release transaction'
+                    : ($isSpmuOfficer && $spmuMode === 'return' ? 'Return transaction' : 'Pickup / custody transaction')) }}
+        </p>
         <h1>{{ $custody->custody_no }}</h1>
         <p>
             Request {{ $custody->request?->request_no }}
@@ -44,104 +109,360 @@
             @endif
         </p>
     </div>
-    <x-status-badge :status="$custody->status" />
+    <x-status-badge :status="$custody->status" :label="$operationalLabel" />
 </section>
 
-@if(session('status'))
+@if($isBorrower)
     <section class="content-area">
-        <div class="callout success">{{ session('status') }}</div>
-    </section>
-@endif
-
-@if($errors->any())
-    <section class="content-area">
-        <div class="callout danger">
-            <strong>Please review the following:</strong>
-            <ul>
-                @foreach($errors->all() as $error)
-                    <li>{{ $error }}</li>
-                @endforeach
-            </ul>
+        <div class="action-panel action-neutral">
+            <div>
+                <p class="eyebrow">What this record is for</p>
+                <h2>{{ $borrowerStateTitle }}</h2>
+                <p>{{ $borrowerStateCopy }}</p>
+            </div>
+            <a class="button secondary ui-pressable" href="{{ route('requests.show', $custody->request) }}">
+                View Request Details
+            </a>
         </div>
     </section>
-@endif
+
+    <section class="content-grid two">
+        <article class="card">
+            <div class="card-header">
+                <div>
+                    <p class="eyebrow">Borrowing schedule</p>
+                    <h2>{{ $version?->purpose_event ?: 'Borrowing details' }}</h2>
+                </div>
+            </div>
+
+            <dl class="detail-list">
+                <dt>Scheduled Use</dt>
+                <dd>{{ $scheduleDate?->format('d F Y') ?: 'Not available' }}</dd>
+
+                <dt>Expected Return</dt>
+                <dd>{{ $returnDate?->format('d F Y') ?: 'Not available' }}</dd>
+
+                <dt>Pickup Schedule</dt>
+                <dd>{{ optional($custody->scheduled_release_at)->format('d F Y, g:i A') ?: 'Not scheduled yet' }}</dd>
+
+                <dt>Use Location</dt>
+                <dd>{{ $hasOffCampusItem ? 'Includes off-campus use' : 'On-campus only' }}</dd>
+            </dl>
+        </article>
+
+        <article class="card">
+            <div class="card-header">
+                <div>
+                    <p class="eyebrow">Custody &amp; return</p>
+                    <h2>Transaction summary</h2>
+                </div>
+            </div>
+
+            <dl class="detail-list">
+                <dt>Released</dt>
+                <dd>{{ optional($custody->released_at)->format('d F Y, g:i A') ?: 'Not issued yet' }}</dd>
+
+                <dt>Outstanding</dt>
+                <dd>{{ $outstandingTotal + 0 }}</dd>
+
+                <dt>Linen / Laundry</dt>
+                <dd>{{ $hasLaundryItem ? ($laundryJob ? str($laundryJob->status)->replace('_', ' ')->title() : 'Applicable') : 'Not applicable' }}</dd>
+
+                <dt>Completed</dt>
+                <dd>{{ optional($custody->closed_at)->format('d F Y, g:i A') ?: 'Not completed yet' }}</dd>
+            </dl>
+        </article>
+    </section>
+
+    <section class="content-area">
+        <article class="card">
+            <div class="card-header">
+                <div>
+                    <p class="eyebrow">Your items</p>
+                    <h2>{{ $custody->released_at ? 'Issued and returned quantities' : 'Approved items for pickup' }}</h2>
+                </div>
+            </div>
+
+            <div class="table-wrap">
+                <table>
+                    <thead>
+                        @if($custody->released_at)
+                            <tr>
+                                <th>Item</th>
+                                <th>Issued</th>
+                                <th>Returned</th>
+                                <th>Outstanding</th>
+                                <th>Release Condition</th>
+                            </tr>
+                        @else
+                            <tr>
+                                <th>Item</th>
+                                <th>Approved Quantity</th>
+                                <th>Release Status</th>
+                            </tr>
+                        @endif
+                    </thead>
+                    <tbody>
+                        @foreach($custody->lines as $line)
+                            <tr>
+                                <td>
+                                    <strong>{{ $line->requestItem->description_snapshot }}</strong>
+                                    <small>{{ $line->requestItem->unit_snapshot }}</small>
+                                </td>
+                                @if($custody->released_at)
+                                    <td>{{ $line->actual_released_quantity + 0 }}</td>
+                                    <td>{{ $line->returned_quantity + 0 }}</td>
+                                    <td>{{ max(0, (float) $line->actual_released_quantity - (float) $line->returned_quantity) + 0 }}</td>
+                                    <td>{{ $line->release_condition ? str($line->release_condition)->replace('_', ' ')->title() : '—' }}</td>
+                                @else
+                                    <td>{{ $line->approved_quantity + 0 }}</td>
+                                    <td>Not issued yet</td>
+                                @endif
+                            </tr>
+                        @endforeach
+                    </tbody>
+                </table>
+            </div>
+        </article>
+    </section>
+
+    @if($hasLaundryItem && $laundryJob)
+        @php
+            [$borrowerLaundryHeadline, $borrowerLaundryCopy, $borrowerLaundryCallout] = match ($laundryJob->status) {
+                'FOR_LAUNDRY' => [
+                    'Your linen is awaiting turnover to Laundry',
+                    'Sign the borrower/turnover portion of the printed Laundry Form, then hand the used linen and the same form to the Laundry Worker.',
+                    'warning',
+                ],
+                'IN_PROCESS' => [
+                    'Laundry processing is in progress',
+                    'The Laundry Worker has received the linen and is processing it. No additional system encoding is required from you.',
+                    'info',
+                ],
+                'READY_FOR_SPMU_RETURN' => [
+                    'Cleaned linen is being returned to SPMU',
+                    'No borrower action is required. The Laundry Worker returns the cleaned linen and physical form directly to SPMU for final acceptance.',
+                    'info',
+                ],
+                'AWAITING_FINAL_FORM_UPLOAD' => [
+                    'Final signed Laundry Form upload is pending',
+                    'SPMU has accepted the cleaned linen. The Laundry Worker must upload the fully accomplished form before the Laundry transaction is settled.',
+                    'info',
+                ],
+                'FORM_REPLACEMENT_REQUIRED' => [
+                    'Laundry Form replacement is required',
+                    'The final form needs correction or replacement by the Laundry Worker. No borrower quantity encoding is required.',
+                    'warning',
+                ],
+                'LAUNDRY_COMPLETED' => [
+                    'Laundry completed',
+                    'The cleaned linen was accepted by SPMU and the fully accomplished Laundry Form was uploaded. No further borrower action is required.',
+                    'success',
+                ],
+                default => [
+                    'Laundry processing',
+                    'Review the current linen status below. Laundry processing and final return to SPMU are handled by the Laundry Worker and SPMU.',
+                    'info',
+                ],
+            };
+        @endphp
+
+        <section class="content-area">
+            <article class="card">
+                <div class="card-header">
+                    <div>
+                        <p class="eyebrow">Linen / laundry</p>
+                        <h2>{{ $borrowerLaundryHeadline }}</h2>
+                    </div>
+                    <x-status-badge :status="$laundryJob->status" />
+                </div>
+
+                <div class="callout {{ $borrowerLaundryCallout }}">
+                    <p>{{ $borrowerLaundryCopy }}</p>
+                </div>
+
+                @if($laundryJob->worker_received_at || $laundryJob->worker_completed_at)
+                    <dl class="detail-list top-gap">
+                        <dt>Laundry Worker</dt>
+                        <dd>{{ $laundryJob->worker_name ?: '—' }}</dd>
+                        <dt>Received by Laundry</dt>
+                        <dd>{{ optional($laundryJob->worker_received_at)->format('d M Y, g:i A') ?: '—' }}</dd>
+                        <dt>Processing Completed</dt>
+                        <dd>{{ optional($laundryJob->worker_completed_at)->format('d M Y, g:i A') ?: '—' }}</dd>
+                    </dl>
+                @endif
+
+                @if($laundryJob->lines->isNotEmpty())
+                    <div class="table-wrap top-gap">
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>Item</th>
+                                    <th>Received by Laundry</th>
+                                    <th>Completed by Laundry</th>
+                                    <th>Finding</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                @foreach($laundryJob->lines as $line)
+                                    <tr>
+                                        <td>
+                                            <strong>{{ $line->custodyLine->requestItem->description_snapshot }}</strong>
+                                            <small>{{ $line->custodyLine->requestItem->unit_snapshot }}</small>
+                                        </td>
+                                        <td>{{ $line->received_quantity === null ? '—' : $line->received_quantity + 0 }}</td>
+                                        <td>{{ $line->completed_quantity === null ? '—' : $line->completed_quantity + 0 }}</td>
+                                        <td>{{ ($line->issue_type && $line->issue_type !== 'NONE') ? str($line->issue_type)->replace('_', ' ')->title() : 'No issue recorded' }}</td>
+                                    </tr>
+                                @endforeach
+                            </tbody>
+                        </table>
+                    </div>
+                @endif
+
+                @if($laundryJob->latestEvidence)
+                    <div class="evidence-row top-gap">
+                        <div>
+                            <strong>Final Signed Laundry Form</strong>
+                            <small>
+                                Uploaded {{ optional($laundryJob->latestEvidence->submitted_at)->format('d M Y, g:i A') ?: '—' }}
+                                · {{ str($laundryJob->latestEvidence->verification_status)->replace('_', ' ')->title() }}
+                            </small>
+                        </div>
+                        @if($laundryJob->latestEvidence->file)
+                            <a class="button secondary small ui-pressable" href="{{ route('files.show', $laundryJob->latestEvidence->file, false) }}" target="_blank" rel="noopener">View Final Signed Form</a>
+                        @endif
+                    </div>
+                @endif
+            </article>
+        </section>
+    @endif
+
+    @if($custody->released_at && $outstandingTotal > 0)
+        <section class="content-area">
+            <form method="post" action="{{ route('custody.early-return', $custody) }}" class="card form-grid">
+                @csrf
+
+                <div class="card-header">
+                    <div>
+                        <p class="eyebrow">Optional coordination</p>
+                        <h2>Send an Early Return Notice</h2>
+                    </div>
+                </div>
+
+                <p class="meta">
+                    Use this only when you plan to return an item earlier than the expected return date. It is a coordination notice; SPMU records the actual return inspection.
+                </p>
+
+                <label>
+                    Proposed Handover Date &amp; Time
+                    <input type="datetime-local" name="proposed_return_at" required>
+                </label>
+
+                @foreach($custody->lines as $line)
+                    @php
+                        $outstanding = max(0, (float) $line->actual_released_quantity - (float) $line->returned_quantity);
+                    @endphp
+
+                    @if($outstanding > 0)
+                        <label class="checkbox">
+                            <input
+                                type="checkbox"
+                                name="quantities[{{ $line->id }}]"
+                                value="{{ $outstanding }}"
+                                @checked((float) old('quantities.'.$line->id, 0) === (float) $outstanding)
+                            >
+                            {{ $line->requestItem->description_snapshot }} — full outstanding quantity: {{ $outstanding + 0 }}
+                        </label>
+                    @endif
+                @endforeach
+
+                <label>
+                    Reason / Coordination Note
+                    <textarea name="reason"></textarea>
+                </label>
+
+                <button class="button primary ui-pressable">Send Early Return Notice</button>
+            </form>
+        </section>
+    @endif
+@else
+<style>
+.workflow-focus-target { scroll-margin-top: 96px; }
+.return-inspection-scroll {
+    max-height: clamp(460px, 62vh, 760px);
+    overflow: auto;
+}
+.return-inspection-scroll table { min-width: 1420px; }
+.return-inspection-scroll thead th {
+    position: sticky;
+    top: 0;
+    z-index: 3;
+    background: var(--surface-subtle, #eef3f8);
+}
+</style>
+@if($showReleaseWorkflow)
+    <x-request-progress-tracker :request="$custody->request" />
 
 <section class="content-grid two">
     <article class="card">
         <div class="card-header">
             <div>
-                <p class="eyebrow">Approved schedule</p>
-                <h2>Dates and pickup</h2>
+                <p class="eyebrow">Approved request summary</p>
+                <h2>Borrowing schedule</h2>
             </div>
         </div>
 
         <dl class="detail-list">
+            <dt>Purpose / Event</dt>
+            <dd>{{ $version?->purpose_event ?: '—' }}</dd>
+
             <dt>Schedule Date</dt>
             <dd>{{ $scheduleDate?->format('d F Y') ?: 'Not available' }}</dd>
 
             <dt>Expected Return Date</dt>
             <dd>{{ $returnDate?->format('d F Y') ?: 'Not available' }}</dd>
-
-            <dt>Pickup</dt>
-            <dd>{{ optional($custody->scheduled_release_at)->format('d F Y, g:i A') ?: 'Not scheduled' }}</dd>
-
-            <dt>Pickup Expiration</dt>
-            <dd>{{ optional($custody->pickup_expires_at)->format('d F Y, g:i A') ?: 'Not scheduled' }}</dd>
-
-            <dt>Issued</dt>
-            <dd>{{ optional($custody->released_at)->format('d F Y, g:i A') ?: 'Not yet issued' }}</dd>
-
-            <dt>Outstanding</dt>
-            <dd>{{ $outstandingTotal + 0 }} unit(s)</dd>
         </dl>
-
-        <p class="meta">
-            The Expected Return Date is the operational return deadline used by the current custody workflow.
-        </p>
     </article>
 
     <article class="card">
         <div class="card-header">
             <div>
-                <p class="eyebrow">Physical documents</p>
-                <h2>Generated operational forms</h2>
+                <p class="eyebrow">Operational requirements</p>
+                <h2>Before physical release</h2>
             </div>
         </div>
 
-        @forelse($documents->whereNotIn('status', ['SUPERSEDED', 'INVALIDATED', 'EXPIRED']) as $document)
-            <div class="evidence-row">
-                <div>
-                    <strong>{{ str($document->document_type)->replace('_', ' ')->title() }}</strong>
-                    <small>{{ $document->status }}</small>
-                </div>
-                <a class="button secondary small" href="{{ route('documents.download', $document) }}">
-                    Download
-                </a>
-            </div>
-        @empty
-            <div class="empty-state">
-                <strong>No operational form generated yet.</strong>
-            </div>
-        @endforelse
+        <dl class="detail-list">
+            <dt>Use Location</dt>
+            <dd>{{ $hasOffCampusItem ? 'Off-campus item included' : 'On-campus only' }}</dd>
+
+            <dt>Gate Pass</dt>
+            <dd>{{ $hasOffCampusItem ? 'Required before off-campus exit' : 'Not required' }}</dd>
+
+            <dt>Laundry Form</dt>
+            <dd>{{ $hasLaundryItem ? 'Required for applicable linen' : 'Not required' }}</dd>
+
+        </dl>
     </article>
 </section>
 
-<section class="content-area">
-    <article class="card">
+@if($isSpmuOfficer && $custody->status === 'PREPARING_RELEASE' && !$custody->released_at)
+<section class="content-grid two release-prep-grid">
+<article class="card release-property-card">
         <div class="card-header">
             <div>
-                <p class="eyebrow">Reserved / issued property</p>
-                <h2>Items</h2>
+                <p class="eyebrow">Approved property</p>
+                <h2>Approved and issued quantities</h2>
             </div>
         </div>
 
-        <div class="table-wrap">
+        <div class="table-wrap release-items-scroll">
             <table>
                 <thead>
                     <tr>
                         <th>Item</th>
-                        <th>Approved / Reserved</th>
-                        <th>Prepared</th>
+                        <th>Approved Quantity</th>
                         <th>Issued</th>
                         <th>Returned</th>
                         <th>Outstanding</th>
@@ -156,7 +477,94 @@
                                 <small>{{ $line->requestItem->unit_snapshot }}</small>
                             </td>
                             <td>{{ $line->approved_quantity + 0 }}</td>
-                            <td>{{ $line->quantity_to_receive + 0 }}</td>
+                            <td>{{ $line->actual_released_quantity + 0 }}</td>
+                            <td>{{ $line->returned_quantity + 0 }}</td>
+                            <td>
+                                {{ max(0, (float) $line->actual_released_quantity - (float) $line->returned_quantity) + 0 }}
+                            </td>
+                            <td>{{ $line->release_condition ?: '—' }}</td>
+                        </tr>
+                    @endforeach
+                </tbody>
+            </table>
+        </div>
+    </article>
+
+<form method="post" action="{{ route('custody.schedule-pickup', $custody) }}" class="card form-grid release-schedule-card">
+            @csrf
+            <div class="card-header">
+                <div>
+                    <p class="eyebrow">1. Pickup schedule</p>
+                    <h2>Schedule pickup and notify the borrower</h2>
+                </div>
+                <x-status-badge
+                    :status="$hasPickupSchedule ? 'VERIFIED' : 'PENDING'"
+                    :label="$hasPickupSchedule ? 'Pickup Scheduled' : 'Schedule Required'"
+                />
+            </div>
+
+            <div class="content-grid two">
+                <label>
+                    Pickup Date &amp; Time
+                    <input
+                        type="datetime-local"
+                        name="pickup_at"
+                        value="{{ old('pickup_at', optional($custody->scheduled_release_at)->format('Y-m-d\\TH:i')) }}"
+                        required
+                    >
+                </label>
+
+                <label>
+                    Claim Until
+                    <input
+                        type="datetime-local"
+                        name="pickup_expires_at"
+                        value="{{ old('pickup_expires_at', optional($custody->pickup_expires_at)->format('Y-m-d\\TH:i')) }}"
+                        required
+                    >
+                </label>
+            </div>
+
+            <p class="meta">
+                Set the pickup window first. Saving the schedule notifies the borrower. The approved quantities stay reserved,
+                then the Action Officer confirms the actual prepared quantities once before release.
+            </p>
+
+            <button class="button primary ui-pressable">
+                {{ $hasPickupSchedule ? 'Update Pickup Schedule & Notify Borrower' : 'Schedule Pickup & Notify Borrower' }}
+            </button>
+        </form>
+</section>
+@else
+<section class="content-area">
+    <article class="card">
+        <div class="card-header">
+            <div>
+                <p class="eyebrow">Approved property</p>
+                <h2>Approved and issued quantities</h2>
+            </div>
+        </div>
+
+        <div class="table-wrap">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Item</th>
+                        <th>Approved Quantity</th>
+                        <th>Issued</th>
+                        <th>Returned</th>
+                        <th>Outstanding</th>
+                        <th>Condition</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach($custody->lines as $line)
+                        <tr>
+                            <td>
+                                <strong>{{ $line->requestItem->description_snapshot }}</strong>
+                                <small>{{ $line->requestItem->unit_snapshot }}</small>
+                            </td>
+                            <td>{{ $line->approved_quantity + 0 }}</td>
                             <td>{{ $line->actual_released_quantity + 0 }}</td>
                             <td>{{ $line->returned_quantity + 0 }}</td>
                             <td>
@@ -170,6 +578,7 @@
         </div>
     </article>
 </section>
+@endif
 
 @if($isSpmuHead)
     <section class="content-area">
@@ -177,613 +586,630 @@
             <div class="card-header">
                 <div>
                     <p class="eyebrow">SPMU Head oversight</p>
-                    <h2>Operational release controls are assigned to the Action Officer</h2>
+                    <h2>Operational processing is assigned to the Action Officer</h2>
                 </div>
             </div>
             <p>
-                The SPMU Head can monitor the custody record. Pickup scheduling, physical preparation,
-                issuance, return inspection, and supporting operational verification remain Action Officer tasks.
+                This request is already approved. The Action Officer schedules pickup first, then physically prepares
+                and confirms the exact approved quantities once, generates the required physical forms, records the
+                handover, and processes the return.
             </p>
         </article>
     </section>
 @endif
 
 @if($isSpmuOfficer && $custody->status === 'PREPARING_RELEASE' && !$custody->released_at)
-    <section class="content-grid two">
-        <form method="post" action="{{ route('custody.schedule-pickup', $custody) }}" class="card form-grid">
-            @csrf
-            <div class="card-header">
-                <div>
-                    <p class="eyebrow">SPMU pickup</p>
-                    <h2>Schedule pickup window</h2>
-                </div>
-                <x-status-badge
-                    :status="$hasPickupSchedule ? 'VERIFIED' : 'PENDING'"
-                    :label="$hasPickupSchedule ? 'Scheduled' : 'Not scheduled'"
-                />
-            </div>
 
-            <label>
-                Pickup Date & Time
-                <input
-                    type="datetime-local"
-                    name="pickup_at"
-                    value="{{ old('pickup_at', optional($custody->scheduled_release_at)->format('Y-m-d\TH:i')) }}"
-                    required
-                >
-            </label>
-
-            <label>
-                Pickup Expiration
-                <input
-                    type="datetime-local"
-                    name="pickup_expires_at"
-                    value="{{ old('pickup_expires_at', optional($custody->pickup_expires_at)->format('Y-m-d\TH:i')) }}"
-                    required
-                >
-            </label>
-
-            <p class="meta">
-                Pickup must be on the approved Schedule Date. Expiration is the claim window only;
-                it does not replace the Expected Return Date.
-            </p>
-
-            <button class="button primary ui-pressable">Save Pickup Schedule</button>
-        </form>
-
-        <form method="post" action="{{ route('custody.prepare', $custody) }}" class="card form-grid">
-            @csrf
-            <div class="card-header">
-                <div>
-                    <p class="eyebrow">Physical preparation</p>
-                    <h2>Confirm Preparation &amp; Generate Physical Forms</h2>
-                </div>
-                <x-status-badge
-                    :status="$preparationComplete ? 'VERIFIED' : 'PENDING'"
-                    :label="$preparationComplete ? 'Prepared' : 'Pending'"
-                />
-            </div>
-
-            <p>
-                Prepare exact approved quantity for every item after physically counting and inspecting the approved property.
-            </p>
-
-            <button class="button primary ui-pressable" @disabled(!$hasPickupSchedule)>
-                Confirm Preparation
-            </button>
-        </form>
-    </section>
-
-    <section class="content-area">
-        <form method="post" action="{{ route('custody.quantities', $custody) }}" class="card form-grid">
-            @csrf
-            <div class="card-header">
-                <div>
-                    <p class="eyebrow">Release quantities</p>
-                    <h2>Final prepared quantities</h2>
-                </div>
-            </div>
-
-            <p>
-                Prepared quantity must exactly match the verified approved quantity. If the quantity must change, return the request for correction before release.
-            </p>
-
-            <div class="table-wrap">
-                <table>
-                    <thead>
-                        <tr>
-                            <th>Item</th>
-                            <th>Approved</th>
-                            <th>Final prepared</th>
-                            <th>Reduction reason</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        @foreach($custody->lines as $line)
-                            <tr>
-                                <td>
-                                    <strong>{{ $line->requestItem->description_snapshot }}</strong>
-                                    <small>{{ $line->requestItem->unit_snapshot }}</small>
-                                </td>
-                                <td>{{ $line->approved_quantity + 0 }}</td>
-                                <td>
-                                    <input
-                                        type="number"
-                                        step="0.001"
-                                        min="0"
-                                        max="{{ $line->approved_quantity }}"
-                                        name="quantities[{{ $line->id }}]"
-                                        value="{{ old('quantities.'.$line->id, $line->quantity_to_receive) }}"
-                                        required
-                                    >
-                                </td>
-                                <td>
-                                    <input
-                                        name="reasons[{{ $line->id }}]"
-                                        value="{{ old('reasons.'.$line->id, $line->adjustment_reason) }}"
-                                        placeholder="Required if reduced"
-                                    >
-                                </td>
-                            </tr>
-                        @endforeach
-                    </tbody>
-                </table>
-            </div>
-
-            <button class="button secondary ui-pressable">Save Final Quantities</button>
-        </form>
-    </section>
-@endif
-
-@if($isSpmuOfficer && $custody->status === 'PREPARING_RELEASE' && $custody->prepared_at)
-    <section class="content-area">
-        <form method="post" action="{{ route('custody.release', $custody) }}" class="card form-grid">
-            @csrf
-            <div class="card-header">
-                <div>
-                    <p class="eyebrow">Physical handover</p>
-                    <h2>Record physical release</h2>
-                </div>
-                <x-status-badge
-                    status="READY_FOR_RELEASE"
-                    label="Ready for physical release"
-                />
-            </div>
-
-            <label class="checkbox">
-                <input
-                    type="checkbox"
-                    name="physical_signatures_confirmed"
-                    value="1"
-                    required
-                >
-                I confirm the actual items were checked and all required signatures were completed by hand on the printed physical documents.
-            </label>
-
-            <label>
-                Release Remarks
-                <textarea
-                    name="remarks"
-                    placeholder="Optional physical handover note"
-                ></textarea>
-            </label>
-
-            <button class="button primary ui-pressable">
-                Mark Issued
-            </button>
-        </form>
-    </section>
-@endif
-
-@if($isSpmuOfficer && $custody->released_at)
-    <section class="content-grid two">
-        <article class="card">
-            <div class="card-header">
-                <div>
-                    <p class="eyebrow">Issued record</p>
-                    <h2>Physical issuance completed</h2>
-                </div>
-            </div>
-
-            <dl class="detail-list">
-                <dt>Issued</dt>
-                <dd>{{ optional($custody->released_at)->format('d F Y, g:i A') }}</dd>
-
-                <dt>Status</dt>
-                <dd><x-status-badge :status="$custody->status" /></dd>
-            </dl>
-
-            <p class="meta">
-                The current workflow keeps the issued record read-only on this screen. Return inspection is recorded separately below.
-            </p>
-        </article>
-
-        @if($custody->gatePass)
-            <article class="card">
+    @if($hasPickupSchedule)
+        <section class="content-area workflow-focus-target" id="item-preparation">
+            <form
+                method="post"
+                action="{{ route('custody.prepare', $custody) }}"
+                class="card form-grid"
+                data-item-preparation-form
+            >
+                @csrf
                 <div class="card-header">
                     <div>
-                        <p class="eyebrow">Off-campus verification</p>
-                        <h2>Guard-signed Gate Pass</h2>
+                        <p class="eyebrow">2. Item preparation</p>
+                        <h2>Confirm the quantities prepared for release</h2>
                     </div>
-                    <x-status-badge :status="$custody->gatePass->status" />
+                    <x-status-badge
+                        :status="$preparationComplete ? 'VERIFIED' : 'PENDING'"
+                        :label="$preparationComplete ? 'Preparation Confirmed' : 'Preparation Confirmation Required'"
+                    />
                 </div>
 
-                @if($custody->gatePass->status !== 'VERIFIED')
-                    <form method="post" action="{{ route('gate-passes.verify', $custody->gatePass) }}" class="form-grid">
-                        @csrf
-                        <p>
-                            Complete this only after the signed Gate Pass evidence has already been uploaded and verified.
-                        </p>
+                @if(!$preparationComplete)
+                    <p>
+                        Prepare the approved items for the scheduled pickup, then enter the actual quantity prepared for each item.
+                        The system compares each entry with the approved quantity. Enter these quantities once; all items must match
+                        before preparation can be confirmed.
+                    </p>
 
-                        <label>
-                            Guard on Duty
-                            <input name="guard_name" required>
-                        </label>
+                    <div class="table-wrap">
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>Item</th>
+                                    <th>Approved Qty</th>
+                                    <th>Actual Prepared</th>
+                                    <th>Result</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                @foreach($custody->lines as $line)
+                                    <tr>
+                                        <td>
+                                            <strong>{{ $line->requestItem->description_snapshot }}</strong>
+                                            <small>{{ $line->requestItem->unit_snapshot }}</small>
+                                        </td>
+                                        <td data-approved-display>{{ $line->approved_quantity + 0 }}</td>
+                                        <td>
+                                            <input
+                                                type="number"
+                                                step="0.001"
+                                                min="0"
+                                                name="quantities[{{ $line->id }}]"
+                                                value="{{ old('quantities.'.$line->id) }}"
+                                                placeholder="Enter actual count"
+                                                data-prepared-quantity
+                                                data-approved="{{ (float) $line->approved_quantity }}"
+                                                required
+                                            >
+                                        </td>
+                                        <td>
+                                            <strong data-preparation-result class="is-unchecked">Not Checked</strong>
+                                        </td>
+                                    </tr>
+                                @endforeach
+                            </tbody>
+                        </table>
+                    </div>
 
-                        <label>
-                            Guard Signed Date & Time
-                            <input type="datetime-local" name="guard_signed_at" required>
-                        </label>
+                    <p class="meta" data-preparation-message>
+                        Enter the actual prepared quantity for every item. Confirmation stays disabled until all entries match.
+                    </p>
 
-                        <button class="button primary ui-pressable">Complete Gate Pass Verification</button>
-                    </form>
+                    <button class="button primary ui-pressable" data-confirm-preparation disabled>
+                        Confirm Preparation
+                    </button>
                 @else
-                    <dl class="detail-list">
-                        <dt>Guard</dt>
-                        <dd>{{ $custody->gatePass->guard_name ?: '—' }}</dd>
-
-                        <dt>Signed</dt>
-                        <dd>{{ optional($custody->gatePass->guard_signed_at)->format('d M Y, g:i A') ?: '—' }}</dd>
-                    </dl>
+                    <div class="empty-state compact">
+                        <strong>Preparation confirmed.</strong>
+                        <span>
+                            The actual prepared quantities were confirmed once against the approved quantities.
+                            No quantity re-entry is required for the scheduled release.
+                        </span>
+                    </div>
                 @endif
-            </article>
-        @endif
-    </section>
-@endif
-
-@if($laundryJob)
-    <section class="content-area">
-        <article class="card">
-            <div class="card-header">
-                <div>
-                    <p class="eyebrow">Laundry workflow</p>
-                    <h2>Laundry service status</h2>
-                </div>
-                <x-status-badge :status="$laundryJob->status" />
+            </form>
+        </section>
+    @else
+        <section class="content-area">
+            <div class="callout info">
+                <strong>Next: Item Preparation</strong>
+                <p>Save an active pickup schedule first. Item Preparation will open after the borrower has a pickup window.</p>
             </div>
+        </section>
+    @endif
 
-            <p>
-                Laundry-required linen is received and physically inspected by the Laundry Worker.
-                The accomplished handwritten Laundry Form is uploaded by Laundry, then reviewed by
-                the SPMU Action Officer before the final property return is closed.
-            </p>
-
-            @if($laundryJob->latestEvidence)
-                <div class="evidence-row top-gap">
-                    <div>
-                        <strong>Accomplished Laundry Form</strong>
-                        <small>
-                            Uploaded {{ optional($laundryJob->latestEvidence->submitted_at)->format('d M Y, g:i A') ?: '—' }}
-                            · {{ str($laundryJob->latestEvidence->verification_status)->replace('_', ' ')->title() }}
-                        </small>
-                    </div>
-
-                    @if($laundryJob->latestEvidence->file)
-                        <a
-                            class="button secondary small ui-pressable"
-                            href="{{ route('files.show', $laundryJob->latestEvidence->file, false) }}"
-                            target="_blank"
-                            rel="noopener"
-                        >
-                            View Uploaded Scan
-                        </a>
-                    @endif
-                </div>
-
-                @if($laundryJob->latestEvidence->rejection_reason)
-                    <div class="callout warning top-gap">
-                        <strong>Replacement scan requested</strong>
-                        <p>{{ $laundryJob->latestEvidence->rejection_reason }}</p>
-                    </div>
-                @endif
-            @else
-                <div class="callout warning top-gap">
-                    <strong>No accomplished Laundry Form uploaded yet.</strong>
-                    <p>
-                        The Laundry Worker must physically inspect the linen, complete the printed form,
-                        and upload the accomplished scan from the Laundry workspace.
-                    </p>
-                </div>
-            @endif
-
-            @if($isSpmuHead && $laundryJob->latestEvidence?->verification_status === 'PENDING_VERIFICATION')
-                <div class="callout info top-gap">
-                    <strong>Awaiting SPMU Action Officer verification.</strong>
-                    <p>
-                        You can monitor and view the uploaded scan here. Operational verification and
-                        transcription of the accomplished Laundry Form are assigned to the SPMU Action Officer.
-                    </p>
-                </div>
-            @endif
-        </article>
-    </section>
-
-    @if(
-        $isSpmuOfficer
-        && $laundryJob->latestEvidence
-        && $laundryJob->latestEvidence->verification_status === 'PENDING_VERIFICATION'
-    )
-        <section class="content-grid two">
+    @if($preparationComplete && $hasPickupSchedule)
+        <section class="content-area workflow-focus-target" id="release-actions">
             <article class="card">
                 <div class="card-header">
                     <div>
-                        <p class="eyebrow">Laundry evidence</p>
-                        <h2>Review accomplished Laundry Form</h2>
+                        <p class="eyebrow">3. Physical documents</p>
+                        <h2>Print at SPMU for the physical handover</h2>
                     </div>
-                    <x-status-badge status="PENDING_VERIFICATION" />
+                </div>
+
+                @forelse($documents->whereNotIn('status', ['SUPERSEDED', 'INVALIDATED', 'EXPIRED']) as $document)
+                    <div class="evidence-row">
+                        <div>
+                            <strong>{{ str($document->document_type)->replace('_', ' ')->title() }}</strong>
+                            <small>{{ $document->status }}</small>
+                        </div>
+                        <a class="button secondary small ui-pressable" href="{{ route('documents.download', $document) }}">
+                            Print / Download
+                        </a>
+                    </div>
+                @empty
+                    <div class="empty-state">
+                        <strong>No operational form generated yet.</strong>
+                    </div>
+                @endforelse
+
+                <p class="meta top-gap">
+                    The Borrower Slip is printed at SPMU and signed by hand during the actual handover.
+                    Gate Pass is included only for off-campus borrowing; Laundry Form is included only for applicable linen.
+                </p>
+            </article>
+        </section>
+
+        <section class="content-area">
+            <form method="post" action="{{ route('custody.release', $custody) }}" class="card form-grid">
+                @csrf
+                <div class="card-header">
+                    <div>
+                        <p class="eyebrow">4. Physical release</p>
+                        <h2>Record the actual handover</h2>
+                    </div>
+                    <x-status-badge status="READY_FOR_RELEASE" label="Ready for Physical Release" />
                 </div>
 
                 <p>
-                    Compare the uploaded scan with the physical linen transaction. Encode only what is
-                    written on the accomplished form. Do not add or infer findings that are not on the form.
+                    Release is recorded only when the borrower is physically present, the approved items are handed over,
+                    the Borrower Slip is signed by hand, and any required physical Gate Pass is completed.
+                    The confirmed prepared quantities become the issued quantities automatically; do not enter them again.
                 </p>
 
-                @if($laundryJob->latestEvidence->file)
-                    <a
-                        class="button secondary ui-pressable"
-                        href="{{ route('files.show', $laundryJob->latestEvidence->file, false) }}"
-                        target="_blank"
-                        rel="noopener"
-                    >
-                        Open Accomplished Laundry Form
-                    </a>
-                @endif
-            </article>
-
-            <form
-                method="post"
-                action="{{ route('laundry.verify-form', $laundryJob) }}"
-                class="card form-grid"
-            >
-                @csrf
-                <input type="hidden" name="decision" value="VERIFIED">
-
-                <div class="card-header">
-                    <div>
-                        <p class="eyebrow">SPMU Action Officer</p>
-                        <h2>Verify and encode Laundry inspection</h2>
-                    </div>
-                </div>
-
-                <label>
-                    Laundry Worker Name
+                <label class="checkbox">
                     <input
-                        name="worker_name"
-                        value="{{ old('worker_name', $laundryJob->worker_name) }}"
+                        type="checkbox"
+                        name="physical_signatures_confirmed"
+                        value="1"
                         required
                     >
+                    I confirm the borrower physically received the approved items and the required printed forms were completed with handwritten/wet signatures.
                 </label>
 
-                <div class="content-grid two">
-                    <label>
-                        Linen Received by Laundry
-                        <input
-                            type="datetime-local"
-                            name="worker_received_at"
-                            value="{{ old(
-                                'worker_received_at',
-                                optional($laundryJob->worker_received_at)->format('Y-m-d\\TH:i')
-                            ) }}"
-                            required
-                        >
-                    </label>
-
-                    <label>
-                        Laundry Completed
-                        <input
-                            type="datetime-local"
-                            name="worker_completed_at"
-                            value="{{ old(
-                                'worker_completed_at',
-                                optional($laundryJob->worker_completed_at)->format('Y-m-d\\TH:i')
-                            ) }}"
-                            required
-                        >
-                    </label>
-                </div>
-
-                <div class="table-wrap">
-                    <table>
-                        <thead>
-                            <tr>
-                                <th>Item</th>
-                                <th>Issued</th>
-                                <th>Received</th>
-                                <th>Finding</th>
-                                <th>Affected</th>
-                                <th>Completed</th>
-                                <th>Remarks</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            @foreach($laundryJob->lines as $line)
-                                <tr>
-                                    <td>
-                                        <strong>{{ $line->custodyLine->requestItem->description_snapshot }}</strong>
-                                        <small>{{ $line->custodyLine->requestItem->unit_snapshot }}</small>
-                                    </td>
-                                    <td>{{ $line->issued_quantity + 0 }}</td>
-                                    <td>
-                                        <input
-                                            type="number"
-                                            step="0.001"
-                                            min="0"
-                                            max="{{ $line->issued_quantity }}"
-                                            name="lines[{{ $line->id }}][received_quantity]"
-                                            value="{{ old(
-                                                'lines.'.$line->id.'.received_quantity',
-                                                $line->received_quantity ?? $line->issued_quantity
-                                            ) }}"
-                                            required
-                                        >
-                                    </td>
-                                    <td>
-                                        <select
-                                            name="lines[{{ $line->id }}][issue_type]"
-                                            required
-                                        >
-                                            @foreach([
-                                                'NONE' => 'No issue',
-                                                'STAINED' => 'Stained',
-                                                'TORN' => 'Torn',
-                                                'DAMAGED' => 'Damaged',
-                                                'OTHER' => 'Other',
-                                            ] as $value => $label)
-                                                <option
-                                                    value="{{ $value }}"
-                                                    @selected(
-                                                        old(
-                                                            'lines.'.$line->id.'.issue_type',
-                                                            $line->issue_type ?? 'NONE'
-                                                        ) === $value
-                                                    )
-                                                >
-                                                    {{ $label }}
-                                                </option>
-                                            @endforeach
-                                        </select>
-                                    </td>
-                                    <td>
-                                        <input
-                                            type="number"
-                                            step="0.001"
-                                            min="0"
-                                            max="{{ $line->issued_quantity }}"
-                                            name="lines[{{ $line->id }}][affected_quantity]"
-                                            value="{{ old(
-                                                'lines.'.$line->id.'.affected_quantity',
-                                                $line->affected_quantity ?? 0
-                                            ) }}"
-                                            required
-                                        >
-                                    </td>
-                                    <td>
-                                        <input
-                                            type="number"
-                                            step="0.001"
-                                            min="0"
-                                            max="{{ $line->issued_quantity }}"
-                                            name="lines[{{ $line->id }}][completed_quantity]"
-                                            value="{{ old(
-                                                'lines.'.$line->id.'.completed_quantity',
-                                                $line->completed_quantity ?? $line->issued_quantity
-                                            ) }}"
-                                            required
-                                        >
-                                    </td>
-                                    <td>
-                                        <input
-                                            name="lines[{{ $line->id }}][remarks]"
-                                            value="{{ old(
-                                                'lines.'.$line->id.'.remarks',
-                                                $line->remarks
-                                            ) }}"
-                                        >
-                                    </td>
-                                </tr>
-                            @endforeach
-                        </tbody>
-                    </table>
-                </div>
-
                 <label>
-                    Laundry Worker Remarks
-                    <textarea name="worker_remarks">{{ old(
-                        'worker_remarks',
-                        $laundryJob->worker_remarks
-                    ) }}</textarea>
+                    Release Remarks
+                    <textarea
+                        name="remarks"
+                        placeholder="Optional physical handover note"
+                    ></textarea>
                 </label>
 
                 <button class="button primary ui-pressable">
-                    Verify Laundry Form & Save Inspection
+                    Confirm Physical Release
                 </button>
             </form>
         </section>
+    @endif
+@endif
 
-        <section class="content-area narrow">
+@endif {{-- showReleaseWorkflow --}}
+
+@if($showReturnWorkflow)
+<div id="return-workflow" class="workflow-focus-target">
+
+@if($isSpmuOfficer && $custody->released_at)
+    @php
+        $eligibleReturnLines = $custody->lines->filter(function ($line) use ($laundryJob) {
+            $outstanding = max(
+                0,
+                (float) $line->actual_released_quantity - (float) $line->returned_quantity
+            );
+
+            if ($outstanding <= 0) {
+                return false;
+            }
+
+            $isLinen = (bool) $line->requestItem?->inventoryItem?->laundry_required;
+
+            if (! $isLinen || ! $laundryJob) {
+                return true;
+            }
+
+            return $laundryJob->status === 'READY_FOR_SPMU_RETURN';
+        });
+
+        $nonLinenLines = $custody->lines->filter(
+            fn ($line) => ! (bool) $line->requestItem?->inventoryItem?->laundry_required
+        );
+
+        $linenLines = $custody->lines->filter(
+            fn ($line) => (bool) $line->requestItem?->inventoryItem?->laundry_required
+        );
+
+        $nonLinenOutstanding = $nonLinenLines->sum(
+            fn ($line) => max(0, (float) $line->actual_released_quantity - (float) $line->returned_quantity)
+        );
+
+        $linenOutstanding = $linenLines->sum(
+            fn ($line) => max(0, (float) $line->actual_released_quantity - (float) $line->returned_quantity)
+        );
+
+        $linenOperationalStatus = match (true) {
+            $linenLines->isEmpty() => 'Not applicable',
+            $linenOutstanding <= 0 => 'Fully accounted',
+            ! $laundryJob => 'Awaiting Laundry workflow',
+            $laundryJob->status === 'FOR_LAUNDRY' => 'Awaiting borrower turnover to Laundry',
+            $laundryJob->status === 'IN_PROCESS' => 'In Laundry process',
+            $laundryJob->status === 'READY_FOR_SPMU_RETURN' => 'Ready for SPMU final inspection',
+            $laundryJob->status === 'AWAITING_FINAL_FORM_UPLOAD' => 'SPMU accepted linen — final form upload pending',
+            $laundryJob->status === 'FORM_REPLACEMENT_REQUIRED' => 'Final Laundry Form replacement required',
+            $laundryJob->status === 'LAUNDRY_COMPLETED' => 'Laundry completed / settled',
+            default => 'Return processing',
+        };
+
+        [$linenNextTitle, $linenNextCopy, $linenNextTone] = match ($laundryJob?->status) {
+            'FOR_LAUNDRY' => [
+                'Waiting for Laundry turnover',
+                'The borrower must hand the used linen and borrower-signed physical Laundry Form to the Laundry Worker.',
+                'warning',
+            ],
+            'IN_PROCESS' => [
+                'Laundry is processing the linen',
+                'No SPMU linen inspection is required yet. The Laundry Worker will return the cleaned linen directly to SPMU.',
+                'info',
+            ],
+            'READY_FOR_SPMU_RETURN' => [
+                'Cleaned linen is ready for inspection',
+                'The Laundry Worker has returned the cleaned linen to SPMU. Account its complete outstanding quantity in the inspection panel.',
+                'success',
+            ],
+            'AWAITING_FINAL_FORM_UPLOAD' => [
+                'Final Laundry Form upload pending',
+                'SPMU final acceptance is complete. The Laundry Worker must upload the fully signed physical Laundry Form to settle the Laundry transaction.',
+                'warning',
+            ],
+            'FORM_REPLACEMENT_REQUIRED' => [
+                'Laundry Form replacement required',
+                'A clear fully signed Laundry Form must be uploaded before the Laundry transaction can be settled.',
+                'warning',
+            ],
+            'LAUNDRY_COMPLETED' => [
+                'Laundry completed',
+                'The linen was accepted by SPMU and the final signed Laundry Form is archived.',
+                'success',
+            ],
+            default => [
+                'No separate Laundry action',
+                'No linen Laundry subprocess is currently blocking SPMU return inspection.',
+                'info',
+            ],
+        };
+
+        $canMarkEarlyReturn = $returnDate && now()->lt($returnDate);
+        $hasRecordedReturns = $custody->returns->isNotEmpty();
+    @endphp
+
+    <section class="content-grid two return-context-grid" id="return-summary">
+        <article class="card return-context-card">
+            <div class="card-header">
+                <div>
+                    <p class="eyebrow">Transaction summary</p>
+                    <h2>Borrowing context</h2>
+                </div>
+            </div>
+
+            <dl class="detail-list compact-detail-list">
+                <dt>Purpose / Event</dt>
+                <dd>{{ $version?->purpose_event ?: '—' }}</dd>
+
+                <dt>Scheduled Use</dt>
+                <dd>{{ $scheduleDate?->format('d F Y') ?: '—' }}</dd>
+
+                <dt>Expected Return</dt>
+                <dd>{{ $returnDate?->format('d F Y') ?: '—' }}</dd>
+
+                <dt>Use Location</dt>
+                <dd>{{ $hasOffCampusItem ? 'Includes off-campus use' : 'On-campus only' }}</dd>
+            </dl>
+        </article>
+
+        <article class="card return-context-card return-documents-card">
+            <div class="card-header">
+                <div>
+                    <p class="eyebrow">Related documents</p>
+                    <h2>Operational return references</h2>
+                </div>
+            </div>
+
+            @php
+                // The Action Officer Return view should show only documents needed for
+                // operational custody/return reference. Approval-stage files (signed BR
+                // Letter / PTC) remain in Request Records and are not duplicated here.
+                $activeOperationalDocuments = $documents
+                    ->whereNotIn('status', ['SUPERSEDED', 'INVALIDATED', 'EXPIRED'])
+                    ->filter(fn ($document) => in_array(
+                        $document->document_type,
+                        ['BORROWER_SLIP', 'GATE_PASS'],
+                        true
+                    ));
+            @endphp
+
+            <div class="return-document-list">
+                @forelse($activeOperationalDocuments as $document)
+                    <div class="return-document-row">
+                        <div>
+                            <strong>
+                                {{ $document->document_type === 'BORROWER_SLIP'
+                                    ? 'Borrower Slip'
+                                    : 'Gate Pass' }}
+                            </strong>
+                            <small>
+                                {{ $document->document_type === 'BORROWER_SLIP'
+                                    ? 'Reference for the items physically issued to the borrower.'
+                                    : 'Required operational reference for off-campus use.' }}
+                            </small>
+                        </div>
+
+                        <a
+                            class="button secondary small ui-pressable"
+                            href="{{ route('documents.download', $document) }}"
+                        >
+                            View
+                        </a>
+                    </div>
+                @empty
+                    @unless($hasLaundryItem)
+                        <div class="empty-state return-document-empty">
+                            <strong>No related return documents.</strong>
+                        </div>
+                    @endunless
+                @endforelse
+
+                @if($hasLaundryItem)
+                    <div class="return-document-row">
+                        <div>
+                            <strong>Final signed Laundry Form</strong>
+                            <small>Uploaded by the Laundry Worker after SPMU final acceptance.</small>
+                        </div>
+
+                        @if($laundryJob?->latestEvidence?->file)
+                            <a
+                                class="button secondary small ui-pressable"
+                                href="{{ route('files.show', $laundryJob->latestEvidence->file, false) }}"
+                                target="_blank"
+                                rel="noopener"
+                            >
+                                View
+                            </a>
+                        @else
+                            <span class="status-badge status-neutral">Pending from Laundry Worker</span>
+                        @endif
+                    </div>
+                @endif
+            </div>
+        </article>
+    </section>
+
+    <section class="content-area return-primary-section" id="return-primary">
+        <div class="return-workspace-grid">
             <form
                 method="post"
-                action="{{ route('laundry.verify-form', $laundryJob) }}"
-                class="card form-grid"
+                action="{{ route('custody.return', $custody) }}"
+                enctype="multipart/form-data"
+                class="card form-grid return-inspection-card"
+                id="full-return-accounting-form"
             >
                 @csrf
-                <input type="hidden" name="decision" value="REJECTED">
 
-                <div class="card-header">
+                <div class="card-header return-inspection-header">
                     <div>
-                        <p class="eyebrow">Unreadable / incorrect scan</p>
-                        <h2>Request replacement Laundry Form</h2>
+                        <p class="eyebrow">Physical return inspection</p>
+                        <h2>Account returned quantities</h2>
+                        <p class="meta">
+                            For any item inspected now, account its full outstanding quantity in one inspection. Split item-quantity returns are not allowed.
+                        </p>
                     </div>
+                    @if($eligibleReturnLines->isNotEmpty())
+                        <span class="status-badge status-info">{{ $eligibleReturnLines->count() }} item type(s) ready</span>
+                    @endif
                 </div>
 
-                <label>
-                    Reason for replacement
-                    <textarea
-                        name="rejection_reason"
-                        required
-                    >{{ old('rejection_reason') }}</textarea>
-                </label>
+                @if($eligibleReturnLines->isNotEmpty())
+                    <div class="table-wrap return-inspection-scroll">
+                        <table class="return-inspection-table">
+                            <thead>
+                                <tr>
+                                    <th>Item / Outstanding</th>
+                                    <th>Fine / Good</th>
+                                    <th>Damaged</th>
+                                    <th>Destroyed</th>
+                                    <th>Missing</th>
+                                    <th>Lost</th>
+                                    <th>Stolen</th>
+                                    <th>Accounted</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                @foreach($eligibleReturnLines as $line)
+                                    @php
+                                        $outstanding = max(
+                                            0,
+                                            (float) $line->actual_released_quantity - (float) $line->returned_quantity
+                                        );
+                                        $oldBreakdown = old('accounting.'.$line->id, []);
+                                        $oldNonFine = collect(['DAMAGED', 'DESTROYED', 'MISSING', 'LOST', 'STOLEN'])
+                                            ->sum(fn ($code) => (float) ($oldBreakdown[$code] ?? 0));
+                                        $oldStolen = (float) ($oldBreakdown['STOLEN'] ?? 0);
+                                    @endphp
 
-                <button class="button danger ui-pressable">
-                    Request Replacement Scan
-                </button>
+                                    <tr class="return-accounting-row" data-outstanding="{{ $outstanding }}">
+                                        <td class="return-item-cell">
+                                            <strong>{{ $line->requestItem->description_snapshot }}</strong>
+                                            <small>
+                                                {{ $line->requestItem->unit_snapshot }}
+                                                · Outstanding: {{ $outstanding + 0 }}
+                                                @if($line->requestItem?->inventoryItem?->laundry_required)
+                                                    · Linen
+                                                @endif
+                                            </small>
+                                        </td>
+
+                                        @foreach(['FINE', 'DAMAGED', 'DESTROYED', 'MISSING', 'LOST', 'STOLEN'] as $conditionCode)
+                                            <td>
+                                                <input
+                                                    type="number"
+                                                    step="0.001"
+                                                    min="0"
+                                                    max="{{ $outstanding }}"
+                                                    class="return-accounting-input"
+                                                    data-condition="{{ $conditionCode }}"
+                                                    name="accounting[{{ $line->id }}][{{ $conditionCode }}]"
+                                                    value="{{ old('accounting.'.$line->id.'.'.$conditionCode, 0) }}"
+                                                    aria-label="{{ str($conditionCode)->replace('_', ' ')->title() }} quantity for {{ $line->requestItem->description_snapshot }}"
+                                                >
+                                            </td>
+                                        @endforeach
+
+                                        <td>
+                                            <strong class="return-accounted-total">0 / {{ $outstanding + 0 }}</strong>
+                                            <small class="return-accounted-state">Not selected</small>
+                                        </td>
+                                    </tr>
+
+                                    <tr
+                                        class="return-issue-details"
+                                        data-return-issue-details
+                                        @if($oldNonFine <= 0) hidden @endif
+                                    >
+                                        <td colspan="8">
+                                            <div class="return-issue-details__grid">
+                                                <label data-evidence-wrap>
+                                                    Evidence for non-good quantity
+                                                    <input
+                                                        type="file"
+                                                        class="return-evidence-input"
+                                                        name="evidence_files[{{ $line->id }}]"
+                                                        accept="application/pdf,image/png,image/jpeg,image/webp"
+                                                    >
+                                                    <small>Required only when Damaged, Destroyed, Missing, Lost, or Stolen is greater than zero.</small>
+                                                </label>
+
+                                                <label data-police-wrap @if($oldStolen <= 0) hidden @endif>
+                                                    Police / blotter reference
+                                                    <input
+                                                        class="return-police-input"
+                                                        name="police_blotter_references[{{ $line->id }}]"
+                                                        value="{{ old('police_blotter_references.'.$line->id) }}"
+                                                    >
+                                                    <small>Required only when Stolen is greater than zero.</small>
+                                                </label>
+                                            </div>
+                                        </td>
+                                    </tr>
+                                @endforeach
+                            </tbody>
+                        </table>
+                    </div>
+
+                    <div class="return-action-area">
+                        <div class="callout warning return-accounting-message" id="return-accounting-message" role="status">
+                            Select an item and account its complete outstanding quantity.
+                        </div>
+
+                        <label>
+                            Inspection Remarks
+                            <textarea name="remarks" rows="3" placeholder="Optional inspection note">{{ old('remarks') }}</textarea>
+                        </label>
+
+                        @if($canMarkEarlyReturn)
+                            <label class="checkbox return-early-option">
+                                <input type="checkbox" name="early_return" value="1" @checked(old('early_return'))>
+                                This is an early physical return before the expected return date.
+                            </label>
+                        @endif
+
+                        <button class="button primary ui-pressable" id="record-return-button" disabled>
+                            Record Return Inspection
+                        </button>
+                    </div>
+                @else
+                    <div class="empty-state return-empty-state">
+                        <strong>No item is ready for SPMU return inspection right now.</strong>
+                        <span>
+                            @if($outstandingTotal <= 0)
+                                All issued quantities have already been accounted for.
+                            @elseif($linenOutstanding > 0 && $nonLinenOutstanding <= 0)
+                                The remaining linen must complete the Laundry subprocess before final SPMU inspection.
+                            @else
+                                Review the return status beside this panel for the next required action.
+                            @endif
+                        </span>
+                    </div>
+                @endif
             </form>
-        </section>
-    @elseif(
-        $isSpmu
-        && $laundryJob->latestEvidence
-        && $laundryJob->latestEvidence->verification_status === 'VERIFIED'
-    )
-        <section class="content-area">
+
+            <article class="card return-status-card">
+                <div class="card-header">
+                    <div>
+                        <p class="eyebrow">Return status</p>
+                        <h2>What needs attention</h2>
+                    </div>
+                    @unless($custody->status === 'CLOSED')
+                        <x-status-badge :status="$custody->status" />
+                    @endunless
+                </div>
+
+                <div class="return-status-scroll">
+                    <dl class="detail-list compact-detail-list">
+                        <dt>Issued</dt>
+                        <dd>{{ optional($custody->released_at)->format('d M Y, g:i A') ?: '—' }}</dd>
+
+                        <dt>Expected Return</dt>
+                        <dd>{{ $returnDate?->format('d M Y') ?: '—' }}</dd>
+
+                        <dt>Total Outstanding</dt>
+                        <dd>{{ $outstandingTotal + 0 }}</dd>
+
+                        @if($nonLinenLines->isNotEmpty())
+                            <dt>Non-linen</dt>
+                            <dd>{{ $nonLinenOutstanding <= 0 ? 'Fully accounted' : ($nonLinenOutstanding + 0).' outstanding' }}</dd>
+                        @endif
+
+                        @if($linenLines->isNotEmpty())
+                            <dt>Linen</dt>
+                            <dd>{{ $linenOperationalStatus }}{{ $linenOutstanding > 0 ? ' · '.($linenOutstanding + 0).' outstanding' : '' }}</dd>
+                        @endif
+                    </dl>
+
+                    @if($linenLines->isNotEmpty())
+                        <div class="callout {{ $linenNextTone }} return-next-callout">
+                            <strong>{{ $linenNextTitle }}</strong>
+                            <p>{{ $linenNextCopy }}</p>
+                        </div>
+
+                        @if($laundryJob?->latestEvidence?->file)
+                            <a
+                                class="button secondary small ui-pressable"
+                                href="{{ route('files.show', $laundryJob->latestEvidence->file, false) }}"
+                                target="_blank"
+                                rel="noopener"
+                            >
+                                View Final Signed Laundry Form
+                            </a>
+                        @endif
+                    @endif
+                </div>
+            </article>
+        </div>
+    </section>
+
+    @if($hasRecordedReturns)
+        <section class="content-area return-history-section">
             <article class="card">
                 <div class="card-header">
                     <div>
-                        <p class="eyebrow">Laundry verification</p>
-                        <h2>Accomplished form verified</h2>
+                        <p class="eyebrow">Return history</p>
+                        <h2>Recorded inspections</h2>
                     </div>
-                    <x-status-badge status="VERIFIED" />
                 </div>
 
-                <dl class="detail-list">
-                    <dt>Laundry Worker</dt>
-                    <dd>{{ $laundryJob->worker_name ?: '—' }}</dd>
-
-                    <dt>Received by Laundry</dt>
-                    <dd>{{ optional($laundryJob->worker_received_at)->format('d M Y, g:i A') ?: '—' }}</dd>
-
-                    <dt>Laundry Completed</dt>
-                    <dd>{{ optional($laundryJob->worker_completed_at)->format('d M Y, g:i A') ?: '—' }}</dd>
-
-                    <dt>Verified by SPMU</dt>
-                    <dd>{{ $laundryJob->formVerifier?->full_name ?: '—' }}</dd>
-
-                    <dt>Verified at</dt>
-                    <dd>{{ optional($laundryJob->form_verified_at)->format('d M Y, g:i A') ?: '—' }}</dd>
-                </dl>
-
-                @if($laundryJob->worker_remarks)
-                    <div class="callout info top-gap">
-                        <strong>Laundry remarks</strong>
-                        <p>{{ $laundryJob->worker_remarks }}</p>
-                    </div>
-                @endif
-
-                <div class="table-wrap top-gap">
+                <div class="table-wrap return-history-scroll">
                     <table>
                         <thead>
                             <tr>
-                                <th>Item</th>
-                                <th>Issued</th>
+                                <th>Return</th>
                                 <th>Received</th>
-                                <th>Finding</th>
-                                <th>Affected</th>
-                                <th>Completed</th>
+                                <th>Type</th>
+                                <th>Status</th>
                                 <th>Remarks</th>
                             </tr>
                         </thead>
                         <tbody>
-                            @foreach($laundryJob->lines as $line)
+                            @foreach($custody->returns->sortByDesc('id') as $return)
                                 <tr>
-                                    <td>
-                                        <strong>{{ $line->custodyLine->requestItem->description_snapshot }}</strong>
-                                        <small>{{ $line->custodyLine->requestItem->unit_snapshot }}</small>
-                                    </td>
-                                    <td>{{ $line->issued_quantity + 0 }}</td>
-                                    <td>{{ ($line->received_quantity ?? 0) + 0 }}</td>
-                                    <td>{{ str($line->issue_type ?: 'NONE')->replace('_', ' ')->title() }}</td>
-                                    <td>{{ ($line->affected_quantity ?? 0) + 0 }}</td>
-                                    <td>{{ ($line->completed_quantity ?? 0) + 0 }}</td>
-                                    <td>{{ $line->remarks ?: '—' }}</td>
+                                    <td>{{ $return->return_no }}</td>
+                                    <td>{{ optional($return->received_at)->format('d M Y, g:i A') ?: '—' }}</td>
+                                    <td>{{ str($return->return_type ?: 'NORMAL')->replace('_', ' ')->title() }}</td>
+                                    <td><x-status-badge :status="$return->status" /></td>
+                                    <td>{{ $return->remarks ?: '—' }}</td>
                                 </tr>
                             @endforeach
                         </tbody>
@@ -792,151 +1218,360 @@
             </article>
         </section>
     @endif
-@endif
 
-@if($isSpmuOfficer && $custody->released_at && $outstandingTotal > 0)
+    <style>
+        .workflow-focus-target,
+        #return-primary {
+            scroll-margin-top: 96px;
+        }
+
+        .return-primary-section {
+            margin-top: 24px;
+        }
+
+        .return-context-grid {
+            align-items: stretch;
+            gap: 22px;
+            margin-bottom: 0;
+        }
+
+        .return-history-section {
+            margin-top: 24px;
+        }
+
+        .return-context-card {
+            min-width: 0;
+            height: 100%;
+        }
+
+        .return-document-list {
+            display: grid;
+            gap: 0;
+            padding-top: 2px;
+        }
+
+        .return-document-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 18px;
+            padding: 16px 0;
+            border-bottom: 1px solid var(--border, #d7dee8);
+        }
+
+        .return-document-row:first-child {
+            padding-top: 0;
+        }
+
+        .return-document-row:last-child {
+            padding-bottom: 0;
+            border-bottom: 0;
+        }
+
+        .return-document-row > div:first-child {
+            display: grid;
+            gap: 3px;
+            min-width: 0;
+        }
+
+        .return-document-row small {
+            color: var(--text-muted, #64748b);
+            line-height: 1.4;
+        }
+
+        .return-document-row--stack {
+            align-items: flex-start;
+        }
+
+        .return-document-actions {
+            display: flex !important;
+            flex-wrap: wrap;
+            justify-content: flex-end;
+            gap: 8px !important;
+        }
+
+        .return-workspace-grid {
+            display: grid;
+            grid-template-columns: minmax(0, 1.65fr) minmax(320px, .75fr);
+            gap: 24px;
+            align-items: stretch;
+        }
+
+        .return-workspace-grid > * {
+            min-width: 0;
+        }
+
+        .return-inspection-card,
+        .return-status-card {
+            height: 100%;
+            min-height: 0;
+        }
+
+        .return-inspection-card {
+            display: flex;
+            flex-direction: column;
+        }
+
+        .return-inspection-header {
+            align-items: flex-start;
+        }
+
+        .return-inspection-header .meta {
+            max-width: 820px;
+            margin: 5px 0 0;
+        }
+
+        .return-inspection-scroll {
+            max-height: clamp(250px, 31vh, 360px);
+            overflow: auto;
+            overscroll-behavior: contain;
+        }
+
+        .return-inspection-table {
+            min-width: 980px;
+        }
+
+        .return-inspection-table thead th {
+            position: sticky;
+            top: 0;
+            z-index: 3;
+            background: var(--surface-subtle, #eef3f8);
+        }
+
+        .return-inspection-table th:first-child,
+        .return-inspection-table td:first-child {
+            min-width: 190px;
+        }
+
+        .return-inspection-table input[type="number"] {
+            min-width: 78px;
+        }
+
+        .return-item-cell {
+            position: sticky;
+            left: 0;
+            z-index: 2;
+            background: var(--surface, #fff);
+        }
+
+        .return-inspection-table thead th:first-child {
+            z-index: 4;
+            background: var(--surface-subtle, #eef3f8);
+        }
+
+        .return-issue-details[hidden],
+        [data-police-wrap][hidden] {
+            display: none !important;
+        }
+
+        .return-issue-details td {
+            padding: 12px 16px 16px;
+            background: rgba(15, 23, 42, .025);
+        }
+
+        .return-issue-details__grid {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) minmax(240px, .75fr);
+            gap: 14px;
+        }
+
+        .return-action-area {
+            display: grid;
+            gap: 12px;
+            margin-top: 14px;
+        }
+
+        .return-accounting-message {
+            margin: 0;
+            padding-block: 11px;
+        }
+
+        .return-action-area textarea {
+            min-height: 82px;
+        }
+
+        .return-early-option {
+            margin: 0;
+        }
+
+        .return-status-card {
+            display: flex;
+            flex-direction: column;
+        }
+
+        .return-status-scroll {
+            flex: 1 1 auto;
+            min-height: 0;
+            max-height: clamp(430px, 55vh, 620px);
+            overflow: auto;
+            padding: 2px 4px 6px 0;
+        }
+
+        .compact-detail-list {
+            margin-bottom: 18px;
+        }
+
+        .return-next-callout {
+            margin: 4px 0 18px;
+        }
+
+        .return-next-callout p {
+            margin-bottom: 0;
+        }
+
+        .return-empty-state {
+            min-height: 280px;
+            display: grid;
+            place-content: center;
+        }
+
+        .return-history-scroll {
+            max-height: 320px;
+            overflow: auto;
+        }
+
+        .return-history-scroll thead th {
+            position: sticky;
+            top: 0;
+            z-index: 2;
+            background: var(--surface-subtle, #eef3f8);
+        }
+
+        @media (max-width: 1180px) {
+            .return-workspace-grid {
+                grid-template-columns: 1fr;
+                gap: 18px;
+            }
+
+            .return-context-grid {
+                grid-template-columns: 1fr;
+                gap: 18px;
+            }
+
+            .return-primary-section,
+            .return-history-section {
+                margin-top: 18px;
+            }
+
+            .return-status-scroll {
+                max-height: none;
+                overflow: visible;
+            }
+
+            .return-inspection-scroll {
+                max-height: 380px;
+            }
+        }
+
+        @media (max-width: 700px) {
+            .return-issue-details__grid {
+                grid-template-columns: 1fr;
+            }
+
+            .return-document-row {
+                align-items: stretch;
+                flex-direction: column;
+            }
+
+            .return-document-actions {
+                justify-content: flex-start;
+            }
+
+            .return-inspection-scroll {
+                max-height: 330px;
+            }
+        }
+    </style>
+
+    @if($eligibleReturnLines->isNotEmpty())
+        <script>
+        (() => {
+            const form = document.getElementById('full-return-accounting-form');
+            if (!form) return;
+
+            const rows = [...form.querySelectorAll('.return-accounting-row')];
+            const button = document.getElementById('record-return-button');
+            const message = document.getElementById('return-accounting-message');
+            const epsilon = 0.0005;
+
+            const numberValue = (input) => {
+                const value = Number.parseFloat(input?.value || '0');
+                return Number.isFinite(value) && value > 0 ? value : 0;
+            };
+
+            const refresh = () => {
+                let selected = 0;
+                let allValid = true;
+
+                rows.forEach((row) => {
+                    const outstanding = Number.parseFloat(row.dataset.outstanding || '0');
+                    const inputs = [...row.querySelectorAll('.return-accounting-input')];
+                    const total = inputs.reduce((sum, input) => sum + numberValue(input), 0);
+                    const nonFine = inputs
+                        .filter((input) => input.dataset.condition !== 'FINE')
+                        .reduce((sum, input) => sum + numberValue(input), 0);
+                    const stolen = numberValue(row.querySelector('[data-condition="STOLEN"]'));
+                    const detailsRow = row.nextElementSibling?.matches('[data-return-issue-details]')
+                        ? row.nextElementSibling
+                        : null;
+                    const evidence = detailsRow?.querySelector('.return-evidence-input');
+                    const police = detailsRow?.querySelector('.return-police-input');
+                    const policeWrap = detailsRow?.querySelector('[data-police-wrap]');
+                    const totalLabel = row.querySelector('.return-accounted-total');
+                    const stateLabel = row.querySelector('.return-accounted-state');
+
+                    if (detailsRow) detailsRow.hidden = nonFine <= epsilon;
+                    if (policeWrap) policeWrap.hidden = stolen <= epsilon;
+                    if (evidence) evidence.required = nonFine > epsilon;
+                    if (police) police.required = stolen > epsilon;
+
+                    if (totalLabel) totalLabel.textContent = `${total} / ${outstanding}`;
+
+                    if (total <= epsilon) {
+                        if (stateLabel) stateLabel.textContent = 'Not selected';
+                        return;
+                    }
+
+                    selected++;
+                    const complete = Math.abs(total - outstanding) <= epsilon;
+                    if (!complete) allValid = false;
+                    if (stateLabel) {
+                        stateLabel.textContent = complete
+                            ? 'Fully accounted'
+                            : 'Incomplete — classify the balance';
+                    }
+                });
+
+                const ready = selected > 0 && allValid;
+                button.disabled = !ready;
+                message.classList.toggle('warning', !ready);
+                message.classList.toggle('success', ready);
+                message.textContent = ready
+                    ? 'Selected item quantities are fully accounted. You may record the SPMU inspection.'
+                    : 'For each selected item, Fine + Damaged + Destroyed + Missing + Lost + Stolen must equal its full outstanding quantity.';
+            };
+
+            rows.forEach((row) => {
+                row.querySelectorAll('.return-accounting-input').forEach((input) => {
+                    input.addEventListener('input', refresh);
+                });
+            });
+
+            refresh();
+        })();
+        </script>
+    @endif
+@elseif($isSpmuOfficer)
     <section class="content-area">
-        <form
-            method="post"
-            action="{{ route('custody.return', $custody) }}"
-            enctype="multipart/form-data"
-            class="card form-grid"
-        >
-            @csrf
-
-            <div class="card-header">
-                <div>
-                    <p class="eyebrow">Physical return inspection</p>
-                    <h2>Record returned items</h2>
-                </div>
-            </div>
-
-            <p class="meta">
-                Enter only quantities physically received and inspected by SPMU. Inventory and accountability effects are applied by the current return workflow.
-            </p>
-
-            <div class="table-wrap">
-                <table>
-                    <thead>
-                        <tr>
-                            <th>Item</th>
-                            <th>Outstanding</th>
-                            <th>Returned Qty</th>
-                            <th>Condition / Finding</th>
-                            <th>Evidence</th>
-                            <th>Police Reference</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        @foreach($custody->lines as $line)
-                            @php
-                                $outstanding = max(
-                                    0,
-                                    (float) $line->actual_released_quantity - (float) $line->returned_quantity
-                                );
-                            @endphp
-
-                            @if($outstanding > 0)
-                                <tr>
-                                    <td>
-                                        <strong>{{ $line->requestItem->description_snapshot }}</strong>
-                                        <small>{{ $line->requestItem->unit_snapshot }}</small>
-                                    </td>
-                                    <td>{{ $outstanding + 0 }}</td>
-                                    <td>
-                                        <input
-                                            type="number"
-                                            step="0.001"
-                                            min="0"
-                                            max="{{ $outstanding }}"
-                                            name="quantities[{{ $line->id }}]"
-                                            value="{{ old('quantities.'.$line->id, 0) }}"
-                                        >
-                                    </td>
-                                    <td>
-                                        <select name="conditions[{{ $line->id }}]">
-                                            <option value="FINE">Fine / Good</option>
-                                            <option value="DAMAGED">Damaged</option>
-                                            <option value="DESTROYED">Destroyed</option>
-                                            <option value="MISSING">Missing</option>
-                                            <option value="LOST">Lost</option>
-                                            <option value="STOLEN">Stolen / Reported Stolen</option>
-                                        </select>
-                                    </td>
-                                    <td>
-                                        <input
-                                            type="file"
-                                            name="evidence_files[{{ $line->id }}]"
-                                            accept="application/pdf,image/png,image/jpeg,image/webp"
-                                        >
-                                    </td>
-                                    <td>
-                                        <input
-                                            name="police_blotter_references[{{ $line->id }}]"
-                                            value="{{ old('police_blotter_references.'.$line->id) }}"
-                                        >
-                                    </td>
-                                </tr>
-                            @endif
-                        @endforeach
-                    </tbody>
-                </table>
-            </div>
-
-            <label>
-                Inspection Remarks
-                <textarea name="remarks">{{ old('remarks') }}</textarea>
-            </label>
-
-            <label class="checkbox">
-                <input type="checkbox" name="early_return" value="1" @checked(old('early_return'))>
-                Record this as an early physical return.
-            </label>
-
-            <button class="button primary ui-pressable">Record Physical Return</button>
-        </form>
+        <div class="callout info">
+            <strong>This transaction has not been physically released yet.</strong>
+            <p>Complete the Release workflow before recording a return.</p>
+        </div>
     </section>
 @endif
 
-<section class="content-area">
-    <article class="card">
-        <div class="card-header">
-            <div>
-                <p class="eyebrow">Return history</p>
-                <h2>Recorded returns</h2>
-            </div>
-        </div>
-
-        <div class="table-wrap">
-            <table>
-                <thead>
-                    <tr>
-                        <th>Return</th>
-                        <th>Received</th>
-                        <th>Type</th>
-                        <th>Status</th>
-                        <th>Remarks</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    @forelse($custody->returns->sortByDesc('id') as $return)
-                        <tr>
-                            <td>{{ $return->return_no }}</td>
-                            <td>{{ optional($return->received_at)->format('d M Y, g:i A') ?: '—' }}</td>
-                            <td>{{ str($return->return_type ?: 'NORMAL')->replace('_', ' ')->title() }}</td>
-                            <td><x-status-badge :status="$return->status" /></td>
-                            <td>{{ $return->remarks ?: '—' }}</td>
-                        </tr>
-                    @empty
-                        <tr>
-                            <td colspan="5">No return recorded.</td>
-                        </tr>
-                    @endforelse
-                </tbody>
-            </table>
-        </div>
-    </article>
-</section>
+</div>
+@endif {{-- showReturnWorkflow --}}
 
 @if($isBorrower && $custody->released_at && $outstandingTotal > 0)
     <section class="content-area">
@@ -964,19 +1599,19 @@
                 @endphp
 
                 @if($outstanding > 0)
-                    <label>
-                        {{ $line->requestItem->description_snapshot }} — outstanding {{ $outstanding + 0 }}
+                    <label class="checkbox">
                         <input
-                            type="number"
-                            step="0.001"
-                            min="0"
-                            max="{{ $outstanding }}"
+                            type="checkbox"
                             name="quantities[{{ $line->id }}]"
-                            value="0"
+                            value="{{ $outstanding }}"
+                            @checked((float) old('quantities.'.$line->id, 0) === (float) $outstanding)
                         >
+                        Include {{ $line->requestItem->description_snapshot }} — full outstanding quantity: {{ $outstanding + 0 }}
                     </label>
                 @endif
             @endforeach
+
+            <p class="meta">Early Return is a coordination notice only. For any selected item, the full outstanding quantity must be handed over; split item quantities are not allowed.</p>
 
             <label>
                 Reason / Coordination Note
@@ -986,5 +1621,6 @@
             <button class="button primary ui-pressable">Send Early Return Notice</button>
         </form>
     </section>
+@endif
 @endif
 @endsection

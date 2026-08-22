@@ -164,7 +164,8 @@ class CustodyService
      * Expiring the pickup window does not cancel the approved request or
      * release its inventory reservation. It only closes the current claim
      * window so the SPMU Action Officer can schedule a new pickup window.
-     * Any earlier preparation must be reconfirmed for the new schedule.
+     * A previously confirmed preparation remains valid because the approved
+     * reservation is still held; rescheduling does not require duplicate quantity entry.
      */
     public function expirePickupWindows(): int
     {
@@ -198,12 +199,6 @@ class CustodyService
 
                     $locked->update([
                         'pickup_expired_at' => $expiredAt,
-                        'prepared_by_user_id' => null,
-                        'prepared_at' => null,
-                    ]);
-
-                    $locked->lines()->update([
-                        'item_status' => 'CONFIRMED',
                     ]);
 
                     $this->audit->record(
@@ -214,6 +209,7 @@ class CustodyService
                             'pickup_expired_at' => $expiredAt->toIso8601String(),
                             'reservation_released' => false,
                             'requires_rescheduling' => true,
+                            'preparation_preserved' => (bool) $locked->prepared_at,
                         ]
                     );
 
@@ -316,9 +312,7 @@ class CustodyService
                 'pickup_scheduled_by_user_id' => $spmu->id,
                 'pickup_scheduled_at' => now(),
                 'pickup_expired_at' => null,
-                // A changed pickup schedule requires physical preparation to be reconfirmed.
-                'prepared_by_user_id' => null,
-                'prepared_at' => null,
+                // Scheduling/rescheduling does not erase a preparation that was already confirmed.
             ]);
 
             $this->audit->record(
@@ -385,12 +379,13 @@ class CustodyService
         });
     }
 
-    public function prepare(CustodyTransaction $custody, User $spmu): void
+    public function prepare(CustodyTransaction $custody, User $spmu, array $quantities): void
     {
         abort_unless(
             $spmu->access_classification === AccessClassification::SpmuOfficer
                 && $custody->borrower_user_id !== $spmu->id
-                && $custody->status === 'PREPARING_RELEASE',
+                && $custody->status === 'PREPARING_RELEASE'
+                && ! $custody->released_at,
             403
         );
 
@@ -403,32 +398,40 @@ class CustodyService
 
         if (! $custody->hasPickupSchedule()) {
             throw ValidationException::withMessages([
-                'prepare' => 'Schedule the pickup window before confirming physical preparation.',
+                'preparation' => 'Set an active pickup schedule before confirming item preparation.',
             ]);
         }
 
         foreach ($custody->lines as $line) {
-            if (
-                abs(
-                    (float) $line->quantity_to_receive
-                    - (float) $line->approved_quantity
-                ) > 0.000001
-            ) {
+            if (! array_key_exists($line->id, $quantities)) {
                 throw ValidationException::withMessages([
-                    'prepare' => 'Every prepared quantity must exactly match the verified approved quantity.',
+                    'quantities' => 'Enter the actual prepared quantity for every approved item.',
+                ]);
+            }
+
+            $approved = (float) $line->approved_quantity;
+            $prepared = (float) $quantities[$line->id];
+
+            if (abs($prepared - $approved) > 0.000001) {
+                throw ValidationException::withMessages([
+                    'quantities' => "Prepared quantity does not match the approved request for {$line->requestItem->description_snapshot}. Approved: {$approved}; prepared: {$prepared}. Recheck the count. Release processing remains blocked until the actual prepared quantity matches the approved quantity.",
                 ]);
             }
         }
 
-        DB::transaction(function () use ($custody, $spmu): void {
+        DB::transaction(function () use ($custody, $spmu, $quantities): void {
+            foreach ($custody->lines()->get() as $line) {
+                $approved = (float) $line->approved_quantity;
+                $line->update([
+                    'quantity_to_receive' => $approved,
+                    'item_status' => 'PREPARED',
+                    'adjustment_reason' => null,
+                ]);
+            }
+
             $custody->update([
                 'prepared_by_user_id' => $spmu->id,
                 'prepared_at' => now(),
-            ]);
-
-            $custody->lines()->update([
-                'item_status' => 'PREPARED',
-                'adjustment_reason' => null,
             ]);
         });
 
@@ -493,7 +496,8 @@ class CustodyService
         $this->audit->record(
             'RELEASE_PREPARED',
             $fresh,
-            reason: 'SPMU confirmed exact approved quantities and generated the required physical forms.'
+            reason: 'SPMU Action Officer entered and confirmed the actual prepared quantities against the approved allocation, then generated the required physical forms.',
+            after: ['prepared_quantities' => $quantities]
         );
     }
 
@@ -568,6 +572,13 @@ class CustodyService
                 'release' => 'SPMU physical preparation is required before release.',
             ]);
         }
+
+        if (! $custody->hasPickupSchedule()) {
+            throw ValidationException::withMessages([
+                'release' => 'Set an active pickup schedule before recording the physical release.',
+            ]);
+        }
+
         $custody->loadMissing('request.currentVersion', 'gatePass', 'lines.requestItem.inventoryItem');
         $hasOffCampusItem = $custody->lines->contains(
             fn ($line) => $line->requestItem->use_location === 'OFF_CAMPUS'
@@ -609,6 +620,19 @@ class CustodyService
         }
 
         DB::transaction(function () use ($custody, $spmu, $hasLinen, $laundryDocument, $remarks): void {
+            /*
+             * Serialize physical release for this custody record. A double
+             * click / duplicate POST must never issue the same property twice
+             * or try to create a second LaundryJob for the same custody.
+             */
+            $custody = CustodyTransaction::query()
+                ->lockForUpdate()
+                ->findOrFail($custody->id);
+
+            if ($custody->released_at || $custody->status !== 'PREPARING_RELEASE') {
+                return;
+            }
+
             $custody->loadMissing('lines.requestItem.inventoryItem', 'lines.allocation', 'borrower', 'request');
 
             $releaseReason = trim((string) $remarks);
@@ -642,20 +666,40 @@ class CustodyService
             }
 
             if ($hasLinen) {
-                $job = LaundryJob::query()->updateOrCreate(
-                    [
-                        'custody_transaction_id' => $custody->id,
-                    ],
-                    [
-                        'generated_document_id' => $laundryDocument?->id,
-                        'status' => 'FOR_LAUNDRY',
-                        'ready_at' => null,
-                        'released_to_borrower_at' => null,
-                        'form_verified_by_user_id' => null,
-                        'form_verified_at' => null,
-                        'completed_at' => null,
-                    ]
-                );
+                /*
+                 * custody_transaction_id is UNIQUE in laundry_jobs. Older
+                 * workflow versions may already have created the row, and a
+                 * duplicate browser submission can race with another release
+                 * request. insertOrIgnore + a locking current-read makes this
+                 * creation idempotent and avoids a duplicate-key 500.
+                 *
+                 * Existing Laundry progress is deliberately preserved: release
+                 * may attach the current Laundry Form, but must not reset a job
+                 * that already has worker/verification timestamps.
+                 */
+                $now = now();
+
+                LaundryJob::query()->insertOrIgnore([
+                    'custody_transaction_id' => $custody->id,
+                    'generated_document_id' => $laundryDocument?->id,
+                    'status' => 'FOR_LAUNDRY',
+                    'created_at' => $now,
+                    'updated_at' => $now,
+                ]);
+
+                $job = LaundryJob::query()
+                    ->where('custody_transaction_id', $custody->id)
+                    ->lockForUpdate()
+                    ->firstOrFail();
+
+                if (
+                    $laundryDocument
+                    && (int) $job->generated_document_id !== (int) $laundryDocument->id
+                ) {
+                    $job->update([
+                        'generated_document_id' => $laundryDocument->id,
+                    ]);
+                }
 
                 foreach ($custody->lines as $line) {
                     if (
@@ -665,20 +709,28 @@ class CustodyService
                         continue;
                     }
 
-                    LaundryJobLine::query()->updateOrCreate(
-                        [
-                            'custody_line_id' => $line->id,
-                        ],
-                        [
-                            'laundry_job_id' => $job->id,
-                            'issued_quantity' => $line->actual_released_quantity,
-                            'received_quantity' => null,
-                            'issue_type' => null,
-                            'affected_quantity' => 0,
-                            'completed_quantity' => null,
-                            'remarks' => null,
-                        ]
-                    );
+                    /*
+                     * custody_line_id is also UNIQUE. Reuse any existing line
+                     * instead of clearing Laundry inspection data on a retry.
+                     */
+                    LaundryJobLine::query()->insertOrIgnore([
+                        'laundry_job_id' => $job->id,
+                        'custody_line_id' => $line->id,
+                        'issued_quantity' => $line->actual_released_quantity,
+                        'affected_quantity' => 0,
+                        'created_at' => $now,
+                        'updated_at' => $now,
+                    ]);
+
+                    $jobLine = LaundryJobLine::query()
+                        ->where('custody_line_id', $line->id)
+                        ->lockForUpdate()
+                        ->firstOrFail();
+
+                    $jobLine->update([
+                        'laundry_job_id' => $job->id,
+                        'issued_quantity' => $line->actual_released_quantity,
+                    ]);
 
                     $line->update([
                         'compliance_status' => 'FOR_LAUNDRY',
@@ -736,21 +788,171 @@ class CustodyService
         }, 3);
     }
 
-    public function receiveReturn(CustodyTransaction $custody, User $spmu, array $quantities, array $conditions, ?string $remarks, bool $early = false, array $policeBlotterReferences = [], array $evidenceFileIds = []): ReturnTransaction
+    public function receiveReturn(CustodyTransaction $custody, User $spmu, array $quantities, array $conditions, ?string $remarks, bool $early = false, array $policeBlotterReferences = [], array $evidenceFileIds = [], array $conditionBreakdowns = []): ReturnTransaction
     {
         abort_unless($spmu->access_classification === AccessClassification::SpmuOfficer && $custody->borrower_user_id !== $spmu->id, 403);
 
-        return DB::transaction(function () use ($custody, $spmu, $quantities, $conditions, $remarks, $early, $policeBlotterReferences, $evidenceFileIds): ReturnTransaction {
+        return DB::transaction(function () use ($custody, $spmu, $quantities, $conditions, $remarks, $early, $policeBlotterReferences, $evidenceFileIds, $conditionBreakdowns): ReturnTransaction {
             $custody = CustodyTransaction::query()->lockForUpdate()->findOrFail($custody->id);
-            if (! in_array($custody->status, ['ACTIVE', 'PARTIALLY_RETURNED', 'OVERDUE', 'EARLY_RETURN', 'INCIDENT_OPEN'], true)) {
+            if (! in_array($custody->status, ['ACTIVE', 'RETURN_PROCESSING', 'OVERDUE', 'EARLY_RETURN', 'INCIDENT_OPEN'], true)) {
                 throw ValidationException::withMessages(['return' => 'This custody record is no longer open for a physical return.']);
             }
 
             $custody->setRelation('lines', $custody->lines()->with('requestItem.inventoryItem')->lockForUpdate()->get());
             $custody->loadMissing('borrower');
-            $selectedLines = $custody->lines->filter(fn ($line) => (float) ($quantities[$line->id] ?? 0) > 0);
-            if ($selectedLines->isEmpty()) {
-                throw ValidationException::withMessages(['return' => 'Enter a returned quantity greater than zero for at least one item.']);
+
+            /*
+             * NO PARTIAL RETURN RULE
+             * ----------------------
+             * A custody line may be processed only when its entire outstanding
+             * issued quantity is accounted for in the same SPMU inspection.
+             * "Accounted" can be a mix of Fine, Damaged, Destroyed, Missing,
+             * Lost, or Stolen quantities. This lets SPMU record, for example,
+             * 18 Fine + 2 Damaged out of 20 issued without creating a partial
+             * return. Mixed requests remain supported because non-linen lines
+             * can be completed while linen continues through Laundry; the
+             * overall custody remains RETURN_PROCESSING until every line is
+             * fully accounted for and all obligations are resolved.
+             */
+            $allowedConditions = [
+                'FINE',
+                'DAMAGED',
+                'DESTROYED',
+                'MISSING',
+                'LOST',
+                'STOLEN',
+            ];
+
+            $normalizedBreakdowns = [];
+
+            foreach ($custody->lines as $line) {
+                $normalizedBreakdowns[$line->id] = array_fill_keys($allowedConditions, 0.0);
+
+                if (isset($conditionBreakdowns[$line->id]) && is_array($conditionBreakdowns[$line->id])) {
+                    foreach ($allowedConditions as $code) {
+                        $normalizedBreakdowns[$line->id][$code] = max(
+                            0,
+                            (float) ($conditionBreakdowns[$line->id][$code] ?? 0)
+                        );
+                    }
+
+                    continue;
+                }
+
+                /*
+                 * Backward compatibility for existing tests/API calls that
+                 * still send one quantity + one condition per custody line.
+                 * The same full-accounting validation below still applies.
+                 */
+                $legacyQuantity = max(0, (float) ($quantities[$line->id] ?? 0));
+                $legacyCondition = strtoupper((string) ($conditions[$line->id] ?? 'FINE'));
+
+                if ($legacyQuantity > 0 && in_array($legacyCondition, $allowedConditions, true)) {
+                    $normalizedBreakdowns[$line->id][$legacyCondition] = $legacyQuantity;
+                }
+            }
+
+            $laundryJob = LaundryJob::query()
+                ->where('custody_transaction_id', $custody->id)
+                ->first();
+
+            /*
+             * Non-linen can be finalized immediately at SPMU. Linen becomes
+             * eligible only after Laundry has finished processing it and the
+             * Laundry Worker is ready to hand the cleaned linen plus the same
+             * physical Laundry Form directly to SPMU. The form upload happens
+             * only AFTER SPMU final physical acceptance/signature.
+             */
+            $eligibleLines = $custody->lines->filter(function ($line) use ($laundryJob): bool {
+                $outstanding = max(
+                    0,
+                    (float) $line->actual_released_quantity - (float) $line->returned_quantity
+                );
+
+                if ($outstanding <= 0) {
+                    return false;
+                }
+
+                if (! (bool) $line->requestItem->inventoryItem->laundry_required) {
+                    return true;
+                }
+
+                if (! $laundryJob) {
+                    return true; // legacy pre-current-laundry record
+                }
+
+                return $laundryJob->status === 'READY_FOR_SPMU_RETURN';
+            });
+
+            /*
+             * A zero-total line simply means that item is not part of this
+             * inspection yet. Once any quantity is entered for an item, the
+             * COMPLETE outstanding quantity for that item must be accounted in
+             * the same inspection. This prevents 8-now / 2-later returns while
+             * still allowing different item lines (and the Laundry branch) to
+             * reach SPMU at different times under the single overall
+             * RETURN_PROCESSING state.
+             */
+            $returnableLines = $eligibleLines->filter(
+                fn ($line) => array_sum($normalizedBreakdowns[$line->id]) > 0
+            );
+
+            foreach ($custody->lines as $line) {
+                $accounted = array_sum($normalizedBreakdowns[$line->id]);
+
+                if ($accounted <= 0 || $eligibleLines->contains('id', $line->id)) {
+                    continue;
+                }
+
+                $description = $line->requestItem->description_snapshot ?: 'Borrowed item';
+
+                throw ValidationException::withMessages([
+                    'return' => $description
+                        .': this item is not yet eligible for SPMU final return inspection. Complete the required Laundry workflow first.',
+                ]);
+            }
+
+            if ($returnableLines->isEmpty()) {
+                throw ValidationException::withMessages([
+                    'return' => 'Select at least one item that is ready for SPMU return inspection and account for its complete outstanding quantity.',
+                ]);
+            }
+
+            foreach ($returnableLines as $line) {
+                $outstanding = max(
+                    0,
+                    (float) $line->actual_released_quantity - (float) $line->returned_quantity
+                );
+                $accounted = array_sum($normalizedBreakdowns[$line->id]);
+                $description = $line->requestItem->description_snapshot ?: 'Borrowed item';
+
+                if (abs($accounted - $outstanding) > 0.0005) {
+                    throw ValidationException::withMessages([
+                        'return' => $description
+                            .': the complete outstanding quantity must be accounted in one inspection. Expected '
+                            .($outstanding + 0)
+                            .', but '
+                            .($accounted + 0)
+                            .' is accounted. Classify unavailable quantities as Missing, Lost, Stolen, Damaged, or Destroyed as applicable.',
+                    ]);
+                }
+
+                $nonFine = collect($normalizedBreakdowns[$line->id])
+                    ->except('FINE')
+                    ->sum();
+
+                if ($nonFine > 0 && empty($evidenceFileIds[$line->id])) {
+                    throw ValidationException::withMessages([
+                        'evidence_files' => 'Supporting evidence is required for every item with damaged, destroyed, missing, lost, or stolen quantity.',
+                    ]);
+                }
+
+                if (($normalizedBreakdowns[$line->id]['STOLEN'] ?? 0) > 0
+                    && trim((string) ($policeBlotterReferences[$line->id] ?? '')) === '') {
+                    throw ValidationException::withMessages([
+                        'police_blotter_references' => 'A police-blotter reference is required for every stolen quantity.',
+                    ]);
+                }
             }
 
             $return = ReturnTransaction::query()->create([
@@ -762,125 +964,144 @@ class CustodyService
                 'status' => 'INSPECTED',
                 'remarks' => $remarks,
             ]);
-            $transactionId = $this->transactionHeader('PHYSICAL_RETURN', $return, $spmu, $remarks ?: 'Physical return and manual condition inspection.');
+            $transactionId = $this->transactionHeader('PHYSICAL_RETURN', $return, $spmu, $remarks ?: 'Physical return and full-quantity accountability inspection.');
 
-            $laundryJob = LaundryJob::query()
-                ->where('custody_transaction_id', $custody->id)
-                ->first();
-
-            foreach ($custody->lines as $line) {
-                $outstanding = max(0, (float) $line->actual_released_quantity - (float) $line->returned_quantity);
-                $quantity = (float) ($quantities[$line->id] ?? 0);
-                $condition = strtoupper((string) ($conditions[$line->id] ?? 'FINE'));
-                $blotterReference = trim((string) ($policeBlotterReferences[$line->id] ?? ''));
-                if ($quantity < 0 || $quantity > $outstanding) {
-                    throw ValidationException::withMessages(['return' => 'Returned quantity cannot exceed the outstanding borrowed quantity.']);
-                }
-                if ($quantity <= 0) {
-                    continue;
-                }
-                if ($condition === 'STOLEN' && $blotterReference === '') {
-                    throw ValidationException::withMessages(['police_blotter_references' => 'A police-blotter reference is required for every stolen quantity.']);
-                }
-                if ($condition !== 'FINE' && empty($evidenceFileIds[$line->id])) {
-                    throw ValidationException::withMessages(['evidence_files' => 'Supporting evidence is required for every damaged, destroyed, missing, lost, or stolen quantity.']);
-                }
-
+            foreach ($returnableLines as $line) {
                 $item = $line->requestItem->inventoryItem;
+                $breakdown = $normalizedBreakdowns[$line->id];
+                $accounted = array_sum($breakdown);
+                $blotterReference = trim((string) ($policeBlotterReferences[$line->id] ?? ''));
+                $hasIncident = false;
+                $hasLaundryDisposition = false;
 
                 if ($item->laundry_required && $laundryJob) {
                     /*
-                     * New linen flow:
-                     * Borrower -> Laundry -> Borrower -> SPMU.
-                     *
-                     * Laundry completion does not return inventory to Available.
-                     * Only SPMU's final physical return inspection may move the
-                     * cleaned linen from Borrowed to its final inventory state.
+                     * Current linen flow:
+                     * Borrower -> Laundry Worker -> SPMU -> Laundry Worker upload.
+                     * The Laundry Worker returns the cleaned linen and the same
+                     * physical form directly to SPMU. SPMU performs the final
+                     * physical quantity/condition inspection before the worker
+                     * uploads the fully signed form for settlement.
                      */
-                    if (
-                        $laundryJob->status !== 'FOR_SPMU_FINAL_CHECK'
-                        || ! $laundryJob->form_verified_at
-                    ) {
+                    if ($laundryJob->status !== 'READY_FOR_SPMU_RETURN') {
                         throw ValidationException::withMessages([
                             'return' =>
-                                'This linen cannot be finalized yet. Laundry must upload the accomplished form, release the cleaned linen to the borrower, and SPMU must verify/encode the form first.',
+                                'This linen cannot be finalized yet. Laundry must finish processing and bring the cleaned linen plus the physical Laundry Form directly to SPMU first.',
                         ]);
                     }
-
-                    $disposition = $condition === 'FINE'
-                        ? 'AVAILABLE'
-                        : match ($condition) {
-                            'MISSING', 'LOST' => 'LOST',
-                            'STOLEN' => 'STOLEN',
-                            'DESTROYED' => 'DESTROYED',
-                            default => 'DAMAGED_MAINTENANCE',
-                        };
-                } else {
-                    /*
-                     * Historical compatibility for older laundry records that
-                     * were created only after an SPMU return.
-                     */
-                    $disposition = $condition === 'FINE'
-                        ? ($item->laundry_required ? 'LAUNDRY' : 'AVAILABLE')
-                        : match ($condition) {
-                            'MISSING', 'LOST' => 'LOST',
-                            'STOLEN' => 'STOLEN',
-                            'DESTROYED' => 'DESTROYED',
-                            default => 'DAMAGED_MAINTENANCE',
-                        };
                 }
-                $returnLine = ReturnLine::query()->create([
-                    'return_transaction_id' => $return->id,
-                    'custody_line_id' => $line->id,
-                    'quantity_received' => $quantity,
-                    'condition_code' => $condition,
-                    'disposition_state' => $disposition,
-                    'remarks' => $remarks,
-                ]);
-                $line->increment('returned_quantity', $quantity);
-                $this->transactionLine($transactionId, $item->id, 'BORROWED', $disposition, $quantity);
 
-                if ($disposition === 'LAUNDRY') {
-                    LaundryRecord::query()->create(['return_line_id' => $returnLine->id, 'cleaned_quantity' => 0, 'damaged_quantity' => 0, 'status' => 'PENDING_EVIDENCE']);
-                    $line->update(['item_status' => 'IN_LAUNDRY', 'compliance_status' => 'LAUNDRY_FORM_PENDING']);
-                } elseif ($condition !== 'FINE') {
-                    $line->update(['item_status' => 'INCIDENT_PENDING']);
-                    $incident = Incident::query()->create([
-                        'incident_no' => 'INC-'.now()->format('YmdHis').'-'.$returnLine->id,
-                        'custody_transaction_id' => $custody->id,
-                        'borrower_user_id' => $custody->borrower_user_id,
-                        'reported_by_user_id' => $spmu->id,
-                        'supporting_evidence_file_id' => $evidenceFileIds[$line->id] ?? null,
-                        'incident_type' => $condition,
-                        'reported_at' => now(),
-                        'police_blotter_reference' => $blotterReference ?: null,
-                        'status' => 'OPEN',
+                foreach ($breakdown as $condition => $quantity) {
+                    $quantity = (float) $quantity;
+
+                    if ($quantity <= 0) {
+                        continue;
+                    }
+
+                    if ($item->laundry_required && $laundryJob) {
+                        $disposition = $condition === 'FINE'
+                            ? 'AVAILABLE'
+                            : match ($condition) {
+                                'MISSING', 'LOST' => 'LOST',
+                                'STOLEN' => 'STOLEN',
+                                'DESTROYED' => 'DESTROYED',
+                                default => 'DAMAGED_MAINTENANCE',
+                            };
+                    } else {
+                        /* Historical compatibility for pre-current laundry records. */
+                        $disposition = $condition === 'FINE'
+                            ? ($item->laundry_required ? 'LAUNDRY' : 'AVAILABLE')
+                            : match ($condition) {
+                                'MISSING', 'LOST' => 'LOST',
+                                'STOLEN' => 'STOLEN',
+                                'DESTROYED' => 'DESTROYED',
+                                default => 'DAMAGED_MAINTENANCE',
+                            };
+                    }
+
+                    $returnLine = ReturnLine::query()->create([
+                        'return_transaction_id' => $return->id,
+                        'custody_line_id' => $line->id,
+                        'quantity_received' => $quantity,
+                        'condition_code' => $condition,
+                        'disposition_state' => $disposition,
                         'remarks' => $remarks,
                     ]);
-                    IncidentLine::query()->create([
-                        'incident_id' => $incident->id,
-                        'custody_line_id' => $line->id,
-                        'quantity' => $quantity,
-                        'observed_condition' => $condition,
-                        'disposition_state' => $disposition,
-                    ]);
-                    BorrowerRestriction::query()->firstOrCreate([
-                        'borrower_user_id' => $custody->borrower_user_id,
-                        'incident_id' => $incident->id,
-                        'status' => 'ACTIVE',
-                    ], [
-                        'restriction_type' => 'UNRESOLVED_INCIDENT',
-                        'reason' => 'Unresolved '.$condition.' incident '.$incident->incident_no.'.',
-                        'effective_from' => now(),
-                        'imposed_by_user_id' => $spmu->id,
-                    ]);
-                    if (SystemSetting::value('rslddp_template_status') === 'APPROVED') {
-                        $this->documents->rslddp($incident->fresh());
+
+                    $this->transactionLine(
+                        $transactionId,
+                        $item->id,
+                        'BORROWED',
+                        $disposition,
+                        $quantity
+                    );
+
+                    if ($disposition === 'LAUNDRY') {
+                        $hasLaundryDisposition = true;
+
+                        LaundryRecord::query()->create([
+                            'return_line_id' => $returnLine->id,
+                            'cleaned_quantity' => 0,
+                            'damaged_quantity' => 0,
+                            'status' => 'PENDING_EVIDENCE',
+                        ]);
+                    } elseif ($condition !== 'FINE') {
+                        $hasIncident = true;
+
+                        $incident = Incident::query()->create([
+                            'incident_no' => 'INC-'.now()->format('YmdHis').'-'.$returnLine->id,
+                            'custody_transaction_id' => $custody->id,
+                            'borrower_user_id' => $custody->borrower_user_id,
+                            'reported_by_user_id' => $spmu->id,
+                            'supporting_evidence_file_id' => $evidenceFileIds[$line->id] ?? null,
+                            'incident_type' => $condition,
+                            'reported_at' => now(),
+                            'police_blotter_reference' => $blotterReference ?: null,
+                            'status' => 'OPEN',
+                            'remarks' => $remarks,
+                        ]);
+
+                        IncidentLine::query()->create([
+                            'incident_id' => $incident->id,
+                            'custody_line_id' => $line->id,
+                            'quantity' => $quantity,
+                            'observed_condition' => $condition,
+                            'disposition_state' => $disposition,
+                        ]);
+
+                        BorrowerRestriction::query()->firstOrCreate([
+                            'borrower_user_id' => $custody->borrower_user_id,
+                            'incident_id' => $incident->id,
+                            'status' => 'ACTIVE',
+                        ], [
+                            'restriction_type' => 'UNRESOLVED_INCIDENT',
+                            'reason' => 'Unresolved '.$condition.' incident '.$incident->incident_no.'.',
+                            'effective_from' => now(),
+                            'imposed_by_user_id' => $spmu->id,
+                        ]);
+
+                        if (SystemSetting::value('rslddp_template_status') === 'APPROVED') {
+                            $this->documents->rslddp($incident->fresh());
+                        }
                     }
                 }
-                if ($condition === 'FINE' && $disposition === 'AVAILABLE') {
-                    $remaining = max(0, (float) $line->actual_released_quantity - (float) $line->fresh()->returned_quantity);
-                    $line->update(['item_status' => $remaining > 0 ? 'PARTIALLY_RETURNED' : 'RETURNED']);
+
+                /*
+                 * returned_quantity is retained as the historical database
+                 * field, but under the revised workflow it represents the
+                 * quantity fully ACCOUNTED FOR by SPMU (including incidents).
+                 */
+                $line->increment('returned_quantity', $accounted);
+
+                if ($hasLaundryDisposition) {
+                    $line->update([
+                        'item_status' => 'IN_LAUNDRY',
+                        'compliance_status' => 'LAUNDRY_FORM_PENDING',
+                    ]);
+                } elseif ($hasIncident) {
+                    $line->update(['item_status' => 'INCIDENT_PENDING']);
+                } else {
+                    $line->update(['item_status' => 'RETURNED']);
                 }
             }
 
@@ -900,9 +1121,15 @@ class CustodyService
                     );
 
                 if ($allLaundryReturned) {
+                    /*
+                     * SPMU has now physically accepted/accounted for all linen.
+                     * The physical form is returned to the Laundry Worker for
+                     * the final scan/upload. Laundry is not settled until that
+                     * fully signed form is successfully uploaded.
+                     */
                     $laundryJob->update([
-                        'status' => 'LAUNDRY_COMPLETED',
-                        'completed_at' => now(),
+                        'status' => 'AWAITING_FINAL_FORM_UPLOAD',
+                        'completed_at' => null,
                     ]);
 
                     $custody->lines()
@@ -912,7 +1139,7 @@ class CustodyService
                                 $query->where('laundry_required', true)
                         )
                         ->update([
-                            'compliance_status' => 'LAUNDRY_COMPLETED',
+                            'compliance_status' => 'LAUNDRY_FINAL_FORM_PENDING',
                         ]);
                 }
             }
@@ -1005,10 +1232,15 @@ class CustodyService
                 ->where('custody_transaction_id', $custody->id)
                 ->whereNotIn('status', ['RESOLVED', 'CLOSED'])
                 ->exists();
-            $hasOpenLaundry = LaundryRecord::query()
+            $hasOpenLegacyLaundry = LaundryRecord::query()
                 ->whereHas('returnLine.custodyLine', fn ($query) => $query->where('custody_transaction_id', $custody->id))
                 ->where('status', '!=', 'VERIFIED')
                 ->exists();
+            $hasOpenCurrentLaundry = LaundryJob::query()
+                ->where('custody_transaction_id', $custody->id)
+                ->where('status', '!=', 'LAUNDRY_COMPLETED')
+                ->exists();
+            $hasOpenLaundry = $hasOpenLegacyLaundry || $hasOpenCurrentLaundry;
             $hasOpenOverdue = OverdueCase::query()
                 ->where('custody_transaction_id', $custody->id)
                 ->where('status', '!=', 'RESOLVED')
@@ -1021,7 +1253,7 @@ class CustodyService
                 $allReturned && $hasOpenObligation => 'OBLIGATION_OPEN',
                 $allReturned => 'CLOSED',
                 $custody->status === 'OVERDUE' => 'OVERDUE',
-                default => 'PARTIALLY_RETURNED',
+                default => 'RETURN_PROCESSING',
             };
             $custody->update(['status' => $status, 'closed_at' => $status === 'CLOSED' ? now() : null]);
             if ($early) {
@@ -1061,7 +1293,7 @@ class CustodyService
                 && $custody->released_at
                 && in_array(
                     $custody->status,
-                    ['ACTIVE', 'PARTIALLY_RETURNED', 'OVERDUE'],
+                    ['ACTIVE', 'RETURN_PROCESSING', 'OVERDUE'],
                     true
                 ),
             403
@@ -1092,6 +1324,12 @@ class CustodyService
                 if ($quantity < 0 || $quantity > $outstanding) {
                     throw ValidationException::withMessages([
                         'early_return' => 'An Early Return quantity cannot exceed the outstanding issued quantity.',
+                    ]);
+                }
+
+                if ($quantity > 0 && abs($quantity - $outstanding) > 0.0005) {
+                    throw ValidationException::withMessages([
+                        'early_return' => 'Early Return cannot split the outstanding quantity of an item. Select the item only when its full outstanding quantity will be handed over.',
                     ]);
                 }
 

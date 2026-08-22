@@ -328,7 +328,7 @@ class BatchOneReliabilityTest extends TestCase
         );
     }
 
-    public function test_earlier_incident_keeps_custody_open_after_final_fine_return(): void
+    public function test_completed_line_accounting_keeps_custody_in_return_processing_until_other_lines_are_accounted(): void
     {
         [$custody, $lines] = $this->activeCustodyWithLines(2);
         $officer = $this->spmuOfficer();
@@ -348,10 +348,10 @@ class BatchOneReliabilityTest extends TestCase
             $officer,
             [$lines[0]->id => 1],
             [$lines[0]->id => 'DAMAGED'],
-            'Damage found during the first partial return.',
+            'Damage found while fully accounting for the first issued item.',
             evidenceFileIds: [$lines[0]->id => $evidence->id],
         );
-        $this->assertSame('PARTIALLY_RETURNED', $custody->fresh()->status);
+        $this->assertSame('RETURN_PROCESSING', $custody->fresh()->status);
         $this->travel(1)->seconds();
 
         app(CustodyService::class)->receiveReturn(

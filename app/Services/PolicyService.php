@@ -9,7 +9,6 @@ use App\Models\BorrowerViolation;
 use App\Models\CustodyTransaction;
 use App\Models\ReturnTransaction;
 use App\Models\Sanction;
-use App\Models\SanctionRule;
 use App\Models\User;
 use Carbon\CarbonImmutable;
 use Carbon\CarbonInterface;
@@ -96,14 +95,18 @@ class PolicyService
     }
 
     /**
-     * SPMU Head confirms or dismisses a detected violation. Sanction rules are
-     * recommendations/configuration, not automatic punishment.
+     * SPMU Head reviews a detected violation and, when confirmed, records the
+     * administrative sanction chosen for that specific case. Sanctions are
+     * decided here instead of being generated from configurable sanction rules.
      */
     public function reviewViolation(
         BorrowerViolation $violation,
         User $spmuHead,
         string $decision,
-        ?string $remarks = null
+        ?string $remarks = null,
+        ?string $sanctionCode = null,
+        ?string $customSanctionLabel = null,
+        ?string $effectiveTo = null
     ): ?Sanction {
         abort_unless(
             $spmuHead->access_classification === AccessClassification::SpmuHead,
@@ -124,8 +127,49 @@ class PolicyService
             ]);
         }
 
-        return DB::transaction(function () use ($violation, $spmuHead, $decision, $remarks): ?Sanction {
+        $sanctionCode = $sanctionCode ? strtoupper($sanctionCode) : null;
+        $allowedSanctions = [
+            'NOTICE' => 'Notice',
+            'WRITTEN_REPRIMAND' => 'Written Reprimand',
+            'BORROWING_SUSPENSION' => 'Borrowing Suspension',
+            'OTHER' => null,
+        ];
+
+        if ($decision === 'CONFIRMED' && ! array_key_exists((string) $sanctionCode, $allowedSanctions)) {
+            throw ValidationException::withMessages([
+                'sanction_code' => 'Choose the administrative sanction to record for this confirmed violation.',
+            ]);
+        }
+
+        if ($decision === 'CONFIRMED' && $sanctionCode === 'OTHER' && trim((string) $customSanctionLabel) === '') {
+            throw ValidationException::withMessages([
+                'custom_sanction_label' => 'Enter the administrative action when Other is selected.',
+            ]);
+        }
+
+        if ($decision === 'CONFIRMED' && $sanctionCode === 'BORROWING_SUSPENSION' && ! $effectiveTo) {
+            throw ValidationException::withMessages([
+                'effective_to' => 'Set the suspension end date.',
+            ]);
+        }
+
+        return DB::transaction(function () use (
+            $violation,
+            $spmuHead,
+            $decision,
+            $remarks,
+            $sanctionCode,
+            $customSanctionLabel,
+            $effectiveTo,
+            $allowedSanctions
+        ): ?Sanction {
             $locked = BorrowerViolation::query()->lockForUpdate()->findOrFail($violation->id);
+
+            if ($locked->status !== 'PENDING_REVIEW') {
+                throw ValidationException::withMessages([
+                    'decision' => 'This violation has already been reviewed.',
+                ]);
+            }
 
             if ($decision === 'DISMISSED') {
                 $locked->update([
@@ -158,18 +202,14 @@ class PolicyService
                 ->whereKeyNot($locked->id)
                 ->count() + 1;
 
-            $today = now()->toDateString();
-            $rule = SanctionRule::query()
-                ->where('offense_no', $offenseNo)
-                ->where('status', 'ACTIVE')
-                ->where(function ($query) use ($today): void {
-                    $query->whereNull('effective_from')->orWhereDate('effective_from', '<=', $today);
-                })
-                ->where(function ($query) use ($today): void {
-                    $query->whereNull('effective_to')->orWhereDate('effective_to', '>=', $today);
-                })
-                ->latest('id')
-                ->first();
+            $sanctionLabel = $sanctionCode === 'OTHER'
+                ? trim((string) $customSanctionLabel)
+                : $allowedSanctions[$sanctionCode];
+
+            $effectiveFrom = now();
+            $sanctionEffectiveTo = $effectiveTo
+                ? CarbonImmutable::parse($effectiveTo)->endOfDay()
+                : null;
 
             $locked->update([
                 'academic_period_id' => $period->id,
@@ -179,49 +219,29 @@ class PolicyService
                 'review_remarks' => $remarks,
             ]);
 
-            if (! $rule) {
-                $this->audit->record(
-                    'BORROWING_VIOLATION_CONFIRMED_NO_SANCTION_RULE',
-                    $locked,
-                    reason: $remarks,
-                    after: [
-                        'offense_no' => $offenseNo,
-                        'academic_period_id' => $period->id,
-                    ]
-                );
-
-                return null;
-            }
-
-            $effectiveFrom = now();
-            $effectiveTo = match ($rule->duration_mode) {
-                'END_OF_PERIOD' => $period->end_date->copy()->endOfDay(),
-                default => null,
-            };
-
             $sanction = Sanction::query()->create([
                 'borrower_violation_id' => $locked->id,
                 'borrower_user_id' => $locked->borrower_user_id,
                 'academic_period_id' => $period->id,
-                'sanction_rule_id' => $rule->id,
+                'sanction_rule_id' => null,
                 'offense_no' => $offenseNo,
-                'sanction_code' => $rule->sanction_code,
-                'sanction_label' => $rule->sanction_label,
+                'sanction_code' => $sanctionCode,
+                'sanction_label' => $sanctionLabel,
                 'effective_from' => $effectiveFrom,
-                'effective_to' => $effectiveTo,
+                'effective_to' => $sanctionEffectiveTo,
                 'status' => 'ACTIVE',
                 'confirmed_by_user_id' => $spmuHead->id,
                 'confirmed_at' => now(),
                 'remarks' => $remarks,
             ]);
 
-            if (str_contains(strtoupper($rule->sanction_code), 'SUSPENSION')) {
+            if ($sanctionCode === 'BORROWING_SUSPENSION') {
                 BorrowerRestriction::query()->create([
                     'borrower_user_id' => $locked->borrower_user_id,
                     'restriction_type' => 'SANCTION_SUSPENSION',
-                    'reason' => $rule->sanction_label,
+                    'reason' => $sanctionLabel,
                     'effective_from' => $effectiveFrom,
-                    'effective_to' => $effectiveTo,
+                    'effective_to' => $sanctionEffectiveTo,
                     'status' => 'ACTIVE',
                     'imposed_by_user_id' => $spmuHead->id,
                     'sanction_id' => $sanction->id,
@@ -235,12 +255,15 @@ class PolicyService
                 after: [
                     'offense_no' => $offenseNo,
                     'academic_period' => $period->term_name,
-                    'sanction_code' => $rule->sanction_code,
-                    'effective_to' => $effectiveTo?->toIso8601String(),
+                    'sanction_code' => $sanctionCode,
+                    'sanction_label' => $sanctionLabel,
+                    'effective_to' => $sanctionEffectiveTo?->toIso8601String(),
+                    'decision_source' => 'SPMU_HEAD_CASE_REVIEW',
                 ]
             );
 
             return $sanction;
         }, 3);
     }
+
 }

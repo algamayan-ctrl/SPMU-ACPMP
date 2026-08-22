@@ -317,10 +317,10 @@ class ConditionalProcessingController extends Controller
                     $documents->rslddp($incident->fresh());
                 }
             }
-            $openLaundry = LaundryRecord::query()->whereHas('returnLine.custodyLine', fn ($query) => $query->where('custody_transaction_id', $custody->id))->where('status', '!=', 'VERIFIED')->exists();
+            $openLaundry = LaundryRecord::query()->whereHas('returnLine.custodyLine', fn ($query) => $query->where('custody_transaction_id', $custody->id))->whereNotIn('status', ['VERIFIED', 'VOID'])->exists();
             $openIncident = DB::table('incidents')->where('custody_transaction_id', $custody->id)->whereNotIn('status', ['RESOLVED', 'CLOSED'])->exists();
             $openOverdue = OverdueCase::query()->where('custody_transaction_id', $custody->id)->where('status', '!=', 'RESOLVED')->exists();
-            $openGatePass = $custody->gatePass()->where('status', '!=', 'VERIFIED')->exists();
+            $openGatePass = $custody->gatePass()->whereNotIn('status', ['VERIFIED', 'VOID'])->exists();
             $allReturned = $custody->lines()->get()->every(fn ($line) => (float) $line->returned_quantity >= (float) $line->actual_released_quantity);
             if (! $openLaundry && ! $openIncident && ! $openOverdue && ! $openGatePass && $allReturned) {
                 $custody->update(['status' => 'CLOSED', 'closed_at' => now()]);

@@ -18,7 +18,6 @@ use App\Http\Controllers\NotificationController;
 use App\Http\Controllers\ProfileController;
 use App\Http\Controllers\PolicyController;
 use App\Http\Controllers\ReportController;
-use App\Http\Controllers\SanctionController;
 use App\Http\Controllers\SettingController;
 use App\Http\Controllers\TechnicalOperationController;
 use App\Http\Controllers\UserAdministrationController;
@@ -267,6 +266,20 @@ Route::middleware(['auth', 'active'])->group(function (): void {
             ->name('custody.show');
     });
 
+    Route::middleware('workspace:SPMU')->group(function (): void {
+        Route::get('/release', [CustodyController::class, 'releaseIndex'])
+            ->name('custody.release.index');
+
+        Route::get('/release/{custody}', [CustodyController::class, 'releaseShow'])
+            ->name('custody.release.show');
+
+        Route::get('/return', [CustodyController::class, 'returnIndex'])
+            ->name('custody.return.index');
+
+        Route::get('/return/{custody}', [CustodyController::class, 'returnShow'])
+            ->name('custody.return.show');
+    });
+
     Route::post('/custody/{custody}/schedule-pickup', [CustodyController::class, 'schedulePickup'])
         ->middleware('workspace:SPMU')
         ->name('custody.schedule-pickup');
@@ -331,12 +344,13 @@ Route::middleware(['auth', 'active'])->group(function (): void {
     | Simple Laundry Worker Portal
     |--------------------------------------------------------------------------
     |
-    | Laundry Worker responsibility is intentionally minimal:
-    | - view the current Laundry Form / linen list
-    | - upload the accomplished scanned Laundry Form
-    | - mark the cleaned linen released back to the borrower
+    | Laundry Worker responsibility:
+    | - receive used linen + the borrower-signed physical Laundry Form
+    | - record actual receipt and laundry completion details
+    | - bring cleaned linen + the same form directly to SPMU
+    | - upload the fully signed form after SPMU final acceptance
     |
-    | SPMU performs the structured encoding and final asset verification.
+    | The Borrower does not collect cleaned linen or encode laundry quantities.
     |
     */
 
@@ -344,19 +358,26 @@ Route::middleware(['auth', 'active'])->group(function (): void {
         Route::get('/laundry', [LaundryController::class, 'index'])
             ->name('laundry.index');
 
+        Route::get('/laundry/completed', [LaundryController::class, 'completed'])
+            ->name('laundry.completed');
+
         Route::get('/laundry/{laundryJob}', [LaundryController::class, 'show'])
             ->name('laundry.show');
 
+        Route::post('/laundry/{laundryJob}/receive', [LaundryController::class, 'receive'])
+            ->name('laundry.receive');
+
+        Route::post('/laundry/{laundryJob}/complete-processing', [LaundryController::class, 'completeProcessing'])
+            ->name('laundry.complete-processing');
+
         Route::post('/laundry/{laundryJob}/upload-form', [LaundryController::class, 'upload'])
             ->name('laundry.upload-form');
-
-        Route::post('/laundry/{laundryJob}/release-to-borrower', [LaundryController::class, 'releaseToBorrower'])
-            ->name('laundry.release-to-borrower');
     });
 
-    Route::post('/laundry/{laundryJob}/verify-form', [LaundryController::class, 'verifyForm'])
+    Route::get('/spmu/laundry', [LaundryController::class, 'spmuIndex'])
         ->middleware('workspace:SPMU')
-        ->name('laundry.verify-form');
+        ->name('laundry.spmu.index');
+
 
 
     /*
@@ -403,20 +424,16 @@ Route::middleware(['auth', 'active'])->group(function (): void {
         ->middleware('workspace:SPMU')
         ->name('billings.waive');
 
+    Route::post('/accountability/violations/{violation}/review', [AccountabilityController::class, 'reviewViolation'])
+        ->middleware('workspace:SPMU')
+        ->name('accountability.violations.review');
+
 
     /*
     |--------------------------------------------------------------------------
-    | Sanctions / Policy Configuration
+    | Academic Period Configuration
     |--------------------------------------------------------------------------
     */
-
-    Route::get('/sanctions', [SanctionController::class, 'index'])
-        ->middleware('workspace:BORROWER,SPMU')
-        ->name('sanctions.index');
-
-    Route::post('/sanctions/{violation}/review', [SanctionController::class, 'review'])
-        ->middleware('workspace:SPMU')
-        ->name('sanctions.review');
 
     Route::middleware('workspace:SPMU')->group(function (): void {
         Route::get('/administration/policies', [PolicyController::class, 'index'])
@@ -431,16 +448,6 @@ Route::middleware(['auth', 'active'])->group(function (): void {
             '/administration/policies/academic-periods/{period}',
             [PolicyController::class, 'updateAcademicPeriod']
         )->name('policies.academic-periods.update');
-
-        Route::post(
-            '/administration/policies/sanction-rules',
-            [PolicyController::class, 'storeSanctionRule']
-        )->name('policies.sanction-rules.store');
-
-        Route::put(
-            '/administration/policies/sanction-rules/{rule}',
-            [PolicyController::class, 'updateSanctionRule']
-        )->name('policies.sanction-rules.update');
     });
 
 

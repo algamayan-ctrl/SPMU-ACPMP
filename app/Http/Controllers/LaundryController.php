@@ -5,7 +5,11 @@ namespace App\Http\Controllers;
 use App\Enums\AccessClassification;
 use App\Models\EvidenceSubmission;
 use App\Models\GeneratedDocument;
+use App\Models\Incident;
 use App\Models\LaundryJob;
+use App\Models\LaundryRecord;
+use App\Models\OverdueCase;
+use App\Models\ReturnTransaction;
 use App\Models\User;
 use App\Services\AuditService;
 use App\Services\NotificationService;
@@ -33,16 +37,166 @@ class LaundryController extends Controller
                 ->where('status', '!=', 'LAUNDRY_COMPLETED')
                 ->orderByRaw(
                     "CASE
-                        WHEN status = 'FORM_REPLACEMENT_REQUIRED' THEN 0
                         WHEN status = 'FOR_LAUNDRY' THEN 1
-                        WHEN status = 'READY_FOR_PICKUP' THEN 2
-                        WHEN status = 'FOR_SPMU_FINAL_CHECK' THEN 3
-                        ELSE 4
+                        WHEN status = 'IN_PROCESS' THEN 2
+                        WHEN status = 'READY_FOR_SPMU_RETURN' THEN 3
+                        WHEN status IN ('AWAITING_FINAL_FORM_UPLOAD', 'FORM_REPLACEMENT_REQUIRED') THEN 4
+                        ELSE 5
                     END"
                 )
                 ->latest('updated_at')
                 ->paginate(20),
         ]);
+    }
+
+    public function completed(Request $request): View
+    {
+        $this->authorizeLaundryWorker($request);
+
+        return view('laundry.completed', [
+            'jobs' => LaundryJob::query()
+                ->with([
+                    'custody.borrower',
+                    'custody.request',
+                    'lines.custodyLine.requestItem.inventoryItem.unit',
+                ])
+                ->where('status', 'LAUNDRY_COMPLETED')
+                ->latest('completed_at')
+                ->paginate(20),
+        ]);
+    }
+
+    public function spmuIndex(Request $request): View
+    {
+        abort_unless(
+            $request->user()->access_classification === AccessClassification::SpmuOfficer,
+            403,
+            'Laundry final acceptance is an SPMU Action Officer operation.'
+        );
+
+        return view('laundry.spmu-index', [
+            'jobs' => LaundryJob::query()
+                ->with([
+                    'custody.borrower',
+                    'custody.request',
+                    'latestEvidence.file',
+                    'lines.custodyLine.requestItem.inventoryItem.unit',
+                ])
+                ->whereIn('status', [
+                    'READY_FOR_SPMU_RETURN',
+                    'AWAITING_FINAL_FORM_UPLOAD',
+                    'FORM_REPLACEMENT_REQUIRED',
+                ])
+                ->latest('updated_at')
+                ->paginate(20),
+        ]);
+    }
+
+    public function receive(
+        Request $request,
+        LaundryJob $laundryJob,
+        AuditService $audit,
+        NotificationService $notifications
+    ): RedirectResponse {
+        $this->authorizeLaundryWorker($request);
+
+        $data = $request->validate([
+            'borrower_turnover_signature_confirmed' => ['required', 'accepted'],
+            'lines' => ['required', 'array'],
+            'lines.*.received_quantity' => ['required', 'numeric', 'min:0'],
+        ]);
+
+        DB::transaction(function () use ($request, $laundryJob, $audit, $notifications, $data): void {
+            $job = LaundryJob::query()
+                ->lockForUpdate()
+                ->with([
+                    'lines.custodyLine.requestItem',
+                    'custody.borrower',
+                ])
+                ->findOrFail($laundryJob->id);
+
+            if ($job->status === 'IN_PROCESS') {
+                return;
+            }
+
+            if ($job->status !== 'FOR_LAUNDRY') {
+                throw ValidationException::withMessages([
+                    'laundry' => 'This linen case is not currently awaiting borrower turnover to Laundry.',
+                ]);
+            }
+
+            $hasQuantityDiscrepancy = false;
+
+            foreach ($job->lines as $line) {
+                $values = $data['lines'][$line->id] ?? null;
+
+                if (! is_array($values)) {
+                    throw ValidationException::withMessages([
+                        'lines' => 'Enter the actual quantity received by Laundry for every linen item.',
+                    ]);
+                }
+
+                $issued = (float) $line->issued_quantity;
+                $received = (float) $values['received_quantity'];
+
+                if ($received > $issued) {
+                    throw ValidationException::withMessages([
+                        'lines' => 'Laundry received quantity cannot exceed the quantity issued by SPMU.',
+                    ]);
+                }
+
+                $hasQuantityDiscrepancy = $hasQuantityDiscrepancy || abs($received - $issued) > 0.0005;
+
+                $line->update([
+                    'received_quantity' => $received,
+                ]);
+            }
+
+            $job->update([
+                'status' => 'IN_PROCESS',
+                'worker_name' => $request->user()->full_name,
+                'worker_received_at' => $job->worker_received_at ?: now(),
+            ]);
+
+            if (in_array($job->custody->status, ['ACTIVE', 'EARLY_RETURN'], true)) {
+                $job->custody->update([
+                    'status' => 'RETURN_PROCESSING',
+                ]);
+            }
+
+            $audit->record(
+                'LAUNDRY_USED_LINEN_RECEIVED',
+                $job,
+                after: [
+                    'status' => 'IN_PROCESS',
+                    'custody_status' => $job->custody->fresh()->status,
+                    'worker_received_at' => now()->toIso8601String(),
+                    'received_by_user_id' => $request->user()->id,
+                    'quantity_discrepancy' => $hasQuantityDiscrepancy,
+                    'borrower_turnover_signature_confirmed' => true,
+                ]
+            );
+
+            $notifications->send(
+                'LAUNDRY_RECEIVED',
+                collect([$job->custody->borrower]),
+                "Laundry received the used linen and physical Laundry Form for {$job->custody->custody_no}. No further borrower laundry action is required while Laundry and SPMU complete the return process.",
+                $job,
+                ['SYSTEM', 'EMAIL']
+            );
+
+            if ($hasQuantityDiscrepancy) {
+                $notifications->send(
+                    'LAUNDRY_QUANTITY_DISCREPANCY',
+                    $this->spmuRecipients(),
+                    "Laundry recorded a quantity discrepancy during borrower turnover for {$job->custody->custody_no}. Review the final SPMU return inspection carefully and account for the complete issued quantity.",
+                    $job,
+                    ['SYSTEM']
+                );
+            }
+        }, 3);
+
+        return back()->with('status', 'Used linen and signed turnover form received. Laundry processing may begin.');
     }
 
     public function show(Request $request, LaundryJob $laundryJob): View
@@ -60,6 +214,138 @@ class LaundryController extends Controller
         return view('laundry.show', [
             'job' => $laundryJob,
         ]);
+    }
+
+    public function completeProcessing(
+        Request $request,
+        LaundryJob $laundryJob,
+        AuditService $audit,
+        NotificationService $notifications
+    ): RedirectResponse {
+        $this->authorizeLaundryWorker($request);
+
+        $data = $request->validate([
+            'worker_remarks' => ['nullable', 'string', 'max:2000'],
+            'lines' => ['required', 'array'],
+            'lines.*.issue_type' => [
+                'required',
+                Rule::in(['NONE', 'STAINED', 'TORN', 'DAMAGED', 'OTHER']),
+            ],
+            'lines.*.affected_quantity' => ['required', 'numeric', 'min:0'],
+            'lines.*.completed_quantity' => ['required', 'numeric', 'min:0'],
+            'lines.*.remarks' => ['nullable', 'string', 'max:2000'],
+        ]);
+
+        DB::transaction(function () use ($request, $laundryJob, $audit, $notifications, $data): void {
+            $job = LaundryJob::query()
+                ->lockForUpdate()
+                ->with([
+                    'lines.custodyLine.requestItem',
+                    'custody.borrower',
+                ])
+                ->findOrFail($laundryJob->id);
+
+            if ($job->status === 'READY_FOR_SPMU_RETURN') {
+                return;
+            }
+
+            if ($job->status !== 'IN_PROCESS') {
+                throw ValidationException::withMessages([
+                    'laundry' => 'Confirm borrower turnover to Laundry before recording laundry completion.',
+                ]);
+            }
+
+            foreach ($job->lines as $line) {
+                $values = $data['lines'][$line->id] ?? null;
+
+                if (! is_array($values)) {
+                    throw ValidationException::withMessages([
+                        'lines' => 'Record the laundry completion details for every linen item.',
+                    ]);
+                }
+
+                $received = (float) ($line->received_quantity ?? 0);
+                $affected = (float) $values['affected_quantity'];
+                $completed = (float) $values['completed_quantity'];
+                $issue = (string) $values['issue_type'];
+
+                if ($affected > $received) {
+                    throw ValidationException::withMessages([
+                        'lines' => 'Affected quantity cannot exceed the quantity physically received by Laundry.',
+                    ]);
+                }
+
+                if ($completed > $received) {
+                    throw ValidationException::withMessages([
+                        'lines' => 'Completed quantity cannot exceed the quantity physically received by Laundry.',
+                    ]);
+                }
+
+                if ($issue === 'NONE' && $affected > 0) {
+                    throw ValidationException::withMessages([
+                        'lines' => 'Affected quantity must be zero when Laundry records no condition issue.',
+                    ]);
+                }
+
+                if ($issue !== 'NONE' && $affected <= 0) {
+                    throw ValidationException::withMessages([
+                        'lines' => 'Enter the affected quantity when Laundry records a stain, tear, damage, or other issue.',
+                    ]);
+                }
+
+                if ($issue === 'NONE' && abs($completed - $received) > 0.0005) {
+                    throw ValidationException::withMessages([
+                        'lines' => 'When no issue is recorded, the completed quantity must equal the quantity received by Laundry.',
+                    ]);
+                }
+
+                $line->update([
+                    'issue_type' => $issue,
+                    'affected_quantity' => $affected,
+                    'completed_quantity' => $completed,
+                    'remarks' => $values['remarks'] ?? null,
+                ]);
+            }
+
+            $job->update([
+                'status' => 'READY_FOR_SPMU_RETURN',
+                'worker_name' => $job->worker_name ?: $request->user()->full_name,
+                'worker_completed_at' => now(),
+                'worker_remarks' => $data['worker_remarks'] ?? null,
+                'ready_at' => $job->ready_at ?: now(),
+            ]);
+
+            $audit->record(
+                'LAUNDRY_PROCESSING_COMPLETED',
+                $job,
+                after: [
+                    'status' => 'READY_FOR_SPMU_RETURN',
+                    'worker_completed_at' => now()->toIso8601String(),
+                    'worker_user_id' => $request->user()->id,
+                ]
+            );
+
+            $notifications->send(
+                'LAUNDRY_READY_FOR_SPMU_RETURN',
+                $this->spmuRecipients(),
+                "Laundry completed processing for {$job->custody->custody_no}. The Laundry Worker will bring the cleaned linen and the same physical Laundry Form to SPMU for final quantity/condition inspection and authorized SPMU signature.",
+                $job,
+                ['SYSTEM']
+            );
+
+            $notifications->send(
+                'LAUNDRY_PROCESSING_COMPLETE',
+                collect([$job->custody->borrower]),
+                "Laundry processing for {$job->custody->custody_no} is complete. No borrower pickup is required; the Laundry Worker will return the cleaned linen directly to SPMU.",
+                $job,
+                ['SYSTEM', 'EMAIL']
+            );
+        }, 3);
+
+        return back()->with(
+            'status',
+            'Laundry processing recorded. Bring the cleaned linen and the same physical Laundry Form directly to SPMU for final acceptance.'
+        );
     }
 
     public function upload(
@@ -92,22 +378,50 @@ class LaundryController extends Controller
         ): void {
             $job = LaundryJob::query()
                 ->lockForUpdate()
+                ->with([
+                    'lines.custodyLine',
+                    'custody.lines',
+                    'custody.borrower',
+                ])
                 ->findOrFail($laundryJob->id);
 
-            if (! in_array(
-                $job->status,
-                ['FOR_LAUNDRY', 'FORM_REPLACEMENT_REQUIRED'],
-                true
-            )) {
+            if ($job->status === 'LAUNDRY_COMPLETED') {
+                return;
+            }
+
+            if (! in_array($job->status, ['AWAITING_FINAL_FORM_UPLOAD', 'FORM_REPLACEMENT_REQUIRED'], true)) {
                 throw ValidationException::withMessages([
-                    'evidence' =>
-                        'This laundry request is not awaiting an accomplished Laundry Form.',
+                    'evidence' => 'SPMU must first physically receive and inspect the cleaned linen and sign the final acceptance portion of the Laundry Form.',
                 ]);
             }
 
-            $job->loadMissing('custody.borrower');
+            $allLinenAccountedBySpmu = $job->lines->every(function ($line): bool {
+                $custodyLine = $line->custodyLine;
+
+                return $custodyLine
+                    && (float) $custodyLine->returned_quantity >= (float) $custodyLine->actual_released_quantity;
+            });
+
+            if (! $allLinenAccountedBySpmu) {
+                throw ValidationException::withMessages([
+                    'evidence' => 'The final Laundry Form may be uploaded only after SPMU has fully accounted for the cleaned linen during final return inspection.',
+                ]);
+            }
 
             $document = $this->currentLaundryDocument($job);
+            $lineIds = $job->lines->pluck('custody_line_id')->all();
+
+            $finalReturn = ReturnTransaction::query()
+                ->where('custody_transaction_id', $job->custody_transaction_id)
+                ->whereHas('lines', fn ($query) => $query->whereIn('custody_line_id', $lineIds))
+                ->latest('received_at')
+                ->first();
+
+            if (! $finalReturn) {
+                throw ValidationException::withMessages([
+                    'evidence' => 'No final SPMU linen acceptance record was found. Complete the physical return inspection before uploading the signed form.',
+                ]);
+            }
 
             $file = $files->storeUpload(
                 $data['evidence'],
@@ -120,51 +434,56 @@ class LaundryController extends Controller
                 'stored_file_id' => $file->id,
                 'borrower_user_id' => $job->custody->borrower_user_id,
                 'uploaded_by_user_id' => $request->user()->id,
+                'verified_by_user_id' => $finalReturn->received_by_user_id,
                 'upload_mode' => 'LAUNDRY_WORKER',
                 'submitted_at' => now(),
-                'verification_status' => 'PENDING_VERIFICATION',
+                'verification_status' => 'VERIFIED',
+                'verified_at' => now(),
             ]);
-
-            $alreadyReleased =
-                (bool) $job->released_to_borrower_at;
-
-            $nextStatus =
-                $alreadyReleased
-                    ? 'FOR_SPMU_FINAL_CHECK'
-                    : 'READY_FOR_PICKUP';
 
             $job->update([
                 'generated_document_id' => $document->id,
                 'latest_evidence_submission_id' => $submission->id,
-                'status' => $nextStatus,
-                'ready_at' => $job->ready_at ?: now(),
-                'form_verified_by_user_id' => null,
-                'form_verified_at' => null,
+                'status' => 'LAUNDRY_COMPLETED',
+                'form_verified_by_user_id' => $finalReturn->received_by_user_id,
+                'form_verified_at' => now(),
+                'completed_at' => now(),
             ]);
 
+            $job->custody->lines()
+                ->whereHas(
+                    'requestItem.inventoryItem',
+                    fn ($query) => $query->where('laundry_required', true)
+                )
+                ->update([
+                    'compliance_status' => 'LAUNDRY_COMPLETED',
+                ]);
+
+            $this->syncCustodyAfterLaundryCompletion($job);
+
             $audit->record(
-                'LAUNDRY_FORM_UPLOADED_BY_WORKER',
+                'LAUNDRY_FINAL_FORM_UPLOADED_AND_SETTLED',
                 $job,
                 after: [
                     'evidence_submission_id' => $submission->id,
-                    'status' => $nextStatus,
+                    'status' => 'LAUNDRY_COMPLETED',
+                    'uploaded_by_user_id' => $request->user()->id,
+                    'spmu_final_return_id' => $finalReturn->id,
                 ]
             );
 
-            if (! $alreadyReleased) {
-                $notifications->send(
-                    'LAUNDRY_READY_FOR_PICKUP',
-                    collect([$job->custody->borrower]),
-                    "Laundry request for {$job->custody->custody_no} is ready for pickup at the Laundry Area. After pickup, return the cleaned linen to SPMU for final inspection.",
-                    $job,
-                    ['SYSTEM', 'EMAIL']
-                );
-            }
+            $notifications->send(
+                'LAUNDRY_COMPLETED',
+                collect([$job->custody->borrower]),
+                "The fully accomplished Laundry Form for {$job->custody->custody_no} was uploaded after SPMU final acceptance. The Laundry transaction is completed/settled.",
+                $job,
+                ['SYSTEM', 'EMAIL']
+            );
 
             $notifications->send(
-                'LAUNDRY_FORM_PENDING_SPMU_VERIFICATION',
+                'LAUNDRY_FINAL_FORM_ARCHIVED',
                 $this->spmuRecipients(),
-                "Laundry Worker uploaded the accomplished Laundry Form for {$job->custody->custody_no}. SPMU must verify the scan and encode the form before final return.",
+                "Laundry uploaded the fully signed final Laundry Form for {$job->custody->custody_no}. The Laundry transaction is now completed/settled.",
                 $job,
                 ['SYSTEM']
             );
@@ -172,343 +491,56 @@ class LaundryController extends Controller
 
         return redirect()
             ->route('laundry.show', $laundryJob)
-            ->with(
-                'status',
-                'Accomplished Laundry Form uploaded. SPMU was notified for verification; the borrower is notified when the linen first becomes ready for pickup.'
-            );
+            ->with('status', 'Fully accomplished Laundry Form uploaded. Laundry transaction completed/settled.');
     }
 
-    public function releaseToBorrower(
-        Request $request,
-        LaundryJob $laundryJob,
-        AuditService $audit,
-        NotificationService $notifications
-    ): RedirectResponse {
-        $this->authorizeLaundryWorker($request);
+    private function syncCustodyAfterLaundryCompletion(LaundryJob $job): void
+    {
+        $custody = $job->custody()->with('lines')->firstOrFail();
 
-        DB::transaction(function () use (
-            $request,
-            $laundryJob,
-            $audit,
-            $notifications
-        ): void {
-            $job = LaundryJob::query()
-                ->lockForUpdate()
-                ->findOrFail($laundryJob->id);
-
-            if ($job->status === 'FOR_SPMU_FINAL_CHECK') {
-                return;
-            }
-
-            if ($job->status !== 'READY_FOR_PICKUP') {
-                throw ValidationException::withMessages([
-                    'laundry' =>
-                        'Upload the accomplished Laundry Form first before releasing the cleaned linen to the borrower.',
-                ]);
-            }
-
-            $job->loadMissing('custody.borrower');
-
-            $job->update([
-                'status' => 'FOR_SPMU_FINAL_CHECK',
-                'released_to_borrower_at' => now(),
-            ]);
-
-            $audit->record(
-                'LAUNDRY_RELEASED_TO_BORROWER',
-                $job,
-                after: [
-                    'released_to_borrower_at' => now()->toIso8601String(),
-                    'released_by_user_id' => $request->user()->id,
-                ]
-            );
-
-            $notifications->send(
-                'LAUNDRY_RETURN_TO_SPMU_REQUIRED',
-                collect([$job->custody->borrower]),
-                "Cleaned linen for {$job->custody->custody_no} was released to you by Laundry. Please bring it to SPMU for final quantity and condition inspection.",
-                $job,
-                ['SYSTEM', 'EMAIL']
-            );
-
-            $notifications->send(
-                'LAUNDRY_FOR_FINAL_SPMU_CHECK',
-                $this->spmuRecipients(),
-                "Cleaned linen for {$job->custody->custody_no} was released back to the borrower and is now for final SPMU return inspection.",
-                $job,
-                ['SYSTEM']
-            );
-        }, 3);
-
-        return back()->with(
-            'status',
-            'Cleaned linen marked Released to Borrower. The borrower was instructed to return it to SPMU.'
-        );
-    }
-
-    public function verifyForm(
-        Request $request,
-        LaundryJob $laundryJob,
-        AuditService $audit,
-        NotificationService $notifications
-    ): RedirectResponse {
-        abort_unless(
-            $request->user()->access_classification === AccessClassification::SpmuOfficer,
-            403,
-            'Only the SPMU Action Officer may perform the operational Laundry Form verification.'
+        $allReturned = $custody->lines->every(
+            fn ($line) => (float) $line->returned_quantity >= (float) $line->actual_released_quantity
         );
 
-        $decisionData = $request->validate([
-            'decision' => [
-                'required',
-                Rule::in([
-                    'VERIFIED',
-                    'REJECTED',
-                ]),
-            ],
-            'rejection_reason' => [
-                'nullable',
-                'string',
-                'max:1000',
-            ],
+        if (! $allReturned) {
+            if ($custody->status === 'OBLIGATION_OPEN') {
+                $custody->update(['status' => 'RETURN_PROCESSING', 'closed_at' => null]);
+            }
+
+            return;
+        }
+
+        $hasOpenIncident = Incident::query()
+            ->where('custody_transaction_id', $custody->id)
+            ->whereNotIn('status', ['RESOLVED', 'CLOSED'])
+            ->exists();
+
+        $hasOpenLegacyLaundry = LaundryRecord::query()
+            ->whereHas(
+                'returnLine.custodyLine',
+                fn ($query) => $query->where('custody_transaction_id', $custody->id)
+            )
+            ->where('status', '!=', 'VERIFIED')
+            ->exists();
+
+        $hasOpenOverdue = OverdueCase::query()
+            ->where('custody_transaction_id', $custody->id)
+            ->where('status', '!=', 'RESOLVED')
+            ->exists();
+
+        $hasOpenGatePass = $custody->gatePass()
+            ->where('status', '!=', 'VERIFIED')
+            ->exists();
+
+        $hasOpenObligation = $hasOpenIncident
+            || $hasOpenLegacyLaundry
+            || $hasOpenOverdue
+            || $hasOpenGatePass;
+
+        $custody->update([
+            'status' => $hasOpenObligation ? 'OBLIGATION_OPEN' : 'CLOSED',
+            'closed_at' => $hasOpenObligation ? null : now(),
         ]);
-
-        if (
-            $decisionData['decision'] === 'REJECTED'
-            && blank($decisionData['rejection_reason'] ?? null)
-        ) {
-            throw ValidationException::withMessages([
-                'rejection_reason' =>
-                    'Explain why a replacement Laundry Form scan is required.',
-            ]);
-        }
-
-        $verificationData = [];
-
-        if ($decisionData['decision'] === 'VERIFIED') {
-            $verificationData = $request->validate([
-                'worker_name' => [
-                    'required',
-                    'string',
-                    'max:255',
-                ],
-                'worker_received_at' => [
-                    'required',
-                    'date',
-                ],
-                'worker_completed_at' => [
-                    'required',
-                    'date',
-                    'after_or_equal:worker_received_at',
-                ],
-                'worker_remarks' => [
-                    'nullable',
-                    'string',
-                    'max:2000',
-                ],
-                'lines' => [
-                    'required',
-                    'array',
-                ],
-                'lines.*.received_quantity' => [
-                    'required',
-                    'numeric',
-                    'min:0',
-                ],
-                'lines.*.issue_type' => [
-                    'required',
-                    Rule::in([
-                        'NONE',
-                        'STAINED',
-                        'TORN',
-                        'DAMAGED',
-                        'OTHER',
-                    ]),
-                ],
-                'lines.*.affected_quantity' => [
-                    'required',
-                    'numeric',
-                    'min:0',
-                ],
-                'lines.*.completed_quantity' => [
-                    'required',
-                    'numeric',
-                    'min:0',
-                ],
-                'lines.*.remarks' => [
-                    'nullable',
-                    'string',
-                    'max:2000',
-                ],
-            ]);
-        }
-
-        DB::transaction(function () use (
-            $request,
-            $laundryJob,
-            $audit,
-            $notifications,
-            $decisionData,
-            $verificationData
-        ): void {
-            $job = LaundryJob::query()
-                ->lockForUpdate()
-                ->with([
-                    'latestEvidence',
-                    'lines',
-                    'custody.borrower',
-                ])
-                ->findOrFail($laundryJob->id);
-
-            $evidence = $job->latestEvidence;
-
-            if (
-                ! $evidence
-                || $evidence->verification_status !== 'PENDING_VERIFICATION'
-            ) {
-                throw ValidationException::withMessages([
-                    'laundry' =>
-                        'There is no current Laundry Worker scan awaiting SPMU verification.',
-                ]);
-            }
-
-            if ($decisionData['decision'] === 'REJECTED') {
-                $evidence->update([
-                    'verified_by_user_id' => $request->user()->id,
-                    'verification_status' => 'REJECTED',
-                    'verified_at' => now(),
-                    'rejection_reason' => $decisionData['rejection_reason'],
-                ]);
-
-                $job->update([
-                    'status' => 'FORM_REPLACEMENT_REQUIRED',
-                    'form_verified_by_user_id' => null,
-                    'form_verified_at' => null,
-                ]);
-
-                $audit->record(
-                    'LAUNDRY_FORM_REJECTED',
-                    $job,
-                    reason: $decisionData['rejection_reason']
-                );
-
-                $notifications->send(
-                    'LAUNDRY_FORM_REPLACEMENT_REQUIRED',
-                    $this->laundryRecipients(),
-                    "SPMU requested a replacement Laundry Form scan for {$job->custody->custody_no}. Reason: {$decisionData['rejection_reason']}",
-                    $job,
-                    ['SYSTEM']
-                );
-
-                return;
-            }
-
-            foreach ($job->lines as $line) {
-                $values = $verificationData['lines'][$line->id] ?? null;
-
-                if (! is_array($values)) {
-                    throw ValidationException::withMessages([
-                        'lines' =>
-                            'Encode every linen item exactly as written on the accomplished Laundry Form.',
-                    ]);
-                }
-
-                $issued = (float) $line->issued_quantity;
-                $received = (float) $values['received_quantity'];
-                $affected = (float) $values['affected_quantity'];
-                $completed = (float) $values['completed_quantity'];
-                $issue = $values['issue_type'];
-
-                if ($received > $issued) {
-                    throw ValidationException::withMessages([
-                        'lines' =>
-                            'Laundry received quantity cannot exceed the quantity issued by SPMU.',
-                    ]);
-                }
-
-                if ($affected > $received) {
-                    throw ValidationException::withMessages([
-                        'lines' =>
-                            'Affected quantity cannot exceed the quantity received by Laundry.',
-                    ]);
-                }
-
-                if ($completed > $received) {
-                    throw ValidationException::withMessages([
-                        'lines' =>
-                            'Completed quantity cannot exceed the quantity received by Laundry.',
-                    ]);
-                }
-
-                if (
-                    $issue === 'NONE'
-                    && $affected > 0
-                ) {
-                    throw ValidationException::withMessages([
-                        'lines' =>
-                            'Affected quantity must be zero when the Laundry Form reports no issue.',
-                    ]);
-                }
-
-                if (
-                    $issue !== 'NONE'
-                    && $affected <= 0
-                ) {
-                    throw ValidationException::withMessages([
-                        'lines' =>
-                            'Enter the affected quantity when the Laundry Form reports a stain, tear, damage, or other issue.',
-                    ]);
-                }
-
-                $line->update([
-                    'received_quantity' => $received,
-                    'issue_type' => $issue,
-                    'affected_quantity' => $affected,
-                    'completed_quantity' => $completed,
-                    'remarks' => $values['remarks'] ?? null,
-                ]);
-            }
-
-            $evidence->update([
-                'verified_by_user_id' => $request->user()->id,
-                'verification_status' => 'VERIFIED',
-                'verified_at' => now(),
-                'rejection_reason' => null,
-            ]);
-
-            $job->update([
-                'worker_name' => $verificationData['worker_name'],
-                'worker_received_at' => $verificationData['worker_received_at'],
-                'worker_completed_at' => $verificationData['worker_completed_at'],
-                'worker_remarks' => $verificationData['worker_remarks'] ?? null,
-                'form_verified_by_user_id' => $request->user()->id,
-                'form_verified_at' => now(),
-            ]);
-
-            $audit->record(
-                'LAUNDRY_FORM_VERIFIED_AND_ENCODED',
-                $job,
-                after: [
-                    'verified_by_user_id' => $request->user()->id,
-                    'evidence_submission_id' => $evidence->id,
-                ]
-            );
-
-            $notifications->send(
-                'LAUNDRY_FORM_VERIFIED',
-                collect([$job->custody->borrower]),
-                "SPMU verified the accomplished Laundry Form for {$job->custody->custody_no}. After collecting the cleaned linen, bring it to SPMU for final physical inspection.",
-                $job,
-                ['SYSTEM']
-            );
-        }, 3);
-
-        return back()->with(
-            'status',
-            $decisionData['decision'] === 'VERIFIED'
-                ? 'Laundry Form verified and encoded from the scanned physical form.'
-                : 'Replacement Laundry Form scan requested from Laundry.'
-        );
     }
 
     private function authorizeLaundryWorker(Request $request): void
@@ -531,8 +563,7 @@ class LaundryController extends Controller
 
         if (! $document) {
             throw ValidationException::withMessages([
-                'evidence' =>
-                    'The current Laundry Form is unavailable. Ask SPMU to regenerate the physical form before uploading.',
+                'evidence' => 'The current Laundry Form is unavailable. Ask SPMU to regenerate the physical form before uploading.',
             ]);
         }
 
@@ -548,17 +579,6 @@ class LaundryController extends Controller
                     AccessClassification::SpmuHead->value,
                     AccessClassification::SpmuOfficer->value,
                 ]
-            )
-            ->where('account_status', 'ACTIVE')
-            ->get();
-    }
-
-    private function laundryRecipients()
-    {
-        return User::query()
-            ->where(
-                'access_classification',
-                AccessClassification::LaundryWorker->value
             )
             ->where('account_status', 'ACTIVE')
             ->get();

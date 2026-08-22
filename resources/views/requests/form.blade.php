@@ -52,7 +52,7 @@
     </section>
 
     <section class="card form-grid">
-        <div class="card-header"><div><p class="eyebrow">3. Student activity</p><h2>Supporting activity information</h2></div></div>
+        <div class="card-header"><div><p class="eyebrow">1. Request details · optional</p><h2>Student activity information</h2></div></div>
         <label class="checkbox">
             <input id="student-activity" type="checkbox" name="represents_student_activity" value="1" @checked(old('represents_student_activity', $version->represents_student_activity))>
             This request represents a student activity / organization
@@ -71,7 +71,7 @@
     </section>
 
     <section class="card form-grid">
-        <div class="card-header"><div><p class="eyebrow">4. Inventory</p><h2>Select serviceable available items</h2></div></div>
+        <div class="card-header"><div><p class="eyebrow">3. Select items</p><h2>Choose from available serviceable items</h2></div></div>
         <p id="availability-message" class="meta">Availability is informational while drafting and will be rechecked by SPMU before reservation.</p>
         <div class="table-wrap">
             <table>
@@ -101,15 +101,24 @@
         </div>
         @error('items')<small class="field-error">{{ $message }}</small>@enderror
         @error('quantities')<small class="field-error">{{ $message }}</small>@enderror
+
+        <div id="gate-pass-notice" class="callout warning" hidden>
+            <strong>Off-campus request: Gate Pass required.</strong>
+            <p>The Gate Pass is prepared by SPMU after Head approval and before physical release. Selecting Off Campus does not mean the request is already approved.</p>
+        </div>
     </section>
 
     <section class="card form-grid">
-        <div class="card-header"><div><p class="eyebrow">5. Required scanned documents</p><h2>Approved physical documents</h2></div></div>
+        <div class="card-header"><div><p class="eyebrow">4. Required documents</p><h2>Printed, wet-signed, then scanned</h2></div></div>
         <p class="meta">
-            Save the draft first to generate the printable Borrowing Request Letter. Print it,
-            obtain the required handwritten/wet signatures from the institutional signatories,
-            scan the fully accomplished letter, then upload that scan here. The system does not
-            apply electronic signatures.
+            @if($editing)
+                Upload or replace the required scanned documents here. After saving your changes,
+                the system returns you directly to the next action for this request.
+            @else
+                Save the draft to generate the printable Borrowing Request Letter. The system will
+                then take you directly to the next action: print/sign the letter, upload the required
+                scan, and submit when the documents are complete.
+            @endif
         </p>
         @if($requestLetter)
             <p>Current Borrowing Request Letter: <a href="{{ route('files.show', $requestLetter->file, false) }}" target="_blank" rel="noopener">View uploaded file</a></p>
@@ -131,6 +140,7 @@
     <div class="form-actions">
         <button class="button primary ui-pressable" type="submit">{{ $editing ? 'Save Draft Changes' : 'Save Draft Request' }}</button>
         <a class="button secondary ui-pressable" href="{{ route('requests.index') }}">Cancel</a>
+        <small class="meta">After saving, you will continue directly to the request's next action.</small>
     </div>
 </form>
 
@@ -140,6 +150,7 @@
     const studentFields = document.getElementById('student-fields');
     const toggleStudentFields = () => {
         const enabled = !!studentToggle?.checked;
+        if (studentFields) studentFields.hidden = !enabled;
         studentFields?.querySelectorAll('input').forEach((input) => {
             if (input.name === 'represented_program_department' || input.name === 'represented_year_level') {
                 input.required = enabled;
@@ -148,6 +159,17 @@
     };
     studentToggle?.addEventListener('change', toggleStudentFields);
     toggleStudentFields();
+
+    const gatePassNotice = document.getElementById('gate-pass-notice');
+    const refreshGatePassNotice = () => {
+        const hasOffCampus = [...document.querySelectorAll('select[name^="locations["]')]
+            .some((select) => select.value === 'OFF_CAMPUS');
+        if (gatePassNotice) gatePassNotice.hidden = !hasOffCampus;
+    };
+    document.querySelectorAll('select[name^="locations["]').forEach((select) => {
+        select.addEventListener('change', refreshGatePassNotice);
+    });
+    refreshGatePassNotice();
 
     let timer;
     const refreshAvailability = () => {

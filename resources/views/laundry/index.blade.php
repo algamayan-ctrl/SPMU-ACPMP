@@ -2,72 +2,49 @@
 @section('content')
 <section class="page-heading">
     <div>
-        <p class="eyebrow">Simple Laundry Mode</p>
+        <p class="eyebrow">Laundry Worker</p>
         <h1>Laundry Requests</h1>
-        <p>
-            No detailed computer encoding is required here.
-            Use the physical Laundry Form while working, then upload the accomplished scan.
-        </p>
+        <p>Process linen from borrower turnover through direct return to SPMU and final signed-form upload.</p>
     </div>
-</section>
-
-<section class="content-area narrow">
-    <div class="callout info">
-        <strong>Only two system actions are needed.</strong>
-        <p>
-            1) Upload the accomplished Laundry Form when washing is complete.
-            2) Mark the cleaned linen Released to Borrower when the borrower collects it.
-        </p>
-    </div>
+    <a class="button secondary ui-pressable" href="{{ route('laundry.completed') }}">Completed</a>
 </section>
 
 <section class="content-area">
-    <div class="card">
-        <div class="card-header">
-            <div>
-                <p class="eyebrow">Current work</p>
-                <h2>Open laundry requests</h2>
-            </div>
+    <article class="card">
+        <div class="callout info">
+            <strong>Final linen custody chain</strong>
+            <p>1) Borrower signs and hands used linen + physical Laundry Form to Laundry. 2) Laundry records receipt, processes, and signs. 3) Laundry Worker brings cleaned linen + same form directly to SPMU. 4) SPMU signs final acceptance. 5) Laundry uploads the fully signed form to complete/settle the Laundry transaction.</p>
         </div>
 
-        <div class="document-list">
+        <div class="document-list top-gap">
             @forelse($jobs as $job)
+                @php
+                    $statusText = match($job->status) {
+                        'FOR_LAUNDRY' => 'Waiting for borrower turnover',
+                        'IN_PROCESS' => 'Laundry processing in progress',
+                        'READY_FOR_SPMU_RETURN' => 'Cleaned linen ready to bring directly to SPMU',
+                        'AWAITING_FINAL_FORM_UPLOAD' => 'SPMU accepted linen; upload fully signed form',
+                        'FORM_REPLACEMENT_REQUIRED' => 'Upload a clear replacement final signed form',
+                        default => str($job->status)->replace('_', ' ')->title(),
+                    };
+                @endphp
                 <article>
                     <div>
-                        <strong>{{ $job->custody->custody_no }}</strong>
-                        <small>
-                            {{ $job->custody->request->request_no }}
-                            ·
-                            Borrower: {{ $job->custody->borrower->full_name }}
-                        </small>
-                        <small>
-                            {{ $job->lines->count() }} linen item line(s)
-                        </small>
+                        <strong>{{ $job->custody->request->request_no }}</strong>
+                        <span>{{ $job->custody->borrower->full_name }} · {{ $job->custody->custody_no }}</span>
+                        <small>{{ $statusText }}</small>
                     </div>
-
                     <div class="inline-actions">
                         <x-status-badge :status="$job->status" />
-                        <a
-                            class="button primary small ui-pressable"
-                            href="{{ route('laundry.show', $job) }}"
-                        >
-                            Open
-                        </a>
+                        <a class="button primary small ui-pressable" href="{{ route('laundry.show', $job) }}">Open</a>
                     </div>
                 </article>
             @empty
-                <div class="empty-state">
-                    <strong>No open laundry request.</strong>
-                    <span>New linen cases will appear here after SPMU physically issues the approved linen.</span>
-                </div>
+                <div class="empty-state"><strong>No Laundry cases need action.</strong><p>New linen cases appear here after SPMU physically releases laundry-required items.</p></div>
             @endforelse
         </div>
 
-        @if($jobs->hasPages())
-            <div class="top-gap">
-                {{ $jobs->links() }}
-            </div>
-        @endif
-    </div>
+        @if($jobs->hasPages())<div class="top-gap">{{ $jobs->links() }}</div>@endif
+    </article>
 </section>
 @endsection

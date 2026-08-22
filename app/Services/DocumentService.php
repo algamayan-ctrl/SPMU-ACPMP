@@ -585,7 +585,14 @@ class DocumentService
                 .'</tr>'
             .'</table>'
 
-            .'<p class="laundry-intro"><strong>Borrower instruction:</strong> After use, bring the used linen and this physical form to the Laundry Area. After Laundry releases the cleaned linen, bring the cleaned linen back to SPMU for final physical inspection.</p>'
+            .'<p class="laundry-intro"><strong>Borrower instruction:</strong> After use, bring all used linen and this printed Laundry Form to the Laundry Area. Sign the Borrower Turnover portion before handing the linen and form to the Laundry Worker. After turnover, no borrower pickup of cleaned linen is required; Laundry will return the cleaned linen directly to SPMU.</p>'
+
+            .'<div class="laundry-section-title">Borrower Turnover Certification</div>'
+            .'<table class="laundry-worker-table">'
+                .'<tr><th>Borrower</th><td class="write-line">'.e($borrower->full_name).'</td><th>Signature</th><td class="write-line"></td></tr>'
+                .'<tr><th>Turnover Date / Time</th><td class="write-line"></td><th>Quantity Turned Over</th><td class="write-line"></td></tr>'
+                .'<tr><th>Borrower Remarks</th><td colspan="3" class="write-line"></td></tr>'
+            .'</table>'
 
             .'<div class="laundry-section-title">Laundry Worker - Receive, Inspect, and Complete</div>'
             .'<table class="laundry-items-table">'
@@ -609,9 +616,16 @@ class DocumentService
                 .'<tr><th>General Remarks</th><td colspan="3" class="write-line"></td></tr>'
             .'</table>'
 
-            .'<p class="laundry-note"><strong>Simple digital step:</strong> Laundry Worker scans/uploads this accomplished form in the Laundry portal. Uploading the accomplished form marks the linen Ready for Pickup and notifies the borrower. The Laundry Worker does not encode the detailed fields in the system. SPMU reads and encodes the signed form during verification.</p>'
+            .'<div class="laundry-section-title">SPMU Final Receiving / Acceptance</div>'
+            .'<table class="laundry-worker-table">'
+                .'<tr><th>SPMU Head / Authorized Signatory</th><td class="write-line"></td><th>Signature</th><td class="write-line"></td></tr>'
+                .'<tr><th>Final Received Date / Time</th><td class="write-line"></td><th>Final Quantity Accepted</th><td class="write-line"></td></tr>'
+                .'<tr><th>Final Condition / Remarks</th><td colspan="3" class="write-line"></td></tr>'
+            .'</table>'
 
-            .'<p class="laundry-note"><strong>Physical custody:</strong> Laundry releases the cleaned linen back to the borrower. The borrower then returns the cleaned linen to SPMU. Only SPMU final inspection can mark serviceable linen Available or route damaged/missing linen to assessment/accountability.</p>'
+            .'<p class="laundry-note"><strong>System recording:</strong> Laundry Worker records the actual quantity received and the laundry completion details in the Laundry portal. After processing, the Laundry Worker brings the cleaned linen and this same physical form directly to SPMU for final quantity/condition inspection and SPMU signature.</p>'
+
+            .'<p class="laundry-note"><strong>Final upload:</strong> After SPMU signs the final receiving/acceptance portion, the form is returned to the Laundry Worker. The Laundry Worker scans/uploads the fully accomplished form. Only that final upload settles the Laundry transaction; the Borrower does not collect the cleaned linen or re-enter laundry quantities in the system.</p>'
 
             .'<footer class="laundry-footer"><span>Controlled physical working form | SPMU-ACPMP | Official operational time: Asia/Manila</span><span>Page '.e((string) $pageNumber).' of '.e((string) $pageCount).'</span></footer>'
         .'</section>';

@@ -18,7 +18,7 @@ class CalendarController extends Controller
     private const AUTHORITY_CUSTODY_STATUSES = [
         'PREPARING_RELEASE',
         'ACTIVE',
-        'PARTIALLY_RETURNED',
+        'RETURN_PROCESSING',
         'OVERDUE',
         'EARLY_RETURN',
         'INCIDENT_OPEN',
@@ -206,7 +206,7 @@ class CalendarController extends Controller
     ): array {
         $now = CarbonImmutable::now(config('app.timezone'));
         $isDueSoon = $custody
-            && in_array($custody->status, ['ACTIVE', 'PARTIALLY_RETURNED', 'EARLY_RETURN'], true)
+            && in_array($custody->status, ['ACTIVE', 'RETURN_PROCESSING', 'EARLY_RETURN'], true)
             && $dueAt->betweenIncluded($now, $now->addHours($dueSoonHours));
         $canViewRequest = $this->canViewRequest($request, $workspace, $userId);
 
@@ -227,7 +227,7 @@ class CalendarController extends Controller
             'request_url' => $canViewRequest ? route('requests.show', $request) : null,
             'action_label' => $workspace === 'BORROWER' ? 'View My Request' : 'View Request',
             'next_action' => $this->nextAction($status, $own, $detailsVisible, $isDueSoon, $dueAt),
-            'is_active' => $custody && in_array($custody->status, ['ACTIVE', 'PARTIALLY_RETURNED', 'EARLY_RETURN', 'INCIDENT_OPEN'], true),
+            'is_active' => $custody && in_array($custody->status, ['ACTIVE', 'RETURN_PROCESSING', 'EARLY_RETURN', 'INCIDENT_OPEN'], true),
             'is_due_soon' => $isDueSoon,
             'is_overdue' => $custody?->status === 'OVERDUE',
             'is_closed' => $custody?->status === 'CLOSED',
@@ -268,7 +268,7 @@ class CalendarController extends Controller
             RequestStatus::UnderSpmu->value => 'No action required — waiting for SPMU review.',
             RequestStatus::UnderGsu->value,
             RequestStatus::UnderVpaf->value => 'Legacy request — borrower resubmission is required under the current SPMU-only workflow.',
-            'ACTIVE', 'PARTIALLY_RETURNED', 'EARLY_RETURN', 'INCIDENT_OPEN' => 'Return due '.$dueAt->format('d F Y, g:i A').'.',
+            'ACTIVE', 'RETURN_PROCESSING', 'EARLY_RETURN', 'INCIDENT_OPEN' => 'Return due '.$dueAt->format('d F Y, g:i A').'.',
             default => 'Review the request record for its latest status and instructions.',
         };
     }

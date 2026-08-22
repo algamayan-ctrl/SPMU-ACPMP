@@ -151,7 +151,7 @@ class InventoryService
                 'custody_transactions.status',
                 [
                     'ACTIVE',
-                    'PARTIALLY_RETURNED',
+                    'RETURN_PROCESSING',
                     'OVERDUE',
                     'EARLY_RETURN',
                     'INCIDENT_OPEN',
@@ -221,7 +221,7 @@ class InventoryService
                 'custody_transactions.status',
                 [
                     'ACTIVE',
-                    'PARTIALLY_RETURNED',
+                    'RETURN_PROCESSING',
                     'OVERDUE',
                     'EARLY_RETURN',
                     'INCIDENT_OPEN',

@@ -55,7 +55,7 @@ class ProcessOperationalDeadlines extends Command
             ->with(['borrower', 'lines'])
             ->whereIn('status', [
                 'ACTIVE',
-                'PARTIALLY_RETURNED',
+                'RETURN_PROCESSING',
                 'EARLY_RETURN',
                 'OVERDUE',
                 'INCIDENT_OPEN',

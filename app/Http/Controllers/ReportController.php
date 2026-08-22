@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Enums\AccessClassification;
 use App\Enums\UserRole;
 use App\Models\AuditEvent;
 use App\Models\BillingStatement;
@@ -25,6 +26,10 @@ class ReportController extends Controller
 {
     public function index(Request $request, InventoryService $inventory): View
     {
+        abort_unless(
+            $request->user()?->access_classification === AccessClassification::SpmuHead,
+            403
+        );
         $from = Carbon::parse($request->input('from', now()->subDays(30)->toDateString()))->startOfDay();
         $to = Carbon::parse($request->input('to', now()->toDateString()))->endOfDay();
 
@@ -157,7 +162,7 @@ class ReportController extends Controller
             'billingTotal' => BillingStatement::query()->whereBetween('issued_at', [$from, $to])->sum('total_amount'),
             'sanctionCount' => Sanction::query()->whereBetween('confirmed_at', [$from, $to])->count(),
             'dueSoonCount' => CustodyTransaction::query()
-                ->whereIn('status', ['ACTIVE', 'PARTIALLY_RETURNED'])
+                ->whereIn('status', ['ACTIVE', 'RETURN_PROCESSING'])
                 ->whereDate('due_at', '>=', now()->toDateString())
                 ->whereDate('due_at', '<=', now()->addDay()->toDateString())
                 ->count(),
@@ -171,6 +176,11 @@ class ReportController extends Controller
         string $type,
         InventoryService $inventory
     ): StreamedResponse {
+        abort_unless(
+            $request->user()?->access_classification === AccessClassification::SpmuHead,
+            403
+        );
+
         abort_unless(
             in_array(
                 $type,
@@ -327,15 +337,29 @@ class ReportController extends Controller
         }, "spmu-{$type}-report-".now()->format('Ymd-His').'.csv', ['Content-Type' => 'text/csv']);
     }
 
-    public function audit(): View
+    public function audit(Request $request): View
     {
+        abort_unless(
+            in_array($request->user()?->access_classification, [
+                AccessClassification::SpmuHead,
+                AccessClassification::IctuMaintainer,
+            ], true),
+            403
+        );
         return view('reports.audit', [
             'events' => AuditEvent::query()->with('actor')->latest('occurred_at')->limit(500)->get(),
         ]);
     }
 
-    public function notifications(): View
+    public function notifications(Request $request): View
     {
+        abort_unless(
+            in_array($request->user()?->access_classification, [
+                AccessClassification::SpmuHead,
+                AccessClassification::IctuMaintainer,
+            ], true),
+            403
+        );
         return view('reports.notifications', [
             'deliveries' => NotificationDelivery::query()->with('event')->latest('created_at')->limit(500)->get(),
         ]);
