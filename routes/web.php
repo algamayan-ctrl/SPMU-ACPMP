@@ -36,6 +36,40 @@ Route::middleware('guest')->group(function (): void {
         ->name('login.store');
 });
 
+
+/*
+|--------------------------------------------------------------------------
+| EXTERNAL BORROWER SELF-REGISTRATION
+|--------------------------------------------------------------------------
+|
+| Public self-registration is limited to BORROWER_ONLY accounts.
+| SPMU borrower verification is handled separately.
+|
+*/
+
+Route::middleware('guest')->group(function (): void {
+
+    Route::get(
+        '/register/external',
+        [
+            \App\Http\Controllers\Auth\ExternalRegistrationController::class,
+            'create'
+        ]
+    )->name('external.register');
+
+
+    Route::post(
+        '/register/external',
+        [
+            \App\Http\Controllers\Auth\ExternalRegistrationController::class,
+            'store'
+        ]
+    )
+        ->middleware('throttle:5,1')
+        ->name('external.register.store');
+
+});
+
 Route::middleware(['auth', 'active'])->group(function (): void {
 
     /*
@@ -207,6 +241,11 @@ Route::middleware(['auth', 'active'])->group(function (): void {
 
         Route::put('/requests/{borrowingRequest}', [BorrowingRequestController::class, 'update'])
             ->name('requests.update');
+
+        Route::post(
+            '/requests/{borrowingRequest}/supporting-documents',
+            [BorrowingRequestController::class, 'uploadSupportingDocuments']
+        )->name('requests.supporting-documents.store');
 
         Route::post(
             '/requests/{borrowingRequest}/recover-draft-document',

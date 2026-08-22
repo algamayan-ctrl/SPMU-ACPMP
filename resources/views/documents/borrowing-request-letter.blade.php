@@ -412,12 +412,6 @@
             </td>
         </tr>
         <tr>
-            <td colspan="2">
-                <span class="field-label">Event Details</span>
-                <span class="field-value">{{ $version->event_details ?: 'N/A' }}</span>
-            </td>
-        </tr>
-        <tr>
             <td class="half">
                 <span class="field-label">Needed From</span>
                 <span class="field-value">{{ $visibleNeededFrom }}</span>
@@ -429,8 +423,8 @@
         </tr>
         <tr>
             <td class="half">
-                <span class="field-label">Program / Department and Year</span>
-                <span class="field-value">{{ trim(($version->represented_program_department ?: '').' '.($version->represented_year_level ?: '')) ?: 'N/A' }}</span>
+                <span class="field-label">Program/Department/Office</span>
+                <span class="field-value">{{ $version->represented_program_department ?: 'N/A' }}</span>
             </td>
             <td class="half">
                 <span class="field-label">Use Classification</span>

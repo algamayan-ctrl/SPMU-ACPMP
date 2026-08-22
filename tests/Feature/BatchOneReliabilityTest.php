@@ -107,6 +107,9 @@ class BatchOneReliabilityTest extends TestCase
                             ->addDays(2)
                             ->toDateString(),
 
+                    'represented_program_department' =>
+                        'Information Technology Office',
+
                     'event_details' =>
                         'The database Draft must survive a failed supporting-document write.',
 
@@ -247,6 +250,9 @@ class BatchOneReliabilityTest extends TestCase
 
                     'represents_student_activity' =>
                         0,
+
+                    'represented_program_department' =>
+                        'Information Technology Office',
 
                     'approved_request_letter' =>
                         UploadedFile::fake()
@@ -668,6 +674,9 @@ class BatchOneReliabilityTest extends TestCase
 
             'represents_student_activity' =>
                 0,
+
+            'represented_program_department' =>
+                'Information Technology Office',
 
             'item_ids' =>
                 [

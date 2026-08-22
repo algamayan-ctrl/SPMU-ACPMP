@@ -65,7 +65,7 @@
                     <div>
                         <strong>{{ $event->action_code }}</strong>
                         <p>{{ $event->actor?->full_name ?: 'System' }}</p>
-                        <small>{{ class_basename($event->record_type) }} #{{ $event->record_id }} · {{ $event->occurred_at->format('g:i A') }}</small>
+                        <small>{{ class_basename($event->record_type) }} #{{ $event->record_id }} &middot; {{ $event->occurred_at->format('g:i A') }}</small>
                     </div>
                 </article>
             @empty

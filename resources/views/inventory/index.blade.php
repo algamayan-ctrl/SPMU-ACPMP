@@ -32,7 +32,7 @@
 
 <section class="content-area inventory-page">
 
-    <form method="get" class="filter-bar inventory-search-filter" aria-label="Filter inventory">
+    <form id="inventory-search-form" method="get" class="filter-bar inventory-search-filter" aria-label="Filter inventory">
         <label class="inventory-search-field">
             Search item
             <input
@@ -46,7 +46,7 @@
 
         <label>
             Category
-            <select name="category">
+            <select id="inventory-category-filter" name="category" onchange="this.form.submit()">
                 <option value="">All categories</option>
                 @foreach($categories as $category)
                     <option value="{{ $category->id }}" @selected($categoryId === $category->id)>
@@ -55,8 +55,6 @@
                 @endforeach
             </select>
         </label>
-
-        <button class="button primary" type="submit">Apply filters</button>
 
         @if($search !== '' || $categoryId > 0)
             <a class="button secondary" href="{{ route('inventory.index') }}">Clear</a>
@@ -87,15 +85,6 @@
     @endif
 
     @if($isBorrower)
-        <div class="inventory-reference-note" role="note">
-            <x-icon name="information" size="18" />
-            <div>
-                <strong>Availability is for reference only.</strong>
-                <p>
-                    Submission of a borrowing request does not reserve an item. Availability can change while SPMU reviews the request; only an approved allocation reduces the quantity shown as available.
-                </p>
-            </div>
-        </div>
 
         <div class="table-wrap borrower-inventory-table inventory-reference-table">
             <table>
@@ -227,7 +216,7 @@
                             <td data-label="Actions">
                                 @if($isSpmu)
                                     <div class="inventory-row-actions">
-                                        <a class="table-action ui-pressable" href="{{ route('inventory.show', $item) }}">
+                                        <a class="table-action ui-pressable inventory-view-details" href="{{ route('inventory.show', $item) }}">
                                             <x-icon name="eye" size="16" />
                                             View details
                                         </a>
@@ -255,6 +244,192 @@
     @endif
 
 </section>
+
+
+<style id="inventory-ui-batch-fix">
+
+/* =========================================================
+   AVAILABLE ITEMS — FINAL SMALL UI FIXES
+   ========================================================= */
+
+
+/* Eye icon + View details */
+
+.inventory-view-details {
+    display: inline-flex !important;
+    align-items: center !important;
+
+    gap: 7px !important;
+}
+
+.inventory-view-details svg {
+    flex: 0 0 auto;
+}
+
+
+/* ---------------------------------------------------------
+   CATEGORY SELECT
+
+   Replace browser-native arrow so its position can be
+   controlled precisely. Move it slightly inward.
+   --------------------------------------------------------- */
+
+.inventory-search-filter
+select#inventory-category-filter {
+
+    -webkit-appearance: none !important;
+    appearance: none !important;
+
+    padding-right: 34px !important;
+
+    background-image:
+        url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 20 20'%3E%3Cpath d='M5.5 7.5L10 12l4.5-4.5' fill='none' stroke='%23142235' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") !important;
+
+    background-repeat: no-repeat !important;
+
+    /*
+     * Slightly farther from the right edge.
+     */
+    background-position:
+        right 10px center !important;
+
+    background-size:
+        12px 12px !important;
+}
+
+
+/* Keep dropdown readable */
+
+.inventory-search-filter
+select#inventory-category-filter:focus {
+
+    background-position:
+        right 10px center !important;
+}
+
+</style>
+
+
+<script id="inventory-auto-category-filter">
+document.addEventListener('DOMContentLoaded', function () {
+
+    const form =
+        document.getElementById('inventory-search-form');
+
+    const category =
+        document.getElementById('inventory-category-filter');
+
+    if (!form || !category) {
+        return;
+    }
+
+    category.addEventListener('change', function () {
+
+        /*
+         * Automatically apply the selected category.
+         * The search input is in the same GET form,
+         * therefore its current value is preserved.
+         */
+        if (typeof form.requestSubmit === 'function') {
+            form.requestSubmit();
+            return;
+        }
+
+        form.submit();
+    });
+
+});
+</script>
+
+
+
+<style id="inventory-final-small-fixes">
+
+/* ==========================================================
+   INVENTORY SMALL UI FIXES
+   ========================================================== */
+
+
+/* ----------------------------------------------------------
+   VIEW DETAILS
+   Give the eye icon breathing room from the text.
+   ---------------------------------------------------------- */
+
+.inventory-page .table-action {
+    display: inline-flex !important;
+    align-items: center !important;
+    gap: 7px !important;
+}
+
+.inventory-page .table-action svg {
+    flex: 0 0 auto !important;
+}
+
+
+/* ----------------------------------------------------------
+   CATEGORY DROPDOWN CHEVRON
+   Use a controlled arrow and move it slightly inward.
+   ---------------------------------------------------------- */
+
+#inventory-category-filter {
+    -webkit-appearance: none !important;
+    appearance: none !important;
+
+    padding-right: 38px !important;
+
+    background-image:
+        url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 20 20'%3E%3Cpath d='M5.5 7.5L10 12l4.5-4.5' fill='none' stroke='%23142235' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") !important;
+
+    background-repeat: no-repeat !important;
+
+    /*
+     * Arrow is now around 12px from the right side,
+     * instead of sitting against the border.
+     */
+    background-position:
+        right 12px center !important;
+
+    background-size:
+        12px 12px !important;
+}
+
+</style>
+
+
+
+<style id="inventory-final-docker-ui-fix">
+
+/* Eye icon spacing */
+.inventory-view-details {
+    display: inline-flex !important;
+    align-items: center !important;
+    gap: 7px !important;
+}
+
+.inventory-view-details svg {
+    flex: 0 0 auto !important;
+}
+
+
+/* Category dropdown arrow */
+#inventory-category-filter {
+    -webkit-appearance: none !important;
+    appearance: none !important;
+
+    padding-right: 38px !important;
+
+    background-image:
+        url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 20 20'%3E%3Cpath d='M5.5 7.5L10 12l4.5-4.5' fill='none' stroke='%23142235' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") !important;
+
+    background-repeat: no-repeat !important;
+
+    /* Slightly inward from right edge */
+    background-position: right 12px center !important;
+
+    background-size: 12px 12px !important;
+}
+
+</style>
 
 @endsection
 

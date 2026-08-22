@@ -40,6 +40,18 @@ class RequestWorkflowService
         BorrowingRequest $request,
         User $borrower
     ): void {
+
+        // EXTERNAL_BORROWER_VERIFICATION_GUARD
+        if (
+            $borrower->borrower_type === 'EXTERNAL'
+            && $borrower->borrower_verification_status !== 'VERIFIED'
+        ) {
+            throw ValidationException::withMessages([
+                'verification' =>
+                    'Your external borrower account is pending SPMU verification. You may continue preparing and saving drafts, but you cannot submit a borrowing request yet.',
+            ]);
+        }
+
         if (! $borrower->mayBorrow()) {
             abort(
                 403,

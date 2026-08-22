@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Enums\AccessClassification;
 use App\Enums\UserRole;
 use App\Models\CustodyTransaction;
 use App\Models\EvidenceSubmission;
@@ -22,7 +23,14 @@ class EvidenceController extends Controller
 {
     public function store(Request $request, GeneratedDocument $document, ProtectedFileService $files, AuditService $audit, NotificationService $notifications): RedirectResponse
     {
-        abort_unless(in_array($document->document_type, ['GATE_PASS', 'LAUNDRY_FORM'], true), 404);
+        abort_unless(
+            in_array(
+                $document->document_type,
+                ['GATE_PASS', 'LAUNDRY_FORM', 'BORROWER_SLIP'],
+                true
+            ),
+            404
+        );
         $maxKb = ((int) SystemSetting::value('max_upload_mb', 5)) * 1024;
         $data = $request->validate([
             'evidence' => ['required', 'file', 'mimes:pdf,png,jpg,jpeg,webp', 'max:'.$maxKb],
@@ -45,10 +53,54 @@ class EvidenceController extends Controller
             }
 
             $borrower = $custody->borrower;
-            abort_unless($request->user()->id === $borrower->id || $request->user()->hasRole(UserRole::Spmu), 403);
-            $fallback = $request->user()->id !== $borrower->id;
-            if ($fallback && blank($data['fallback_reason'] ?? null)) {
-                throw ValidationException::withMessages(['fallback_reason' => 'An attributable reason is required when SPMU uploads evidence for the borrower.']);
+
+            $isBorrowerSlip =
+                $document->document_type === 'BORROWER_SLIP';
+
+            if ($isBorrowerSlip) {
+                abort_unless(
+                    strtoupper(
+                        (string) $request->session()->get('active_workspace')
+                    ) === 'SPMU'
+                    && $request->user()?->access_classification
+                        === AccessClassification::SpmuOfficer,
+                    403,
+                    'Only the SPMU Action Officer may upload the accomplished Borrower Slip.'
+                );
+
+                if (! $custody->released_at) {
+                    throw ValidationException::withMessages([
+                        'evidence' =>
+                            'Upload the accomplished Borrower Slip only after physical issuance has been recorded.',
+                    ]);
+                }
+
+                $fallback = false;
+                $uploadMode = 'SPMU_PRIMARY';
+            } else {
+                abort_unless(
+                    $request->user()->id === $borrower->id
+                    || $request->user()->hasRole(UserRole::Spmu),
+                    403
+                );
+
+                $fallback =
+                    $request->user()->id !== $borrower->id;
+
+                if (
+                    $fallback
+                    && blank($data['fallback_reason'] ?? null)
+                ) {
+                    throw ValidationException::withMessages([
+                        'fallback_reason' =>
+                            'An attributable reason is required when SPMU uploads evidence for the borrower.',
+                    ]);
+                }
+
+                $uploadMode =
+                    $fallback
+                        ? 'SPMU_FALLBACK'
+                        : 'BORROWER_PRIMARY';
             }
 
             $file = $files->storeUpload($data['evidence'], 'paper-evidence', 'PAPER_EVIDENCE');
@@ -57,13 +109,43 @@ class EvidenceController extends Controller
                 'stored_file_id' => $file->id,
                 'borrower_user_id' => $borrower->id,
                 'uploaded_by_user_id' => $request->user()->id,
-                'upload_mode' => $fallback ? 'SPMU_FALLBACK' : 'BORROWER_PRIMARY',
-                'fallback_reason' => $data['fallback_reason'] ?? null,
-                'borrower_notified_at' => $fallback ? now() : null,
+                'upload_mode' => $uploadMode,
+                'fallback_reason' =>
+                    $isBorrowerSlip
+                        ? null
+                        : ($data['fallback_reason'] ?? null),
+                'borrower_notified_at' =>
+                    $fallback
+                        ? now()
+                        : null,
                 'submitted_at' => now(),
-                'verification_status' => 'PENDING_VERIFICATION',
+                'verified_by_user_id' =>
+                    $isBorrowerSlip
+                        ? $request->user()->id
+                        : null,
+                'verification_status' =>
+                    $isBorrowerSlip
+                        ? 'VERIFIED'
+                        : 'PENDING_VERIFICATION',
+                'verified_at' =>
+                    $isBorrowerSlip
+                        ? now()
+                        : null,
             ]);
-            $audit->record('PAPER_EVIDENCE_UPLOADED', $submission, reason: $data['fallback_reason'] ?? null, after: ['mode' => $submission->upload_mode, 'sha256' => $file->sha256]);
+            $audit->record(
+                $isBorrowerSlip
+                    ? 'BORROWER_SLIP_ACCOMPLISHED_UPLOADED'
+                    : 'PAPER_EVIDENCE_UPLOADED',
+                $submission,
+                reason:
+                    $isBorrowerSlip
+                        ? null
+                        : ($data['fallback_reason'] ?? null),
+                after: [
+                    'mode' => $submission->upload_mode,
+                    'sha256' => $file->sha256,
+                ]
+            );
             if ($fallback) {
                 $notifications->send('SPMU_FALLBACK_UPLOAD', collect([$borrower]), "SPMU uploaded {$document->document_type} evidence on your behalf. It remains pending separate verification.", $document, ['SYSTEM', 'EMAIL']);
             }
@@ -71,7 +153,12 @@ class EvidenceController extends Controller
             return $submission;
         }, 3);
 
-        return back()->with('status', 'Evidence uploaded and marked Pending Verification. Upload alone does not close the transaction.');
+        return back()->with(
+            'status',
+            $document->document_type === 'BORROWER_SLIP'
+                ? 'Accomplished Borrower Slip uploaded.'
+                : 'Evidence uploaded and marked Pending Verification. Upload alone does not close the transaction.'
+        );
     }
 
     public function verify(Request $request, EvidenceSubmission $evidence, AuditService $audit, NotificationService $notifications): RedirectResponse
@@ -178,6 +265,15 @@ class EvidenceController extends Controller
             }
         }
 
+        if (
+            $document->document_type === 'BORROWER_SLIP'
+            && ! $custody->released_at
+        ) {
+            throw ValidationException::withMessages([
+                'evidence' =>
+                    'The accomplished Borrower Slip can be uploaded only after physical issuance.',
+            ]);
+        }
         return $custody;
     }
 }

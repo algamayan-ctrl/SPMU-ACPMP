@@ -844,7 +844,7 @@
 
                             <small>
                                 {{ $record->email }}
-                                Â·
+                                &middot;
                                 {{ $record->organizationalUnit?->unit_name }}
                             </small>
 
@@ -1043,7 +1043,7 @@
                                 <small>
                                     {{ $record->borrower?->full_name }}
                                     @if($record->borrower?->organizationalUnit?->unit_name)
-                                        Â· {{ $record->borrower->organizationalUnit->unit_name }}
+                                        &middot; {{ $record->borrower->organizationalUnit->unit_name }}
                                     @endif
                                 </small>
 
@@ -1629,7 +1629,7 @@
                             </small>
 
                             <span>
-                                Return deadline Â·
+                                Return deadline &middot;
                                 {{ $custody->due_at->format('g:i A') }}
                             </span>
 

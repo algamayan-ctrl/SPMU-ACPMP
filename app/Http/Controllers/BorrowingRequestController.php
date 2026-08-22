@@ -77,13 +77,6 @@ class BorrowingRequestController extends Controller
 
         $user = $request->user();
 
-        if ($user->activeRestrictions()->exists()) {
-            throw ValidationException::withMessages([
-                'request' =>
-                    'An active borrowing restriction prevents a new request.',
-            ]);
-        }
-
         $borrowingRequest = DB::transaction(
             function () use (
                 $data,
@@ -407,7 +400,7 @@ class BorrowingRequestController extends Controller
             )
             ->with(
                 'status',
-                'Request draft updated. Print the latest generated request letter, obtain the required wet signatures, and upload the current signed scan before submitting.'
+                'Request draft updated.'
             );
     }
 
@@ -424,6 +417,68 @@ class BorrowingRequestController extends Controller
         return back()->with(
             'status',
             'Request and scanned approved document(s) submitted to SPMU for verification. No inventory reservation has been created yet.'
+        );
+    }
+
+    public function uploadSupportingDocuments(
+        Request $request,
+        BorrowingRequest $borrowingRequest,
+        ProtectedFileService $files
+    ): RedirectResponse {
+        abort_unless(
+            $borrowingRequest->borrower_user_id
+                === $request->user()->id
+            && in_array(
+                $borrowingRequest->status,
+                [
+                    RequestStatus::Draft,
+                    RequestStatus::ReturnedForRevision,
+                ],
+                true
+            ),
+            403
+        );
+
+        $request->validate([
+            'approved_request_letter' => [
+                'nullable',
+                'file',
+                'mimes:pdf,png,jpg,jpeg,webp',
+                'max:10240',
+            ],
+
+            'permission_to_conduct_letter' => [
+                'nullable',
+                'file',
+                'mimes:pdf,png,jpg,jpeg,webp',
+                'max:10240',
+            ],
+        ]);
+
+        if (
+            ! $request->hasFile('approved_request_letter')
+            && ! $request->hasFile('permission_to_conduct_letter')
+        ) {
+            throw ValidationException::withMessages([
+                'documents' =>
+                    'Choose at least one scanned supporting document to upload.',
+            ]);
+        }
+
+        $borrowingRequest->loadMissing('currentVersion');
+
+        $this->syncSupportingDocuments(
+            $request,
+            $borrowingRequest,
+            $files,
+            (bool) $borrowingRequest
+                ->currentVersion
+                ?->represents_student_activity
+        );
+
+        return back()->with(
+            'status',
+            'Scanned supporting document(s) uploaded. Submit to SPMU after all required documents are attached.'
         );
     }
 
@@ -523,6 +578,22 @@ class BorrowingRequestController extends Controller
     private function validateRequest(
         Request $request
     ): array {
+
+        // OFF-CAMPUS STUDENT ACTIVITY BYPASS START
+        /*
+         * Off-campus borrowing is treated as an external-use request.
+         * Student activity representation information is therefore
+         * not applicable and must never block draft creation.
+         */
+        if ($request->input('premises') === 'OFF_CAMPUS') {
+            $request->merge([
+                'represents_student_activity' => false,
+                'student_organization' => null,
+                'represented_program_department' => null,
+            ]);
+        }
+        // OFF-CAMPUS STUDENT ACTIVITY BYPASS END
+
         /*
          * Date-only UI contract.
          *
@@ -587,34 +658,23 @@ class BorrowingRequestController extends Controller
             ],
 
             'student_organization' => [
+                'exclude_if:premises,OFF_CAMPUS',
                 'nullable',
                 'string',
                 'max:255',
             ],
 
             'represents_student_activity' => [
+                'exclude_if:premises,OFF_CAMPUS',
                 'nullable',
                 'boolean',
             ],
 
             'represented_program_department' => [
-                'required_if:represents_student_activity,1',
-                'nullable',
-                'string',
-                'max:255',
-            ],
-
-            'represented_year_level' => [
-                'required_if:represents_student_activity,1',
-                'nullable',
-                'string',
-                'max:40',
-            ],
-
-            'event_details' => [
+                'exclude_if:premises,OFF_CAMPUS',
                 'required',
                 'string',
-                'max:2000',
+                'max:255',
             ],
 
             'remarks' => [
@@ -801,13 +861,8 @@ class BorrowingRequestController extends Controller
                     'represented_program_department'
                 ] ?? null,
 
-            'represented_year_level' =>
-                $data[
-                    'represented_year_level'
-                ] ?? null,
-
             'event_details' =>
-                $data['event_details'],
+                null,
 
             'off_campus' =>
                 collect(

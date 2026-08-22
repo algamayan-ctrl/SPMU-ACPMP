@@ -163,6 +163,41 @@
             </div>
 
         </form>
+{{-- EXTERNAL_BORROWER_LOGIN_LINK --}}
+<div
+    style="
+        margin-top: 18px;
+        padding-top: 16px;
+        border-top: 1px solid rgba(148, 163, 184, .35);
+        text-align: center;
+        font-size: .86rem;
+    "
+>
+    @if(session('status'))
+        <div
+            style="
+                margin-bottom: 14px;
+                padding: 10px 12px;
+                border: 1px solid #b8d8bd;
+                border-radius: 8px;
+                background: #effaf1;
+                color: #245b2d;
+                text-align: left;
+            "
+            role="status"
+        >
+            {{ session('status') }}
+        </div>
+    @endif
+
+    <strong>External borrower?</strong>
+
+    <a href="{{ route('external.register') }}">
+        Create an account
+    </a>
+</div>
+{{-- END EXTERNAL_BORROWER_LOGIN_LINK --}}
+
 
     </div>
 

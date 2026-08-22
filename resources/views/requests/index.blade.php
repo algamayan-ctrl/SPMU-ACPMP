@@ -332,7 +332,7 @@
                     <small>
                         {{ $version?->items->count() ?? 0 }}
                         {{ ($version?->items->count() ?? 0) === 1 ? 'item type' : 'item types' }}
-                        <span aria-hidden="true">·</span>
+                        <span aria-hidden="true">&middot;</span>
                         Updated {{ $request->updated_at->format('d M Y') }}
                     </small>
                 </span>

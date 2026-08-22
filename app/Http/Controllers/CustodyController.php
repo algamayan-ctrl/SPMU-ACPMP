@@ -119,7 +119,11 @@ class CustodyController extends Controller
 
     public function quantities(Request $request, CustodyTransaction $custody, CustodyService $service): RedirectResponse
     {
-        $data = $request->validate(['quantities' => ['required', 'array'], 'reasons' => ['nullable', 'array']]);
+        $data = $request->validate([
+            'quantities' => ['required', 'array'],
+            'quantities.*' => ['required', 'integer', 'min:0'],
+            'reasons' => ['nullable', 'array'],
+        ]);
         $service->updateReceiptQuantities($custody, $request->user(), $data['quantities'], $data['reasons'] ?? []);
 
         return back()->with('status', 'Quantity to receive saved. SPMU must verify any reduction before acknowledgement.');

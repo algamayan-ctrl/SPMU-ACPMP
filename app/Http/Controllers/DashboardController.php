@@ -49,26 +49,61 @@ class DashboardController extends Controller
                 $workspace
             );
         }
-
-        /*
-         * Laundry Worker accounts intentionally use a single-purpose workspace.
-         * The dashboard itself renders the same minimal queue so login stays on
-         * a normal 200 response while avoiding a second, complicated dashboard.
-         */
+        /* LAUNDRY WORKSPACE UI V1 20260822 */
         if ($workspace === 'LAUNDRY') {
-            return view('laundry.index', [
-                'jobs' => LaundryJob::query()
-                    ->with([
-                        'custody.borrower',
-                        'custody.request',
-                        'lines.custodyLine.requestItem.inventoryItem.unit',
-                    ])
-                    ->where('status', '!=', 'LAUNDRY_COMPLETED')
+            $completedLaundryStatuses = [
+                'FOR_SPMU_FINAL_CHECK',
+                'LAUNDRY_COMPLETED',
+            ];
+
+            $laundryRelations = [
+                'custody.borrower',
+                'custody.request',
+                'lines.custodyLine.requestItem.inventoryItem.unit',
+            ];
+
+            return view('laundry.dashboard', [
+                'statistics' => [
+                    'needs_action' => LaundryJob::query()
+                        ->whereNotIn('status', $completedLaundryStatuses)
+                        ->count(),
+                    'in_laundry' => LaundryJob::query()
+                        ->whereIn('status', [
+                            'FOR_LAUNDRY',
+                            'RECEIVED_IN_LAUNDRY',
+                            'FORM_REPLACEMENT_REQUIRED',
+                        ])
+                        ->count(),
+                    'ready_for_pickup' => LaundryJob::query()
+                        ->where('status', 'READY_FOR_PICKUP')
+                        ->count(),
+                    'completed' => LaundryJob::query()
+                        ->whereIn('status', $completedLaundryStatuses)
+                        ->count(),
+                ],
+                'actionJobs' => LaundryJob::query()
+                    ->with($laundryRelations)
+                    ->whereNotIn('status', $completedLaundryStatuses)
+                    ->orderByRaw(
+                        "CASE
+                            WHEN status = 'FORM_REPLACEMENT_REQUIRED' THEN 0
+                            WHEN status = 'READY_FOR_PICKUP' THEN 1
+                            WHEN status = 'RECEIVED_IN_LAUNDRY' THEN 2
+                            WHEN status = 'FOR_LAUNDRY' THEN 3
+                            ELSE 4
+                        END"
+                    )
                     ->latest('updated_at')
-                    ->paginate(20),
+                    ->limit(6)
+                    ->get(),
+                'recentCompletedJobs' => LaundryJob::query()
+                    ->with($laundryRelations)
+                    ->whereIn('status', $completedLaundryStatuses)
+                    ->latest('updated_at')
+                    ->limit(5)
+                    ->get(),
             ]);
         }
-
         /*
         |--------------------------------------------------------------------------
         | Custody states that mean physical release already happened

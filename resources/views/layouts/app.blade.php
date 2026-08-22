@@ -456,7 +456,8 @@
                 ['reports.notifications', 'reports.notifications', 'Delivery Records', 'notifications'],
             ],
             'LAUNDRY' => [
-                ['laundry.index', 'laundry.*', 'Laundry Requests', 'custody'],
+                ['dashboard', 'dashboard', 'Dashboard', 'dashboard'],
+                ['laundry.index', 'laundry.*', 'Laundry Transactions', 'custody'],
             ],
             default => [],
         };

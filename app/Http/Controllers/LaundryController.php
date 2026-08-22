@@ -19,29 +19,57 @@ use Illuminate\View\View;
 
 class LaundryController extends Controller
 {
+    /* LAUNDRY WORKSPACE UI V1 20260822 */
     public function index(Request $request): View
     {
         $this->authorizeLaundryWorker($request);
 
-        return view('laundry.index', [
-            'jobs' => LaundryJob::query()
-                ->with([
-                    'custody.borrower',
-                    'custody.request',
-                    'lines.custodyLine.requestItem.inventoryItem.unit',
-                ])
-                ->where('status', '!=', 'LAUNDRY_COMPLETED')
+        $completedStatuses = [
+            'FOR_SPMU_FINAL_CHECK',
+            'LAUNDRY_COMPLETED',
+        ];
+
+        $tab = strtolower((string) $request->query('tab', 'needs-action'));
+
+        if (! in_array($tab, ['needs-action', 'completed'], true)) {
+            $tab = 'needs-action';
+        }
+
+        $jobs = LaundryJob::query()
+            ->with([
+                'custody.borrower',
+                'custody.request',
+                'lines.custodyLine.requestItem.inventoryItem.unit',
+            ]);
+
+        if ($tab === 'completed') {
+            $jobs->whereIn('status', $completedStatuses)
+                ->latest('updated_at');
+        } else {
+            $jobs->whereNotIn('status', $completedStatuses)
                 ->orderByRaw(
                     "CASE
                         WHEN status = 'FORM_REPLACEMENT_REQUIRED' THEN 0
-                        WHEN status = 'FOR_LAUNDRY' THEN 1
-                        WHEN status = 'READY_FOR_PICKUP' THEN 2
-                        WHEN status = 'FOR_SPMU_FINAL_CHECK' THEN 3
+                        WHEN status = 'READY_FOR_PICKUP' THEN 1
+                        WHEN status = 'RECEIVED_IN_LAUNDRY' THEN 2
+                        WHEN status = 'FOR_LAUNDRY' THEN 3
                         ELSE 4
                     END"
                 )
-                ->latest('updated_at')
-                ->paginate(20),
+                ->latest('updated_at');
+        }
+
+        return view('laundry.index', [
+            'jobs' => $jobs->paginate(20)->withQueryString(),
+            'tab' => $tab,
+            'counts' => [
+                'needs_action' => LaundryJob::query()
+                    ->whereNotIn('status', $completedStatuses)
+                    ->count(),
+                'completed' => LaundryJob::query()
+                    ->whereIn('status', $completedStatuses)
+                    ->count(),
+            ],
         ]);
     }
 

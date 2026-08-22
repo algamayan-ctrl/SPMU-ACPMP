@@ -40,6 +40,7 @@
 
     <a class="button secondary ui-pressable" href="{{ route('inventory.index') }}">
         Back to Inventory
+        <span aria-hidden="true">&rarr;</span>
     </a>
 </section>
 

@@ -24,7 +24,7 @@ class BorrowerInventoryFeatureTest extends TestCase
         $this->seed(DatabaseSeeder::class);
     }
 
-    public function test_borrower_inventory_is_reference_only_and_hides_internal_breakdown(): void
+    public function test_borrower_inventory_hides_internal_breakdown(): void
     {
         $borrower = $this->borrower();
 
@@ -33,8 +33,6 @@ class BorrowerInventoryFeatureTest extends TestCase
             ->assertOk()
             ->assertSee('Inventory')
             ->assertSee('Available Quantity')
-            ->assertSee('Availability is for reference only.')
-            ->assertSee('Submission of a borrowing request does not reserve an item.')
             ->assertDontSee('Committed quantities')
             ->assertDontSee('On custody');
     }

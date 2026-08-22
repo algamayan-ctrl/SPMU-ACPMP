@@ -24,24 +24,6 @@
             : 'ON_CAMPUS'
     );
 
-    $supporting = $version->exists
-        ? $version->supportingDocuments->where('is_current', true)
-        : collect();
-
-    $requestLetter = $supporting->firstWhere(
-        'document_type',
-        App\Models\RequestSupportingDocument::TYPE_REQUEST_LETTER
-    );
-
-    $ptc = $supporting->firstWhere(
-        'document_type',
-        App\Models\RequestSupportingDocument::TYPE_PERMISSION_TO_CONDUCT
-    );
-
-    $representsStudentActivity = (bool) old(
-        'represents_student_activity',
-        $version->represents_student_activity
-    );
 @endphp
 
 <style>
@@ -433,7 +415,7 @@
                     <div class="section-number" aria-hidden="true">01</div>
                     <div>
                         <h2 id="borrowing-details-heading">Borrowing details</h2>
-                        <p class="meta">Enter where, when, and why the property will be used. Premises applies to the whole request.</p>
+                        <p class="meta">Complete the borrowing information required for this request.</p>
                     </div>
                 </div>
             </div>
@@ -498,8 +480,9 @@
                     </label>
                 </div>
 
-                <div class="student-activity-box">
+                <div id="student-activity-box" class="student-activity-box">
                     <label class="checkbox">
+                        <input type="hidden" name="represents_student_activity" value="0">
                         <input
                             id="represents_students"
                             type="checkbox"
@@ -512,7 +495,7 @@
 
                     <div id="student-fields" class="student-fields-grid">
                         <label>
-                            Student organization <small>(optional)</small>
+                            Organization/Division/Unit
                             <input
                                 name="student_organization"
                                 value="{{ old('student_organization', $version->student_organization) }}"
@@ -520,22 +503,13 @@
                         </label>
 
                         <label>
-                            Program / Department / College
+                            Program/Department/Office
                             <input
                                 name="represented_program_department"
                                 value="{{ old('represented_program_department', $version->represented_program_department) }}"
+                                required
                             >
                             @error('represented_program_department')
-                                <small class="field-error">{{ $message }}</small>
-                            @enderror
-                        </label>
-                        <label>
-                            Year level
-                            <input
-                                name="represented_year_level"
-                                value="{{ old('represented_year_level', $version->represented_year_level) }}"
-                            >
-                            @error('represented_year_level')
                                 <small class="field-error">{{ $message }}</small>
                             @enderror
                         </label>
@@ -561,12 +535,12 @@
                     <div class="section-number" aria-hidden="true">02</div>
                     <div>
                         <h2 id="items-heading">Requested items</h2>
-                        <p class="meta" id="availability-message">Choose valid borrowing dates to calculate current availability.</p>
+                        <p class="meta" id="availability-message">Select the required items from the available inventory.</p>
                     </div>
                 </div>
                 <div class="items-summary" aria-live="polite">
                     <span class="summary-chip"><span id="selected-item-count">0</span>&nbsp;selected</span>
-                    <span class="summary-chip is-policy" id="premises-policy-note">On-campus inventory</span>
+                    <span class="summary-chip is-policy" id="premises-policy-note">{{ $premises === 'OFF_CAMPUS' ? 'Off-campus' : 'On-campus' }}</span>
                 </div>
             </div>
 
@@ -666,7 +640,7 @@
                                     <input
                                         class="quantity-input"
                                         type="number"
-                                        step="0.001"
+                                        step="1"
                                         min="0"
                                         max="{{ $item->total_quantity }}"
                                         name="quantities[{{ $item->id }}]"
@@ -701,135 +675,10 @@
              03 — REVIEW AND SAVE
         ========================================================== --}}
 
-        {{-- =========================================================
-             03 — SUPPORTING DOCUMENTS
-        ========================================================== --}}
-        <section
-            class="request-card"
-            aria-labelledby="supporting-documents-heading"
-        >
-            <div class="request-card-header">
-                <div class="request-card-title">
-                    <div
-                        class="section-number"
-                        aria-hidden="true"
-                    >
-                        03
-                    </div>
-
-                    <div>
-                        <h2 id="supporting-documents-heading">
-                            Supporting documents
-                        </h2>
-
-                        <p class="meta">
-                            These files may be added while the request is still
-                            a draft. Required documents are checked again before
-                            the request can be submitted to SPMU.
-                        </p>
-                    </div>
-                </div>
-            </div>
-
-            <div class="request-card-body">
-                <div class="details-two-col">
-
-                    <label>
-                        Approved / Signed Borrowing Request Letter
-                        <input
-                            type="file"
-                            name="approved_request_letter"
-                            accept=".pdf,.png,.jpg,.jpeg,.webp"
-                        >
-
-                        <small class="meta">
-                            Upload the scanned fully signed request letter when
-                            it is available. PDF, PNG, JPG, JPEG, or WebP;
-                            maximum 10 MB.
-                        </small>
-
-                        @if($requestLetter)
-                            <small class="meta">
-                                ✓ A current Borrowing Request Letter is already
-                                attached. Uploading a new file will create a new
-                                document version.
-                            </small>
-                        @endif
-
-                        @error('approved_request_letter')
-                            <small class="field-error">
-                                {{ $message }}
-                            </small>
-                        @enderror
-                    </label>
-
-                    <label
-                        id="ptc-upload-group"
-                        @if(!$representsStudentActivity) hidden @endif
-                    >
-                        Permission to Conduct Letter
-                        <input
-                            type="file"
-                            name="permission_to_conduct_letter"
-                            accept=".pdf,.png,.jpg,.jpeg,.webp"
-                        >
-
-                        <small class="meta">
-                            Required for student activity / organization
-                            requests before submission to SPMU.
-                        </small>
-
-                        @if($ptc)
-                            <small class="meta">
-                                ✓ A current Permission to Conduct Letter is
-                                already attached. Uploading a new file will
-                                create a new document version.
-                            </small>
-                        @endif
-
-                        @error('permission_to_conduct_letter')
-                            <small class="field-error">
-                                {{ $message }}
-                            </small>
-                        @enderror
-                    </label>
-
-                </div>
-            </div>
-        </section>
-<section class="request-card" aria-labelledby="review-heading">
-            <div class="request-card-header">
-                <div class="request-card-title">
-                    <div class="section-number" aria-hidden="true">04</div>
-                    <div>
-                        <h2 id="review-heading">Review and save your draft</h2>
-                        <p class="meta">Saving creates the request draft and official preview. It does not submit the request for approval.</p>
-                    </div>
-                </div>
-            </div>
-
-            <div class="request-card-body">
-                <div class="review-grid">
-                    <div class="review-note">
-                        <strong>Before saving</strong>
-                        <ul>
-                            <li>Check the purpose, location, premises, and borrowing period.</li>
-                            <li>Only selected items with a quantity greater than zero are saved.</li>
-                            <li>Availability is checked again when the draft is saved.</li>
-                        </ul>
-                    </div>
-
-                    <div class="review-summary-box">
-                        <strong>What happens next?</strong>
-                        <span>The system generates the official request preview. Review that document on the next screen before continuing the request process.</span>
-                    </div>
-                </div>
-            </div>
-        </section>
 
         <div class="actions sticky-actions">
             <a class="button secondary" href="{{ route('requests.index') }}">Cancel</a>
-            <button type="submit" class="button primary ui-pressable">Save draft and generate preview</button>
+            <button type="submit" class="button primary ui-pressable request-save-draft-button">Save Draft &amp; Generate Letter</button>
         </div>
     </div>
 
@@ -839,45 +688,6 @@
 
 <script>
 document.addEventListener('DOMContentLoaded', () => {
-
-    /*
-    |--------------------------------------------------------------------------
-    | Student activity fields
-    |--------------------------------------------------------------------------
-    */
-
-    const studentToggle = document.getElementById('represents_students');
-    const studentFields = document.getElementById('student-fields');
-
-    function toggleStudentFields() {
-        if (!studentToggle || !studentFields) {
-            return;
-        }
-
-        studentFields.classList.toggle(
-            'is-hidden',
-            !studentToggle.checked
-        );
-
-        studentFields
-            .querySelectorAll('input')
-            .forEach((input) => {
-                if (input.name !== 'student_organization') {
-                    input.required = studentToggle.checked;
-                }
-            });
-    }
-
-    if (studentToggle) {
-        studentToggle.addEventListener(
-            'change',
-            toggleStudentFields
-        );
-
-        toggleStudentFields();
-    }
-
-
     /*
     |--------------------------------------------------------------------------
     | Request-level Premises
@@ -908,10 +718,7 @@ document.addEventListener('DOMContentLoaded', () => {
             premisesSelect.value === 'OFF_CAMPUS';
 
         if (premisesPolicyNote) {
-            premisesPolicyNote.textContent =
-                isOffCampus
-                    ? 'Off-campus: Barricade only'
-                    : 'On-campus: All eligible items';
+            premisesPolicyNote.textContent = premisesLabel;
         }
 
         document
@@ -1221,16 +1028,109 @@ document.addEventListener('DOMContentLoaded', () => {
                                 }
 
                                 node.textContent =
-                                    `Available: ${balance.available}`;
+                                    `Available: ${Math.max(0, Math.floor(Number(balance.available) || 0))}`;
+
+                                /*
+                                 * Real-time availability controls:
+                                 * 0 stock = cannot select / cannot enter qty.
+                                 * If the selected dates later make the item
+                                 * available again, controls are restored.
+                                 */
+                                const available =
+                                    Math.max(
+                                        0,
+                                        Math.floor(
+                                            Number(balance.available) || 0
+                                        )
+                                    );
+
+                                const row =
+                                    node.closest('.request-item-row');
+
+                                const checkbox =
+                                    row?.querySelector(
+                                        '.item-select-checkbox'
+                                    );
 
                                 const quantity =
+                                    row?.querySelector(
+                                        '.quantity-input'
+                                    ) ??
                                     document.querySelector(
                                         `[name="quantities[${itemId}]"]`
                                     );
 
+                                const isUnavailable =
+                                    available <= 0;
+
+                                if (row) {
+                                    row.classList.toggle(
+                                        'is-unavailable',
+                                        isUnavailable
+                                    );
+                                }
+
                                 if (quantity) {
-                                    quantity.max =
-                                        balance.available;
+                                    quantity.max = available;
+                                    quantity.step = 1;
+
+                                    if (isUnavailable) {
+                                        quantity.value = 0;
+                                        quantity.disabled = true;
+                                        quantity.readOnly = true;
+
+                                        quantity.dataset.disabledByAvailability =
+                                            '1';
+                                    } else {
+                                        if (
+                                            quantity.dataset
+                                                .disabledByAvailability === '1'
+                                        ) {
+                                            quantity.disabled = false;
+                                            quantity.readOnly = false;
+
+                                            delete quantity.dataset
+                                                .disabledByAvailability;
+                                        }
+
+                                        const currentQuantity =
+                                            Math.floor(
+                                                Number(quantity.value) || 0
+                                            );
+
+                                        if (
+                                            currentQuantity >
+                                            available
+                                        ) {
+                                            quantity.value =
+                                                available;
+                                        }
+                                    }
+                                }
+
+                                if (checkbox) {
+                                    if (isUnavailable) {
+                                        checkbox.checked = false;
+                                        checkbox.disabled = true;
+
+                                        checkbox.dataset.disabledByAvailability =
+                                            '1';
+                                    } else if (
+                                        checkbox.dataset
+                                            .disabledByAvailability === '1'
+                                    ) {
+                                        checkbox.disabled = false;
+
+                                        delete checkbox.dataset
+                                            .disabledByAvailability;
+                                    }
+                                }
+
+                                if (
+                                    typeof updateSelectionUI ===
+                                    'function'
+                                ) {
+                                    updateSelectionUI();
                                 }
 
                             });
@@ -1286,30 +1186,702 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 </script>
 
+<!-- REQUEST FORM UX FIXES START -->
+<style>
+.request-save-draft-button {
+    background: #1769e0 !important;
+    border-color: #1769e0 !important;
+    color: #fff !important;
+    box-shadow: none !important;
+}
+
+.request-save-draft-button:hover,
+.request-save-draft-button:focus {
+    background: #0f5ac7 !important;
+    border-color: #0f5ac7 !important;
+    color: #fff !important;
+}
+
+.request-save-draft-button:disabled {
+    background: #9fbcea !important;
+    border-color: #9fbcea !important;
+    color: #eef5ff !important;
+}
+
+tr.request-item-row.is-unavailable,
+.request-item-row.is-unavailable {
+    background: #f7f8fb !important;
+    opacity: .72;
+}
+
+tr.request-item-row.is-unavailable td,
+.request-item-row.is-unavailable td,
+tr.request-item-row.is-unavailable strong,
+.request-item-row.is-unavailable strong,
+tr.request-item-row.is-unavailable small,
+.request-item-row.is-unavailable small,
+tr.request-item-row.is-unavailable span,
+.request-item-row.is-unavailable span,
+tr.request-item-row.is-unavailable label,
+.request-item-row.is-unavailable label,
+tr.request-item-row.is-unavailable p,
+.request-item-row.is-unavailable p {
+    color: #7f8da3 !important;
+}
+
+tr.request-item-row.is-unavailable input[type="number"],
+.request-item-row.is-unavailable input[type="number"] {
+    background: #eef2f7 !important;
+    border-color: #d6dee8 !important;
+    color: #7f8da3 !important;
+    cursor: not-allowed !important;
+}
+
+tr.request-item-row.is-unavailable input[type="checkbox"],
+.request-item-row.is-unavailable input[type="checkbox"] {
+    cursor: not-allowed !important;
+}
+
+tr.request-item-row.is-unavailable .badge,
+.request-item-row.is-unavailable .condition-badge,
+.request-item-row.is-unavailable [class*="badge"] {
+    filter: grayscale(1);
+    opacity: .85;
+}
+</style>
 
 <script>
-document.addEventListener('DOMContentLoaded', () => {
-    const studentActivityToggle =
+document.addEventListener('DOMContentLoaded', function () {
+    const numberInputs = Array.from(document.querySelectorAll('input[type="number"]'));
+
+    const toWholeNumber = function (value) {
+        const cleaned = String(value ?? '').replace(/[^\d]/g, '');
+        if (cleaned === '') return '';
+        return String(parseInt(cleaned, 10));
+    };
+
+    const findRow = function (input) {
+        return input.closest('tr')
+            || input.closest('[data-item-row]')
+            || input.closest('.request-item-row')
+            || input.parentElement?.closest('tr')
+            || null;
+    };
+
+    const getAvailabilityFromRow = function (row) {
+        if (!row) return null;
+
+        const text = Array.from(row.querySelectorAll('*'))
+            .map(function (el) {
+                return (el.textContent || '').replace(/\s+/g, ' ').trim();
+            })
+            .filter(Boolean)
+            .join(' | ');
+
+        const match = text.match(/Available\s*:\s*(\d+)/i);
+        return match ? parseInt(match[1], 10) : null;
+    };
+
+    numberInputs.forEach(function (input) {
+        const row = findRow(input);
+        const checkbox = row ? row.querySelector('input[type="checkbox"]') : null;
+        const available = getAvailabilityFromRow(row);
+
+        if (row) {
+            row.classList.add('request-item-row');
+        }
+
+        input.setAttribute('step', '1');
+        input.setAttribute('min', '0');
+        input.setAttribute('inputmode', 'numeric');
+        input.setAttribute('pattern', '[0-9]*');
+
+        if (available !== null && !Number.isNaN(available) && available >= 0) {
+            input.setAttribute('max', String(available));
+        }
+
+        const sanitize = function () {
+            let next = toWholeNumber(input.value);
+
+            if (next !== '') {
+                let numeric = parseInt(next, 10);
+
+                if (!Number.isNaN(numeric)) {
+                    if (numeric < 0) numeric = 0;
+
+                    if (available !== null && !Number.isNaN(available) && numeric > available) {
+                        numeric = available;
+                    }
+
+                    next = String(numeric);
+                }
+            }
+
+            if (input.value !== next) {
+                input.value = next;
+            }
+        };
+
+        input.addEventListener('input', sanitize);
+        input.addEventListener('blur', sanitize);
+
+        input.addEventListener('keydown', function (e) {
+            if (['e', 'E', '+', '-', '.', ','].includes(e.key)) {
+                e.preventDefault();
+            }
+        });
+
+        input.addEventListener('wheel', function (e) {
+            e.preventDefault();
+        }, { passive: false });
+
+        if (available !== null && !Number.isNaN(available) && available <= 0) {
+            if (row) {
+                row.classList.add('is-unavailable');
+            }
+
+            input.value = '0';
+            input.disabled = true;
+            input.readOnly = true;
+
+            if (checkbox) {
+                checkbox.checked = false;
+                checkbox.disabled = true;
+            }
+        } else {
+            sanitize();
+        }
+    });
+});
+</script>
+<!-- REQUEST FORM UX FIXES END -->
+
+<style>
+/* ============================================================
+   ZERO AVAILABILITY FINAL UX
+============================================================ */
+
+.borrow-request-ui .request-item-row.is-unavailable {
+    background: #f4f6f8 !important;
+}
+
+.borrow-request-ui .request-item-row.is-unavailable td {
+    color: #8a98a8 !important;
+}
+
+.borrow-request-ui .request-item-row.is-unavailable
+.item-select-checkbox {
+    opacity: .45;
+    cursor: not-allowed !important;
+}
+
+.borrow-request-ui .request-item-row.is-unavailable
+.quantity-input {
+    background: #e9edf2 !important;
+    border-color: #d5dce5 !important;
+    color: #8a98a8 !important;
+
+    cursor: not-allowed !important;
+
+    opacity: 1 !important;
+}
+
+.borrow-request-ui .request-item-row.is-unavailable
+.item-availability {
+    color: #8a98a8 !important;
+    font-weight: 700;
+}
+
+.borrow-request-ui .request-item-row.is-unavailable
+strong {
+    color: #718096 !important;
+}
+
+/*
+ * Remove native number spinners.
+ */
+.borrow-request-ui .quantity-input::-webkit-inner-spin-button,
+.borrow-request-ui .quantity-input::-webkit-outer-spin-button {
+    -webkit-appearance: none !important;
+    margin: 0;
+}
+
+.borrow-request-ui .quantity-input {
+    appearance: textfield;
+    -moz-appearance: textfield;
+}
+
+/* SPMU REQUESTED ITEMS FONT FIX START */
+
+/* Requested Items heading */
+.borrow-request-ui #items-heading {
+    font-size: 15px !important;
+    line-height: 1.35 !important;
+    font-weight: 700 !important;
+}
+
+/* Requested Items subtitle */
+.borrow-request-ui #availability-message {
+    font-size: 13px !important;
+    line-height: 1.45 !important;
+}
+
+/* Search label */
+.borrow-request-ui .items-search-wrap label {
+    font-size: 12px !important;
+    line-height: 1.4 !important;
+    font-weight: 600 !important;
+}
+
+/* Search box */
+.borrow-request-ui #item-search {
+    font-size: 13px !important;
+}
+
+/* Clear button */
+.borrow-request-ui #clear-item-search {
+    font-size: 12px !important;
+}
+
+/* Selected / premises chips */
+.borrow-request-ui .items-summary .summary-chip {
+    font-size: 12px !important;
+    line-height: 1.2 !important;
+}
+
+/* Table headings */
+.borrow-request-ui .request-items-table thead th {
+    font-size: 11px !important;
+    line-height: 1.2 !important;
+    font-weight: 700 !important;
+    letter-spacing: .015em !important;
+}
+
+/* Table contents */
+.borrow-request-ui .request-items-table tbody td {
+    font-size: 13px !important;
+    line-height: 1.4 !important;
+}
+
+/* Item name */
+.borrow-request-ui .request-items-table tbody td strong {
+    font-size: 13px !important;
+    line-height: 1.4 !important;
+    font-weight: 700 !important;
+}
+
+/* Small text under item / quantity */
+.borrow-request-ui .request-items-table tbody small,
+.borrow-request-ui .item-availability {
+    font-size: 11px !important;
+    line-height: 1.3 !important;
+}
+
+/* Quantity */
+.borrow-request-ui .quantity-input {
+    font-size: 13px !important;
+}
+
+/* Condition and other small badges */
+.borrow-request-ui .request-items-table .badge,
+.borrow-request-ui .request-items-table .status-badge,
+.borrow-request-ui .request-items-table [class*="status"] {
+    font-size: 10.5px !important;
+}
+
+/* SPMU REQUESTED ITEMS FONT FIX END */
+</style>
+
+{{-- OFF CAMPUS STUDENT ACTIVITY FIX START --}}
+<script>
+document.addEventListener('DOMContentLoaded', function () {
+    const premisesSelect =
+        document.getElementById('premises');
+
+    const activityBox =
+        document.getElementById('student-activity-box') ||
+        document.querySelector('.student-activity-box');
+
+    const studentToggle =
         document.getElementById('represents_students');
 
-    const ptcUploadGroup =
-        document.getElementById('ptc-upload-group');
+    const studentFields =
+        document.getElementById('student-fields');
 
-    function syncPtcUploadVisibility() {
-        if (!studentActivityToggle || !ptcUploadGroup) {
+    if (!premisesSelect || !activityBox) {
+        return;
+    }
+
+    function syncStudentActivityWithPremises() {
+        const isOffCampus =
+            premisesSelect.value === 'OFF_CAMPUS';
+
+        /*
+         * OFF-CAMPUS:
+         * Student activity information is not applicable.
+         */
+        if (isOffCampus) {
+
+            activityBox.hidden = true;
+            activityBox.style.display = 'none';
+
+            if (studentToggle) {
+                studentToggle.checked = false;
+            }
+
+            activityBox
+                .querySelectorAll('input, select, textarea')
+                .forEach(function (field) {
+                    field.required = false;
+                    field.disabled = true;
+                });
+
             return;
         }
 
-        ptcUploadGroup.hidden =
-            !studentActivityToggle.checked;
+
+        /*
+         * ON-CAMPUS:
+         * Restore normal student activity behavior.
+         */
+        activityBox.hidden = false;
+        activityBox.style.display = '';
+
+        activityBox
+            .querySelectorAll('input, select, textarea')
+            .forEach(function (field) {
+                field.disabled = false;
+            });
+
+
+        if (studentToggle && studentFields) {
+
+            const checked =
+                studentToggle.checked;
+
+            studentFields.classList.toggle(
+                'is-hidden',
+                !checked
+            );
+
+            studentFields
+                .querySelectorAll('input, select, textarea')
+                .forEach(function (field) {
+
+                    if (
+                        field.name ===
+                        'represented_program_department'
+                    ) {
+                        field.required = checked;
+                    } else {
+                        field.required = false;
+                    }
+
+                });
+        }
     }
 
-    studentActivityToggle?.addEventListener(
+
+    premisesSelect.addEventListener(
         'change',
-        syncPtcUploadVisibility
+        syncStudentActivityWithPremises
     );
 
-    syncPtcUploadVisibility();
+    premisesSelect.addEventListener(
+        'input',
+        syncStudentActivityWithPremises
+    );
+
+    if (studentToggle) {
+        studentToggle.addEventListener(
+            'change',
+            syncStudentActivityWithPremises
+        );
+    }
+
+    syncStudentActivityWithPremises();
 });
 </script>
+{{-- OFF CAMPUS STUDENT ACTIVITY FIX END --}}
 @endsection
+
+{{-- LIVE PREMISES BADGE SYNC FIX --}}
+<script>
+document.addEventListener('DOMContentLoaded', function () {
+    const premisesSelect = document.getElementById('premises');
+    const premisesBadge = document.getElementById('premises-policy-note');
+
+    if (!premisesSelect || !premisesBadge) {
+        return;
+    }
+
+    function syncPremisesBadge() {
+        premisesBadge.textContent =
+            premisesSelect.value === 'OFF_CAMPUS'
+                ? 'Off-campus'
+                : 'On-campus';
+    }
+
+    premisesSelect.addEventListener('change', syncPremisesBadge);
+    premisesSelect.addEventListener('input', syncPremisesBadge);
+
+    syncPremisesBadge();
+});
+</script>
+{{-- END LIVE PREMISES BADGE SYNC FIX --}}
+
+{{-- STRICT OFF-CAMPUS FILTER FIX --}}
+<script>
+document.addEventListener('DOMContentLoaded', function () {
+    const premisesSelect = document.getElementById('premises');
+    const searchInput = document.getElementById('item-search');
+    const premisesBadge = document.getElementById('premises-policy-note');
+    const noItemsFound = document.getElementById('no-items-found');
+
+    if (!premisesSelect) {
+        return;
+    }
+
+    function enforcePremisesFilter() {
+        const isOffCampus = premisesSelect.value === 'OFF_CAMPUS';
+        const query = (searchInput?.value || '').trim().toLowerCase();
+
+        let visibleCount = 0;
+
+        document.querySelectorAll('.request-item-row').forEach(function (row) {
+            const itemName = (row.dataset.itemName || '').trim().toLowerCase();
+
+            const isBarricade =
+                row.dataset.barricade === '1' ||
+                itemName === 'barricade';
+
+            const searchable =
+                (row.dataset.search || itemName).toLowerCase();
+
+            const matchesSearch =
+                !query || searchable.includes(query);
+
+            /*
+             * OFF-CAMPUS:
+             * Barricade ONLY.
+             *
+             * ON-CAMPUS:
+             * All eligible items.
+             */
+            const allowedByPremises =
+                !isOffCampus || isBarricade;
+
+            const shouldShow =
+                allowedByPremises && matchesSearch;
+
+            row.hidden = !shouldShow;
+
+            /*
+             * Clear incompatible selections when switching
+             * from On-campus to Off-campus.
+             */
+            if (isOffCampus && !isBarricade) {
+                const checkbox =
+                    row.querySelector('.item-select-checkbox');
+
+                const quantity =
+                    row.querySelector('.quantity-input');
+
+                if (checkbox) {
+                    checkbox.checked = false;
+                }
+
+                if (quantity) {
+                    quantity.value = 0;
+                }
+
+                row.classList.remove('is-selected');
+            }
+
+            if (shouldShow) {
+                visibleCount++;
+            }
+        });
+
+        // Yellow badge follows Premises
+        if (premisesBadge) {
+            premisesBadge.textContent =
+                isOffCampus ? 'Off-campus' : 'On-campus';
+        }
+
+        if (noItemsFound) {
+            noItemsFound.hidden = visibleCount > 0;
+        }
+
+        // Recalculate selected count
+        const selectedCount =
+            Array.from(
+                document.querySelectorAll('.request-item-row')
+            ).filter(function (row) {
+                const checkbox =
+                    row.querySelector('.item-select-checkbox');
+
+                const quantity =
+                    row.querySelector('.quantity-input');
+
+                return Boolean(checkbox?.checked) &&
+                    Number(quantity?.value || 0) > 0;
+            }).length;
+
+        const selectedCounter =
+            document.getElementById('selected-item-count');
+
+        if (selectedCounter) {
+            selectedCounter.textContent =
+                String(selectedCount);
+        }
+    }
+
+    premisesSelect.addEventListener(
+        'change',
+        enforcePremisesFilter
+    );
+
+    premisesSelect.addEventListener(
+        'input',
+        enforcePremisesFilter
+    );
+
+    if (searchInput) {
+        searchInput.addEventListener(
+            'input',
+            enforcePremisesFilter
+        );
+    }
+
+    enforcePremisesFilter();
+});
+</script>
+{{-- END STRICT OFF-CAMPUS FILTER FIX --}}
+{{-- FORCE PREMISES FILTER START --}}
+<script>
+(function () {
+    function initPremisesFilter() {
+        const premises = document.getElementById('premises');
+        const badge = document.getElementById('premises-policy-note');
+        const search = document.getElementById('item-search');
+
+        if (!premises) {
+            return;
+        }
+
+        function filterItems() {
+            const offCampus = premises.value === 'OFF_CAMPUS';
+            const query = (search?.value || '').trim().toLowerCase();
+
+            let selectedCount = 0;
+            let visibleCount = 0;
+
+            document.querySelectorAll('.request-item-row').forEach(function (row) {
+
+                const itemName = (
+                    row.dataset.itemName ||
+                    row.textContent ||
+                    ''
+                ).trim().toLowerCase();
+
+                const searchable = (
+                    row.dataset.search ||
+                    row.textContent ||
+                    ''
+                ).toLowerCase();
+
+                const barricade =
+                    row.dataset.barricade === '1' ||
+                    itemName === 'barricade' ||
+                    itemName.includes('barricade');
+
+                const matchesSearch =
+                    query === '' || searchable.includes(query);
+
+                const allowed =
+                    !offCampus || barricade;
+
+                const visible =
+                    allowed && matchesSearch;
+
+                row.hidden = !visible;
+                row.style.display = visible ? '' : 'none';
+
+                if (offCampus && !barricade) {
+                    const checkbox =
+                        row.querySelector('.item-select-checkbox');
+
+                    const quantity =
+                        row.querySelector('.quantity-input');
+
+                    if (checkbox) {
+                        checkbox.checked = false;
+                    }
+
+                    if (quantity) {
+                        quantity.value = 0;
+                    }
+
+                    row.classList.remove('is-selected');
+                }
+
+                if (visible) {
+                    visibleCount++;
+                }
+
+                const checkbox =
+                    row.querySelector('.item-select-checkbox');
+
+                const quantity =
+                    row.querySelector('.quantity-input');
+
+                if (
+                    checkbox?.checked &&
+                    Number(quantity?.value || 0) > 0
+                ) {
+                    selectedCount++;
+                }
+            });
+
+            if (badge) {
+                badge.textContent =
+                    offCampus ? 'Off-campus' : 'On-campus';
+            }
+
+            const counter =
+                document.getElementById('selected-item-count');
+
+            if (counter) {
+                counter.textContent = String(selectedCount);
+            }
+
+            const empty =
+                document.getElementById('no-items-found');
+
+            if (empty) {
+                empty.hidden = visibleCount > 0;
+            }
+        }
+
+        premises.addEventListener('change', filterItems);
+        premises.addEventListener('input', filterItems);
+
+        if (search) {
+            search.addEventListener('input', filterItems);
+        }
+
+        filterItems();
+    }
+
+    if (document.readyState === 'loading') {
+        document.addEventListener(
+            'DOMContentLoaded',
+            initPremisesFilter
+        );
+    } else {
+        initPremisesFilter();
+    }
+})();
+</script>
+{{-- FORCE PREMISES FILTER END --}}

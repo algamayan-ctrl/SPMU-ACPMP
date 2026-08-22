@@ -357,10 +357,26 @@ class CustodyService
 
         DB::transaction(function () use ($custody, $quantities): void {
             foreach ($custody->lines()->get() as $line) {
-                $approved = (float) $line->approved_quantity;
-                $quantity = (float) ($quantities[$line->id] ?? $approved);
+                $approvedRaw = (float) $line->approved_quantity;
 
-                if (abs($quantity - $approved) > 0.000001) {
+                if (abs($approvedRaw - round($approvedRaw)) > 0.000001) {
+                    throw ValidationException::withMessages([
+                        'quantities' => 'Approved quantity must be a whole number before physical preparation.',
+                    ]);
+                }
+
+                $approved = (int) round($approvedRaw);
+                $submittedQuantity = $quantities[$line->id] ?? $approved;
+
+                if (filter_var($submittedQuantity, FILTER_VALIDATE_INT) === false) {
+                    throw ValidationException::withMessages([
+                        'quantities' => 'Prepared quantity must be a whole number.',
+                    ]);
+                }
+
+                $quantity = (int) $submittedQuantity;
+
+                if ($quantity !== $approved) {
                     throw ValidationException::withMessages([
                         'quantities' => 'Prepared quantity must exactly match the verified approved quantity. Revise the request if the quantity must change.',
                     ]);
